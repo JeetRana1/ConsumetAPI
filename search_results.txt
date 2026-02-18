@@ -1,0 +1,32 @@
+- Title: The Housemaid, ID: movie/watch-the-housemaid-9031, Release: 2010
+- Title: The Housemaid, ID: movie/watch-the-housemaid-140613, Release: 2025
+- Title: The Chef, The Actor, The Scoundrel, ID: movie/watch-the-chef-the-actor-the-scoundrel-57012, Release: 2013
+- Title: The Gangster, the Cop, the Devil, ID: movie/watch-the-gangster-the-cop-the-devil-66106, Release: 2019
+- Title: The Weapon, the Hour, the Motive, ID: movie/watch-the-weapon-the-hour-the-motive-87856, Release: 1972
+- Title: The Good, The Bad, The Weird, ID: movie/watch-the-good-the-bad-the-weird-54680, Release: 2008
+- Title: The Mother the Son The Rat and The Gun, ID: movie/watch-the-mother-the-son-the-rat-and-the-gun-79075, Release: 2021
+- Title: The Simpsons: The Good, the Bart, and the Loki, ID: movie/watch-the-simpsons-the-good-the-bart-and-the-loki-70646, Release: 2021
+- Title: The Boy, the Mole, the Fox and the Horse, ID: movie/watch-the-boy-the-mole-the-fox-and-the-horse-91783, Release: 2022
+- Title: The Great & The Small, ID: movie/watch-the-great-the-small-56316, Release: 2016
+- Title: The Dish & the Spoon, ID: movie/watch-the-dish-the-spoon-57914, Release: 2011
+- Title: The Knight & The Princess, ID: movie/watch-the-knight-the-princess-65418, Release: 2020
+- Title: The Hottie & The Nottie, ID: movie/watch-the-hottie-and-the-nottie-4836, Release: 2008
+- Title: The Transformers: The Movie, ID: movie/watch-the-transformers-the-movie-53726, Release: 1986
+- Title: The More the Merrier, ID: movie/watch-the-more-the-merrier-138700, Release: 2025
+- Title: The Power, The Passion, ID: tv/watch-the-power-the-passion-26458, Release: undefined
+- Title: The Darker the Lake, ID: movie/watch-the-darker-the-lake-94237, Release: 2022
+- Title: The Good, the Bad and the Ugly, ID: movie/watch-the-good-the-bad-and-the-ugly-19502, Release: 1966
+- Title: The Author, The Star, and The Keeper, ID: movie/watch-the-author-the-star-and-the-keeper-63843, Release: 2020
+- Title: The Prince and the Pauper: The Movie, ID: movie/watch-the-prince-and-the-pauper-the-movie-64450, Release: 2007
+- Title: The Dead the Damned and the Darkness, ID: movie/watch-the-dead-the-damned-and-the-darkness-56934, Release: 2014
+- Title: The Boy, the Dog and the Clown, ID: movie/watch-the-boy-the-dog-and-the-clown-58875, Release: 2019
+- Title: The Butcher, the Chef, and the Swordsman, ID: movie/watch-the-butcher-the-chef-and-the-swordsman-53714, Release: 2011
+- Title: The Pig, the Snake and the Pigeon, ID: movie/watch-the-pig-the-snake-and-the-pigeon-106828, Release: 2023
+- Title: Tommy: The Good. The Bad. The Fury., ID: tv/watch-tommy-the-good-the-bad-the-fury-130522, Release: undefined
+- Title: The Mermaids: The Secret of the Medallion, ID: movie/watch-the-mermaids-the-secret-of-the-medallion-132166, Release: 2025
+- Title: The Billionaire, The Butler, and the Boyfriend, ID: tv/watch-the-billionaire-the-butler-and-the-boyfriend-102523, Release: undefined
+- Title: The Simpsons: The Past and the Furious, ID: movie/watch-the-simpsons-the-past-and-the-furious-120787, Release: 2025
+- Title: The Haunted, the Possessed and the Damned, ID: movie/watch-the-haunted-the-possessed-and-the-damned-121477, Release: 2024
+- Title: The Lord of the Rings: The Return of the King, ID: movie/watch-the-lord-of-the-rings-the-return-of-the-king-19681, Release: 2003
+- Title: The Lord of the Rings: The Fellowship of the Ring, ID: movie/watch-the-lord-of-the-rings-the-fellowship-of-the-ring-19736, Release: 2001
+- Title: The Lord of the Rings: The War of the Rohirrim, ID: movie/watch-the-lord-of-the-rings-the-war-of-the-rohirrim-118834, Release: 2024

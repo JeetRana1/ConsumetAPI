@@ -559,8 +559,16 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             }
 
           } else {
-            // MOVIE Logic (already working, but kept consistent)
-            let episodeId = info.episodeId || pId;
+            // MOVIE Logic
+            // FIX: Many providers (FlixHQ, SFlix) require just the numeric ID part (e.g. '108544') 
+            // but return 'movie/watch-...' in pId. We must extract the numeric part if info.episodeId is missing.
+            let episodeId = info.episodeId;
+            if (!episodeId) {
+              const matches = pId.match(/-(\d+)$/);
+              episodeId = matches ? matches[1] : pId;
+            }
+
+            console.log(`[TMDB Meta] Fetching servers for movie episode: ${episodeId} (pId: ${pId})`);
             const serverList = await (provider as any)?.fetchEpisodeServers(episodeId, pId).catch(() => []);
 
             if (serverList && serverList.length > 0) {
@@ -568,7 +576,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 try {
                   const srvRes = await (provider as any)?.fetchEpisodeSources(episodeId, pId, srv.name);
                   if (srvRes) {
-                    return { sources: srvRes.sources, subtitles: srvRes.subtitles, headers: srvRes.headers };
+                    return {
+                      sources: (srvRes.sources || []).map((src: any) => ({
+                        ...src,
+                        quality: `${srv.name} ${src.quality || ''}`.trim(),
+                        headers: srvRes.headers || {}
+                      })),
+                      subtitles: srvRes.subtitles || []
+                    };
                   }
                 } catch (err) { return null; }
               });
@@ -600,13 +615,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                   file: `${request.protocol}://${host}/meta/tmdb/proxy?url=${encodeURIComponent(src.url)}&proxy_ref=${encodeURIComponent(referer)}`,
                   original_file: src.url,
                   label: src.quality || 'Auto',
-                  type: src.isM3U8 ? 'hls' : 'mp4',
-                  headers: src.headers || {}, // Pass through headers
+                  type: src.isM3U8 || src.url.includes('.m3u8') ? 'hls' : 'mp4',
+                  headers: src.headers || {},
                   provider: pName
                 };
               }),
               subtitles: allSubtitles.map((sub: any) => {
-                // Find a referer from sources if possible, otherwise use empty
                 const referer = allSources[0]?.headers?.Referer || allSources[0]?.headers?.referer || '';
                 return {
                   ...sub,
