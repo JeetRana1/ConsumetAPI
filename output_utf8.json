@@ -1,0 +1,103 @@
+﻿{
+    "success":  true,
+    "data":  {
+                 "playlist":  [
+                                  {
+                                      "file":  "https://mistwolf88.xyz/file1/nlD~9TKCgLA1r5zLLIA75Ah8EFmYnoWUU02PWKIABknDirIlq4uJRXeLGyjJ59u72iVpYa5nTTX8ov37kQbp8OoJh8uijGgxqKDmKrpw5Ng~~qrsXQJKi7QlvR4WQKAb5wby7vl3L5ZkGfFaeyYUOagY5b57fJDPI0Vq3umo+3E=/cGxheWxpc3QubTN1OA==.m3u8",
+                                      "label":  "upcloud - auto",
+                                      "title":  "upcloud - auto",
+                                      "type":  "hls",
+                                      "headers":  {
+
+                                                  },
+                                      "provider":  "FlixHQ"
+                                  },
+                                  {
+                                      "file":  "https://eu15.raffaellocdn.net:2223/v3-hls-playback/9e50fff5328280b035af9ccb2c803be4087c1059989e8594534d8f58a2000649c38ab225ab8b8945778b1b28c9e7dbbb38cc733c62a3f22b3b37769e14b8068b0b8c014b18c9b7e00e93fd2fcaec6e7c6eef8dd14705419727b8d0462ea31cf28e83ce2dd42117f65dc3d4f8b175659c039211ef2530030b1df0a330e40c59d990942a0ee6497a99e571ec520b3d6cdbb4214d9f252b2f68998197b425ac52739869ba97c1edc4e285c09181593388c4a66755b81c4efcd9a1855781e5d93b99/playlist.m3u8",
+                                      "label":  "vidcloud - auto",
+                                      "title":  "vidcloud - auto",
+                                      "type":  "hls",
+                                      "headers":  {
+
+                                                  },
+                                      "provider":  "FlixHQ"
+                                  },
+                                  {
+                                      "file":  "https://eu15.raffaellocdn.net:2223/v3-hls-playback/9e50fff5328280b035af9ccb2c803be4087c1059989e8594534d8f58a2000649c38ab225ab8b8945778b1b28c9e7dbbb38cc733c62a3f22b3b37769e14b8068b0b8c014b18c9b7e00e93fd2fcaec6e7c6eef8dd14705419727b8d0462ea31cf28e83ce2dd42117f65dc3d4f8b175659c039211ef2530030b1df0a330e40c59d990942a0ee6497a99e571ec520b3d6cdbb4214d9f252b2f68998197b425ac52739869ba97c1edc4e285c09181593388c4a66755b81c4efcd9a1855781e5d93b99/1080/index.m3u8",
+                                      "label":  "vidcloud - 1080p",
+                                      "title":  "vidcloud - 1080p",
+                                      "type":  "hls",
+                                      "headers":  {
+
+                                                  },
+                                      "provider":  "FlixHQ"
+                                  },
+                                  {
+                                      "file":  "https://eu15.raffaellocdn.net:2223/v3-hls-playback/9e50fff5328280b035af9ccb2c803be4087c1059989e8594534d8f58a2000649c38ab225ab8b8945778b1b28c9e7dbbb38cc733c62a3f22b3b37769e14b8068b0b8c014b18c9b7e00e93fd2fcaec6e7c6eef8dd14705419727b8d0462ea31cf28e83ce2dd42117f65dc3d4f8b175659c039211ef2530030b1df0a330e40c59d990942a0ee6497a99e571ec520b3d6cdbb4214d9f252b2f68998197b425ac52739869ba97c1edc4e285c09181593388c4a66755b81c4efcd9a1855781e5d93b99/720/index.m3u8",
+                                      "label":  "vidcloud - 720p",
+                                      "title":  "vidcloud - 720p",
+                                      "type":  "hls",
+                                      "headers":  {
+
+                                                  },
+                                      "provider":  "FlixHQ"
+                                  },
+                                  {
+                                      "file":  "https://eu15.raffaellocdn.net:2223/v3-hls-playback/9e50fff5328280b035af9ccb2c803be4087c1059989e8594534d8f58a2000649c38ab225ab8b8945778b1b28c9e7dbbb38cc733c62a3f22b3b37769e14b8068b0b8c014b18c9b7e00e93fd2fcaec6e7c6eef8dd14705419727b8d0462ea31cf28e83ce2dd42117f65dc3d4f8b175659c039211ef2530030b1df0a330e40c59d990942a0ee6497a99e571ec520b3d6cdbb4214d9f252b2f68998197b425ac52739869ba97c1edc4e285c09181593388c4a66755b81c4efcd9a1855781e5d93b99/360/index.m3u8",
+                                      "label":  "vidcloud - 360p",
+                                      "title":  "vidcloud - 360p",
+                                      "type":  "hls",
+                                      "headers":  {
+
+                                                  },
+                                      "provider":  "FlixHQ"
+                                  }
+                              ],
+                 "key":  "",
+                 "subtitles":  [
+                                   {
+                                       "url":  "https://cca.megafiles.store/91/bd/91bdc91ffff0906bd54f0711eb3e786f/91bdc91ffff0906bd54f0711eb3e786f.vtt",
+                                       "lang":  "Arabic"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/a6/b9/a6b97400480245ca67be1e08611e0cfc/a6b97400480245ca67be1e08611e0cfc.vtt",
+                                       "lang":  "Danish"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/51/a0/51a0660a311582fcd07abcb6740cd143/51a0660a311582fcd07abcb6740cd143.vtt",
+                                       "lang":  "Dutch"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/3e/62/3e62d0109500abf55acf229a0599a20d/3e62d0109500abf55acf229a0599a20d.vtt",
+                                       "lang":  "English"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/4e/5d/4e5d0547f79f037332c1b39f8adc1101/4e5d0547f79f037332c1b39f8adc1101.vtt",
+                                       "lang":  "French"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/a9/9b/a99b97193ee6e1030d87e8cbec157f52/a99b97193ee6e1030d87e8cbec157f52.vtt",
+                                       "lang":  "French"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/74/e6/74e6dd3f957af02f5a958cddf5449ca1/74e6dd3f957af02f5a958cddf5449ca1.vtt",
+                                       "lang":  "Hindi"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/af/59/af5992351cdd2c5122a9fbaebdec6814/af5992351cdd2c5122a9fbaebdec6814.vtt",
+                                       "lang":  "Italian"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/5e/19/5e19ab0bb80f4d91d734d880a2ad014a/5e19ab0bb80f4d91d734d880a2ad014a.vtt",
+                                       "lang":  "Russian"
+                                   },
+                                   {
+                                       "url":  "https://cca.megafiles.store/86/08/86086c1536f74911aff6f04402e4b295/86086c1536f74911aff6f04402e4b295.vtt",
+                                       "lang":  "Spanish"
+                                   }
+                               ]
+             },
+    "extraSources":  [
+
+                     ]
+}
