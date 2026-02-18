@@ -415,13 +415,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           // Original movie/TV provider logic
           const pTmdb = new META.TMDB(tmdbApi, provider);
 
-          let sources: any;
           // 1. Get info
           let info = await pTmdb.fetchMediaInfo(id, type);
           let pId = info.id;
 
-          // 2. Validate Year
+          // 2. Validate mapping/ID and Year
           let providerYear: number | null = null;
+          let mappingValid = true;
           try {
             const rawInfo = await provider?.fetchMediaInfo(pId);
             if (rawInfo) {
@@ -432,63 +432,75 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               } else if (rawInfo.year) {
                 providerYear = parseInt(rawInfo.year);
               }
+            } else {
+              mappingValid = false;
+              console.warn(`[TMDB Meta] Provider ${pName} returned no info for pId: ${pId}. Mapping might be invalid.`);
             }
             console.log(`[TMDB Meta] Provider ${pName} returned ID: ${pId} with Year: ${providerYear}`);
           } catch (e) {
-            console.warn(`[TMDB Meta] Could not verify provider year for ${pName}: ${e}`);
-            providerYear = info.releaseDate ? new Date(info.releaseDate).getFullYear() : null;
+            console.warn(`[TMDB Meta] Could not verify provider year/info for ${pName}: ${e}`);
+            mappingValid = false;
           }
 
-          if (targetYear && providerYear) {
-            if (Math.abs(targetYear - providerYear) > 1) {
+          // If mapping failed or ID is purely numeric (likely untransformed TMDB ID)
+          const isNumericId = typeof pId === 'string' && /^\d+$/.test(pId);
+          if (isNumericId) {
+            console.log(`[TMDB Meta] Numeric ID detected for ${pName}: ${pId}. Triggering manual search.`);
+            mappingValid = false;
+          }
+
+          if (!mappingValid || (targetYear && providerYear && Math.abs(targetYear - providerYear) > 1)) {
+            if (!mappingValid) {
+              console.log(`[TMDB Meta] Mapping check failed for ${pName}. Attempting manual search...`);
+            } else {
               console.log(`[TMDB Meta] Year mismatch for ${pName}: Expected ${targetYear}, got ${providerYear}. Attempting manual search...`);
+            }
 
-              let targetTitle = '';
-              try {
-                const tInfo = await tmdb.fetchMediaInfo(id, type);
-                targetTitle = (tInfo.title || tInfo.name || '').toString();
-              } catch (e) {
-                console.warn(`[TMDB Meta] Could not fetch target title for manual search: ${e}`);
-                throw new Error('Target title lookup failed');
-              }
+            let targetTitle = '';
+            try {
+              const tInfo = await tmdb.fetchMediaInfo(id, type);
+              targetTitle = (tInfo.title || tInfo.name || '').toString();
+            } catch (e) {
+              console.warn(`[TMDB Meta] Could not fetch target title for manual search: ${e}`);
+              throw new Error('Target title lookup failed');
+            }
 
-              console.log(`[TMDB Meta] Manual search for: ${targetTitle} (${type})`);
+            console.log(`[TMDB Meta] Manual search for: ${targetTitle} (${type})`);
 
-              const searchResults: any = await provider?.search(targetTitle).catch(() => ({ results: [] }));
-              let match = null;
+            const searchResults: any = await provider?.search(targetTitle).catch(() => ({ results: [] }));
+            let match = null;
 
-              if (searchResults && searchResults.results) {
-                match = searchResults.results.find((r: any) => {
-                  let rYear: number | null = null;
-                  if (r.releaseDate) {
-                    const d = new Date(r.releaseDate);
-                    if (!isNaN(d.getFullYear())) rYear = d.getFullYear();
-                    else rYear = parseInt(r.releaseDate);
-                  }
-                  return rYear && Math.abs(targetYear! - rYear) <= 1;
-                });
-              }
-
-              if (match) {
-                console.log(`[TMDB Meta] Manual search successful! Found: ${match.title} (${match.releaseDate}) ID: ${match.id}`);
-                pId = match.id;
-                if (type === 'movie') {
-                  info = { ...info, id: match.id, episodeId: match.id };
-                  try {
-                    const newInfo = await provider?.fetchMediaInfo(match.id);
-                    if (newInfo) info = { ...info, ...newInfo } as any;
-                  } catch (e) { }
-                } else {
-                  info = { ...info, id: match.id };
-                  try {
-                    const newInfo = await pTmdb.fetchMediaInfo(match.id, type).catch(() => null);
-                    if (newInfo) info = newInfo;
-                  } catch (e) { }
+            if (searchResults && searchResults.results) {
+              match = searchResults.results.find((r: any) => {
+                let rYear: number | null = null;
+                if (r.releaseDate) {
+                  const d = new Date(r.releaseDate);
+                  if (!isNaN(d.getFullYear())) rYear = d.getFullYear();
+                  else rYear = parseInt(r.releaseDate);
                 }
+                return rYear && Math.abs(targetYear! - rYear) <= 1;
+              });
+            }
+
+            if (match) {
+              console.log(`[TMDB Meta] Manual search successful! Found: ${match.title} (${match.releaseDate}) ID: ${match.id}`);
+              pId = match.id;
+              if (type === 'movie') {
+                info = { ...info, id: match.id, episodeId: match.id };
+                try {
+                  const newInfo = await provider?.fetchMediaInfo(match.id);
+                  if (newInfo) info = { ...info, ...newInfo } as any;
+                } catch (e) { }
               } else {
-                console.log(`[TMDB Meta] No matching year found.`);
-                throw new Error(`Year validation failed for ${pName}`);
+                info = { ...info, id: match.id };
+                try {
+                  const newInfo = await pTmdb.fetchMediaInfo(match.id, type).catch(() => null);
+                  if (newInfo) info = newInfo;
+                } catch (e) { }
               }
+            } else {
+              console.log(`[TMDB Meta] No matching year found.`);
+              throw new Error(`Year validation failed for ${pName}`);
             }
           }
 
@@ -671,7 +683,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             subtitles: deduplicatedSubtitles
           },
           extraSources: [],
-          message: undefined
+          message: uniquePlaylist.length > 0 ? undefined : 'No streams available for this content across all providers.'
         };
 
         // Cache result

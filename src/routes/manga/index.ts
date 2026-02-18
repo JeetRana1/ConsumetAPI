@@ -3,14 +3,14 @@ import { PROVIDERS_LIST } from '@consumet/extensions';
 import mangapill from './mangapill';
 import managreader from './managreader';
 import mangadex from './mangadex';
-import mangakakalot from './mangakakalot';
+// import mangakakalot from './mangakakalot';
 import mangahere from './mangahere';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(mangadex, { prefix: '/mangadex' });
   await fastify.register(mangahere, { prefix: '/mangahere' });
   await fastify.register(mangapill, { prefix: '/mangapill' });
-  await fastify.register(mangakakalot, { prefix: '/mangakakalot' });
+  // await fastify.register(mangakakalot, { prefix: '/mangakakalot' });
   await fastify.register(managreader, { prefix: '/managreader' });
 
   fastify.get('/', async (request: any, reply: any) => {
