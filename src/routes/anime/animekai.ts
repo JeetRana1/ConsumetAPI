@@ -8,6 +8,9 @@ import { Redis } from 'ioredis';
 import { fetchWithServerFallback } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const WATCH_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 8000 : 12000;
+
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const animekai = configureProvider(new ANIME.AnimeKai());
 
@@ -265,6 +268,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                       dub === true ? SubOrSub.DUB : SubOrSub.SUB,
                     ),
                   server,
+                  undefined,
+                  { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
                 ),
               REDIS_TTL,
             )
@@ -276,6 +281,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                   dub === true ? SubOrSub.DUB : SubOrSub.SUB,
                 ),
               server,
+              undefined,
+              { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
             );
 
         reply.status(200).send(res);

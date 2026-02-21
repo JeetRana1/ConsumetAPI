@@ -13,6 +13,9 @@ class SatoruProvider extends AnimeParser {
     baseUrl = 'https://satoru.one';
     logo = 'https://satoru.one/satoru-full-logo.png';
     classPath = 'ANIME.Satoru';
+    private readonly requestTimeoutMs =
+      Number(process.env.SATORU_FETCH_TIMEOUT_MS || '') ||
+      (process.env.NODE_ENV === 'production' || process.env.VERCEL ? 30000 : 20000);
 
     private async fetch(url: string, headers: any = {}): Promise<string> {
         const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -21,7 +24,7 @@ class SatoruProvider extends AnimeParser {
                 'User-Agent': userAgent,
                 ...headers,
             },
-            timeout: 25000,
+            timeout: this.requestTimeoutMs,
             responseType: 'text',
         });
         return data;
@@ -220,7 +223,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     const isSatoruBlockedError = (err: any) => {
         const message = String(err?.message || err || '').toLowerCase();
-        return message.includes('status code 403') || message.includes('forbidden');
+        return (
+          message.includes('status code 403') ||
+          message.includes('forbidden') ||
+          message.includes('timed out') ||
+          message.includes('timeout') ||
+          message.includes('etimedout') ||
+          message.includes('aborted')
+        );
     };
 
     const normalizeAnimeIdForFallback = (id: string) => String(id || '').split(':')[0];

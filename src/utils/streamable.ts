@@ -84,11 +84,15 @@ const hasUsableStreamSources = (payload: unknown): boolean => {
 };
 
 const DEFAULT_SERVER_FALLBACKS: StreamingServers[] = [
-  StreamingServers.MegaCloud,
+  StreamingServers.VidStreaming,
   StreamingServers.VidCloud,
   StreamingServers.UpCloud,
-  StreamingServers.VidStreaming,
+  StreamingServers.MegaCloud,
 ];
+
+const IS_PRODUCTION =
+  process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 9000 : 15000;
 
 export const MOVIE_SERVER_FALLBACKS: StreamingServers[] = [
   StreamingServers.VidCloud,
@@ -96,11 +100,65 @@ export const MOVIE_SERVER_FALLBACKS: StreamingServers[] = [
   StreamingServers.MegaCloud,
 ];
 
+export type ServerFallbackOptions = {
+  attemptTimeoutMs?: number;
+};
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Provider attempt timed out after ${timeoutMs}ms`)), timeoutMs),
+    ),
+  ]);
+};
+
+const scoreSourceUrl = (source: unknown): number => {
+  if (!source || typeof source !== 'object') return -1000;
+  const entry = source as { url?: string; isEmbed?: boolean; isM3U8?: boolean; isDASH?: boolean };
+  const url = String(normalizeUrl(entry.url) || '').toLowerCase();
+  if (!url) return -1000;
+
+  let score = 0;
+  const isEmbed = Boolean(entry.isEmbed);
+  const isM3U8 = Boolean(entry.isM3U8) || url.includes('.m3u8');
+  const isDASH = Boolean(entry.isDASH) || url.includes('.mpd');
+  const isMp4 = url.includes('.mp4');
+
+  if (isEmbed) score -= 100;
+  if (isMp4) score += 90;
+  if (isM3U8) score += 70;
+  if (isDASH) score += 60;
+
+  if (url.includes('googlevideo') || url.includes('akamaized') || url.includes('cloudfront')) score += 20;
+  if (url.includes('megacloud') || url.includes('/embed')) score -= 25;
+
+  return score;
+};
+
+const hasDirectPlayableSource = (payload: unknown): boolean => {
+  if (!payload || typeof payload !== 'object') return false;
+  const record = payload as Record<string, unknown>;
+  if (!Array.isArray(record.sources)) return false;
+  return record.sources.some((source) => scoreSourceUrl(source) >= 60);
+};
+
+const sortSourcesByPlayability = <T>(payload: T): T => {
+  if (!payload || typeof payload !== 'object') return payload;
+  const record = payload as Record<string, unknown>;
+  if (!Array.isArray(record.sources)) return payload;
+  record.sources.sort((a, b) => scoreSourceUrl(b) - scoreSourceUrl(a));
+  return payload;
+};
+
 export const fetchWithServerFallback = async <T>(
   fetcher: (server?: StreamingServers) => Promise<T>,
   preferredServer?: StreamingServers,
   fallbackServers: StreamingServers[] = DEFAULT_SERVER_FALLBACKS,
+  options: ServerFallbackOptions = {},
 ): Promise<T> => {
+  const attemptTimeoutMs = Number(options.attemptTimeoutMs || DEFAULT_ATTEMPT_TIMEOUT_MS);
   const candidates: (StreamingServers | undefined)[] = [
     preferredServer,
     ...fallbackServers,
@@ -108,17 +166,29 @@ export const fetchWithServerFallback = async <T>(
 
   let lastError: unknown = undefined;
   let firstResponse: T | undefined = undefined;
+  let firstWithSources: T | undefined = undefined;
+  let bestDirectResponse: T | undefined = undefined;
 
   for (const server of candidates) {
     try {
-      const response = normalizeStreamLinks(await fetcher(server));
+      const response = sortSourcesByPlayability(
+        normalizeStreamLinks(await withTimeout(fetcher(server), attemptTimeoutMs)),
+      );
       if (typeof firstResponse === 'undefined') firstResponse = response;
-      if (hasUsableStreamSources(response)) return response;
+      if (hasUsableStreamSources(response) && typeof firstWithSources === 'undefined') {
+        firstWithSources = response;
+      }
+      if (hasDirectPlayableSource(response)) {
+        bestDirectResponse = response;
+        break;
+      }
     } catch (err) {
       lastError = err;
     }
   }
 
+  if (typeof bestDirectResponse !== 'undefined') return bestDirectResponse;
+  if (typeof firstWithSources !== 'undefined') return firstWithSources;
   if (typeof firstResponse !== 'undefined') return firstResponse;
   throw lastError ?? new Error('Failed to fetch stream sources.');
 };

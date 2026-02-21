@@ -13,6 +13,10 @@ import { configureProvider } from '../../utils/provider';
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const HIANIME_BASE_URLS = ['https://hianime.to', 'https://hianime.sx'];
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const WATCH_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 8000 : 12000;
+const EMBED_CHECK_TIMEOUT_MS = IS_PRODUCTION ? 8000 : 10000;
+const SERVER_HTML_TIMEOUT_MS = IS_PRODUCTION ? 9000 : 12000;
 
 const serverIdMap: Record<string, string> = {
   [StreamingServers.VidCloud]: '1',
@@ -67,7 +71,7 @@ const isEmbedAlive = async (embedLink: string, referer: string) => {
         'User-Agent': UA,
         Referer: referer,
       },
-      timeout: 10000,
+      timeout: EMBED_CHECK_TIMEOUT_MS,
       validateStatus: (status) => status >= 200 && status < 500,
     });
 
@@ -203,7 +207,7 @@ const getEpisodeOrdinalFromServersHtml = async (baseUrl: string, episodeId: stri
         Referer: referer,
         'X-Requested-With': 'XMLHttpRequest',
       },
-      timeout: 12000,
+      timeout: SERVER_HTML_TIMEOUT_MS,
     });
     const html = String(res?.data?.html || '');
     const m = html.match(/Episode\s*<\/b>\s*<\/strong>|Episode\s*<b>\s*(\d+)/i) || html.match(/Episode\s+(\d+)/i);
@@ -351,6 +355,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     SubOrSub.SUB,
                   ),
                 server,
+                undefined,
+                { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
               ),
               fetchWithServerFallback(
                 async (selectedServer) =>
@@ -360,6 +366,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     SubOrSub.DUB,
                   ),
                 server,
+                undefined,
+                { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
               ),
             ]);
 
@@ -428,6 +436,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     category as SubOrSub,
                   ),
                 server,
+                undefined,
+                { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
               );
               if (hasSources(primary)) return primary;
             } catch (_) {

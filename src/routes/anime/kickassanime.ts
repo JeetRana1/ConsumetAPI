@@ -8,6 +8,9 @@ import { Redis } from 'ioredis';
 import { fetchWithServerFallback } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const WATCH_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 8000 : 12000;
+
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const kickassanime = configureProvider(new ANIME.KickAssAnime());
   (kickassanime as any).baseUrl = 'https://kaa.lt';
@@ -64,6 +67,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 async (selectedServer) =>
                   await kickassanime.fetchEpisodeSources(episodeId, selectedServer),
                 server,
+                undefined,
+                { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
               ),
             REDIS_TTL,
           )
@@ -71,6 +76,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             async (selectedServer) =>
               await kickassanime.fetchEpisodeSources(episodeId, selectedServer),
             server,
+            undefined,
+            { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
           );
 
         reply.status(200).send(res);

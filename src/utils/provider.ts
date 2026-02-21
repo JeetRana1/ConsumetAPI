@@ -1,6 +1,7 @@
 type ProviderWithClient = {
   client?: {
     defaults?: {
+      timeout?: number;
       headers?: {
         common?: Record<string, string>;
       };
@@ -50,9 +51,23 @@ const applyProxyConfig = (provider: ProviderWithClient) => {
   provider.proxyConfig = { url: proxy };
 };
 
+const applyTimeoutConfig = (provider: ProviderWithClient) => {
+  const defaults = provider.client?.defaults;
+  if (!defaults) return;
+
+  const isProduction = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+  const envTimeout = Number(process.env.PROVIDER_FETCH_TIMEOUT_MS || '');
+  const timeoutMs = Number.isFinite(envTimeout) && envTimeout > 0
+    ? envTimeout
+    : (isProduction ? 30000 : 20000);
+
+  defaults.timeout = timeoutMs;
+};
+
 export const configureProvider = <T>(provider: T): T => {
   const target = provider as unknown as ProviderWithClient;
   applyBrowserHeaders(target);
   applyProxyConfig(target);
+  applyTimeoutConfig(target);
   return provider;
 };

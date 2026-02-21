@@ -33,6 +33,9 @@ const resolveMovieProvider = (provider?: string) => {
   }
 };
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const MOVIE_WATCH_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 12000 : 20000;
+
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -157,6 +160,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         async (selectedServer) => await tmdb.fetchEpisodeSources(sourceId, mediaId, selectedServer),
         server,
         MOVIE_SERVER_FALLBACKS,
+        { attemptTimeoutMs: MOVIE_WATCH_ATTEMPT_TIMEOUT_MS },
       );
 
       reply.status(200).send(res);
