@@ -1,5 +1,7 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { AnimeParser, ISearch, IAnimeResult, IAnimeInfo, IEpisodeServer, ISource, MediaFormat, MediaStatus } from '@consumet/extensions/dist/models';
+import { ANIME } from '@consumet/extensions';
+import { StreamingServers, SubOrSub } from '@consumet/extensions/dist/models';
 import { load } from 'cheerio';
 import Redis from 'ioredis/built';
 import cache from '../../utils/cache';
@@ -214,6 +216,14 @@ class SatoruProvider extends AnimeParser {
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const satoru = configureProvider(new SatoruProvider());
+    const hianimeFallback = configureProvider(new ANIME.Hianime());
+
+    const isSatoruBlockedError = (err: any) => {
+        const message = String(err?.message || err || '').toLowerCase();
+        return message.includes('status code 403') || message.includes('forbidden');
+    };
+
+    const normalizeAnimeIdForFallback = (id: string) => String(id || '').split(':')[0];
 
     fastify.get('/', (_, rp) => {
         rp.status(200).send({
@@ -239,6 +249,16 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
             reply.status(200).send(res);
         } catch (err) {
+            if (isSatoruBlockedError(err)) {
+                try {
+                    const fallback = await hianimeFallback.search(query, page);
+                    return reply.status(200).send(fallback);
+                } catch (fallbackErr) {
+                    return reply.status(500).send({
+                        message: (fallbackErr as Error).message,
+                    });
+                }
+            }
             reply.status(500).send({
                 message: (err as Error).message,
             });
@@ -260,6 +280,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
             reply.status(200).send(res);
         } catch (err) {
+            if (isSatoruBlockedError(err)) {
+                try {
+                    const fallback = await hianimeFallback.fetchAnimeInfo(normalizeAnimeIdForFallback(id));
+                    return reply.status(200).send(fallback);
+                } catch (fallbackErr) {
+                    return reply.status(500).send({ message: (fallbackErr as Error).message });
+                }
+            }
             reply
                 .status(500)
                 .send({ message: (err as Error).message });
@@ -284,6 +312,18 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
                 reply.status(200).send(res);
             } catch (err) {
+                if (isSatoruBlockedError(err)) {
+                    try {
+                        const fallback = await hianimeFallback.fetchEpisodeSources(
+                            episodeId,
+                            StreamingServers.VidCloud,
+                            SubOrSub.BOTH,
+                        );
+                        return reply.status(200).send(fallback);
+                    } catch (fallbackErr) {
+                        return reply.status(500).send({ message: (fallbackErr as Error).message });
+                    }
+                }
                 reply
                     .status(500)
                     .send({ message: (err as Error).message });
@@ -308,6 +348,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
                 reply.status(200).send(res);
             } catch (err) {
+                if (isSatoruBlockedError(err)) {
+                    return reply.status(200).send([
+                        { name: 'VidCloud (fallback)', url: 'vidcloud' },
+                        { name: 'VidStreaming (fallback)', url: 'vidstreaming' },
+                    ]);
+                }
                 reply
                     .status(500)
                     .send({ message: (err as Error).message });
