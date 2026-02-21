@@ -4,37 +4,17 @@ import { ANIME } from '@consumet/extensions';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const animepahe = new ANIME.AnimePahe();
+  const animepahe = configureProvider(new ANIME.AnimePahe());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
       intro: `Welcome to the animepahe provider: check out the provider's website @ ${animepahe.toString.baseUrl}`,
-      routes: ['/:query', '/info/:id', '/watch/:episodeId', '/recent-episodes'],
+      routes: ['/info/:id', '/watch/:episodeId', '/recent-episodes', '/:query'],
       documentation: 'https://docs.consumet.org/#tag/animepahe',
     });
-  });
-
-  fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
-    const query = (request.params as { query: string }).query;
-
-    try {
-      let res = redis
-        ? await cache.fetch(
-            redis as Redis,
-            `animepahe:search:${query}`,
-            async () => await animepahe.search(query),
-            REDIS_TTL,
-          )
-        : await animepahe.search(query);
-
-      reply.status(200).send(res);
-    } catch (err) {
-      reply.status(500).send({
-        message: 'Something went wrong. Contact developer for help.',
-      });
-    }
   });
 
   fastify.get(
@@ -44,11 +24,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       try {
         let res = redis
           ? await cache.fetch(
-              redis as Redis,
-              `animepahe:recent-episodes:${page}`,
-              async () => await animepahe.fetchRecentEpisodes(page),
-              REDIS_TTL,
-            )
+            redis as Redis,
+            `animepahe:recent-episodes:${page}`,
+            async () => await animepahe.fetchRecentEpisodes(page),
+            REDIS_TTL,
+          )
           : await animepahe.fetchRecentEpisodes(page);
 
         reply.status(200).send(res);
@@ -67,11 +47,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `animepahe:info:${id}:${episodePage}`,
-            async () => await animepahe.fetchAnimeInfo(id, episodePage),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `animepahe:info:${id}:${episodePage}`,
+          async () => await animepahe.fetchAnimeInfo(id, episodePage),
+          REDIS_TTL,
+        )
         : await animepahe.fetchAnimeInfo(id, episodePage);
 
       reply.status(200).send(res);
@@ -91,11 +71,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `animepahe:watch:${episodeId}`,
-            async () => await animepahe.fetchEpisodeSources(episodeId),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `animepahe:watch:${episodeId}`,
+          async () => await animepahe.fetchEpisodeSources(episodeId),
+          REDIS_TTL,
+        )
         : await animepahe.fetchEpisodeSources(episodeId);
 
       reply.status(200).send(res);
@@ -104,6 +84,27 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       reply
         .status(500)
         .send({ message: 'Something went wrong. Contact developer for help.' });
+    }
+  });
+
+  fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = (request.params as { query: string }).query;
+
+    try {
+      let res = redis
+        ? await cache.fetch(
+          redis as Redis,
+          `animepahe:search:${query}`,
+          async () => await animepahe.search(query),
+          REDIS_TTL,
+        )
+        : await animepahe.search(query);
+
+      reply.status(200).send(res);
+    } catch (err) {
+      reply.status(500).send({
+        message: 'Something went wrong. Contact developer for help.',
+      });
     }
   });
 };

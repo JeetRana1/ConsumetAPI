@@ -5,9 +5,11 @@ import { StreamingServers } from '@consumet/extensions/dist/models';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const sflix = new MOVIES.SFlix();
+  const sflix = configureProvider(new MOVIES.SFlix());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -151,16 +153,26 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         ? await cache.fetch(
             redis as Redis,
             `sflix:watch:${episodeId}:${mediaId}:${server}`,
-            async () => await sflix.fetchEpisodeSources(episodeId, mediaId, server),
+            async () =>
+              await fetchWithServerFallback(
+                async (selectedServer) =>
+                  await sflix.fetchEpisodeSources(episodeId, mediaId, selectedServer),
+                server,
+                MOVIE_SERVER_FALLBACKS,
+              ),
             REDIS_TTL,
           )
-        : await sflix.fetchEpisodeSources(episodeId, mediaId, server);
+        : await fetchWithServerFallback(
+            async (selectedServer) =>
+              await sflix.fetchEpisodeSources(episodeId, mediaId, selectedServer),
+            server,
+            MOVIE_SERVER_FALLBACKS,
+          );
 
       reply.status(200).send(res);
-    } catch (err) {
-      reply
-        .status(500)
-        .send({ message: 'Something went wrong. Please try again later.' });
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : String(err);
+      reply.status(404).send({ message });
     }
   });
 

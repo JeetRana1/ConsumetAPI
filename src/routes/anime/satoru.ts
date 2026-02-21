@@ -201,11 +201,18 @@ class SatoruProvider extends AnimeParser {
             }
         }
 
-        return {
+        const result: any = {
             headers: { Referer: this.baseUrl },
             sources: sources,
             embedURL: embedURL,
         };
+        // Pass through upstream skip timing metadata when available.
+        if (data?.intro) result.intro = data.intro;
+        if (data?.outro) result.outro = data.outro;
+        if (data?.skip) result.skip = data.skip;
+        if (data?.skips) result.skips = data.skips;
+        if (data?.timestamps) result.timestamps = data.timestamps;
+        return result as ISource;
     }
 }
 

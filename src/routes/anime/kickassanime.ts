@@ -5,9 +5,12 @@ import { StreamingServers } from '@consumet/extensions/dist/models';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import { fetchWithServerFallback } from '../../utils/streamable';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const kickassanime = new ANIME.KickAssAnime();
+  const kickassanime = configureProvider(new ANIME.KickAssAnime());
+  (kickassanime as any).baseUrl = 'https://kaa.lt';
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -17,27 +20,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     });
   });
 
-  fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
-    const query = (request.params as { query: string }).query;
-    const page = (request.query as { page: number }).page;
-
-    try {
-      let res = redis
-        ? await cache.fetch(
-            redis as Redis,
-            `kickassanime:search:${query}:${page}`,
-            async () => await kickassanime.search(query, page),
-            REDIS_TTL,
-          )
-        : await kickassanime.search(query, page);
-
-      reply.status(200).send(res);
-    } catch (err) {
-      reply
-        .status(500)
-        .send({ message: 'Something went wrong. Contact developer for help.' });
-    }
-  });
 
   fastify.get('/info', async (request: FastifyRequest, reply: FastifyReply) => {
     const id = (request.query as { id: string }).id;
@@ -48,11 +30,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `kickassanime:info:${id}`,
-            async () => await kickassanime.fetchAnimeInfo(id),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `kickassanime:info:${id}`,
+          async () => await kickassanime.fetchAnimeInfo(id),
+          REDIS_TTL,
+        )
         : await kickassanime.fetchAnimeInfo(id);
 
       reply.status(200).send(res);
@@ -75,12 +57,21 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       try {
         let res = redis
           ? await cache.fetch(
-              redis as Redis,
-              `kickassanime:watch:${episodeId}:${server}`,
-              async () => await kickassanime.fetchEpisodeSources(episodeId, server),
-              REDIS_TTL,
-            )
-          : await kickassanime.fetchEpisodeSources(episodeId, server);
+            redis as Redis,
+            `kickassanime:watch:${episodeId}:${server}`,
+            async () =>
+              await fetchWithServerFallback(
+                async (selectedServer) =>
+                  await kickassanime.fetchEpisodeSources(episodeId, selectedServer),
+                server,
+              ),
+            REDIS_TTL,
+          )
+          : await fetchWithServerFallback(
+            async (selectedServer) =>
+              await kickassanime.fetchEpisodeSources(episodeId, selectedServer),
+            server,
+          );
 
         reply.status(200).send(res);
       } catch (err) {
@@ -102,11 +93,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       try {
         let res = redis
           ? await cache.fetch(
-              redis as Redis,
-              `kickassanime:servers:${episodeId}`,
-              async () => await kickassanime.fetchEpisodeServers(episodeId),
-              REDIS_TTL,
-            )
+            redis as Redis,
+            `kickassanime:servers:${episodeId}`,
+            async () => await kickassanime.fetchEpisodeServers(episodeId),
+            REDIS_TTL,
+          )
           : await kickassanime.fetchEpisodeServers(episodeId);
 
         reply.status(200).send(res);
@@ -117,6 +108,27 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     },
   );
+  fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = (request.params as { query: string }).query;
+    const page = (request.query as { page: number }).page;
+
+    try {
+      let res = redis
+        ? await cache.fetch(
+          redis as Redis,
+          `kickassanime:search:${query}:${page}`,
+          async () => await kickassanime.search(query, page),
+          REDIS_TTL,
+        )
+        : await kickassanime.search(query, page);
+
+      reply.status(200).send(res);
+    } catch (err) {
+      reply
+        .status(500)
+        .send({ message: 'Something went wrong. Contact developer for help.', error: (err as any).message });
+    }
+  });
 };
 
 export default routes;

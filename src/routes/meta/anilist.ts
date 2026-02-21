@@ -9,6 +9,8 @@ import cache from '../../utils/cache';
 import { redis } from '../../main';
 import Hianime from '@consumet/extensions/dist/providers/anime/hianime';
 import Providers from '../../utils/providers';
+import { fetchWithServerFallback } from '../../utils/streamable';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/', (_, rp) => {
@@ -334,26 +336,34 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                   redis,
                   `anilist:watch;${episodeId};${anilist.provider.name.toLowerCase()};${server};${isDub ? 'dub' : 'sub'}`,
                   async () =>
-                    provider === 'zoro' || provider === 'animekai'
-                      ? await anilist.fetchEpisodeSources(
-                          episodeId,
-                          server,
-                          isDub ? SubOrSub.DUB : SubOrSub.SUB,
-                        )
-                      : await anilist.fetchEpisodeSources(episodeId, server),
+                    await fetchWithServerFallback(
+                      async (selectedServer) =>
+                        provider === 'zoro' || provider === 'animekai'
+                          ? await anilist.fetchEpisodeSources(
+                              episodeId,
+                              selectedServer,
+                              isDub ? SubOrSub.DUB : SubOrSub.SUB,
+                            )
+                          : await anilist.fetchEpisodeSources(episodeId, selectedServer),
+                      server,
+                    ),
                   600,
                 ),
               )
           : reply
               .status(200)
               .send(
-                provider === 'zoro' || provider === 'animekai'
-                  ? await anilist.fetchEpisodeSources(
-                      episodeId,
-                      server,
-                      isDub ? SubOrSub.DUB : SubOrSub.SUB,
-                    )
-                  : await anilist.fetchEpisodeSources(episodeId, server),
+                await fetchWithServerFallback(
+                  async (selectedServer) =>
+                    provider === 'zoro' || provider === 'animekai'
+                      ? await anilist.fetchEpisodeSources(
+                          episodeId,
+                          selectedServer,
+                          isDub ? SubOrSub.DUB : SubOrSub.SUB,
+                        )
+                      : await anilist.fetchEpisodeSources(episodeId, selectedServer),
+                  server,
+                ),
               );
 
         anilist = new META.Anilist(undefined, {
@@ -409,7 +419,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 };
 
 const generateAnilistMeta = (provider: string | undefined = undefined): Anilist => {
-  return new Anilist(new Hianime(), {
+  return new Anilist(configureProvider(new Hianime()), {
     url: process.env.PROXY as string | string[],
   });
 };

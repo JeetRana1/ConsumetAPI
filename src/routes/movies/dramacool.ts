@@ -5,9 +5,11 @@ import { StreamingServers } from '@consumet/extensions/dist/models';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const dramacool = new MOVIES.DramaCool();
+  const dramacool = configureProvider(new MOVIES.DramaCool());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -86,16 +88,26 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         ? await cache.fetch(
             redis as Redis,
             `dramacool:watch:${episodeId}:${server}`,
-            async () => await dramacool.fetchEpisodeSources(episodeId, server),
+            async () =>
+              await fetchWithServerFallback(
+                async (selectedServer) =>
+                  await dramacool.fetchEpisodeSources(episodeId, selectedServer),
+                server,
+                MOVIE_SERVER_FALLBACKS,
+              ),
             REDIS_TTL,
           )
-        : await dramacool.fetchEpisodeSources(episodeId, server);
+        : await fetchWithServerFallback(
+            async (selectedServer) =>
+              await dramacool.fetchEpisodeSources(episodeId, selectedServer),
+            server,
+            MOVIE_SERVER_FALLBACKS,
+          );
 
       reply.status(200).send(res);
-    } catch (err) {
-      reply
-        .status(500)
-        .send({ message: 'Something went wrong. Please try again later.' });
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : String(err);
+      reply.status(404).send({ message });
     }
   });
 

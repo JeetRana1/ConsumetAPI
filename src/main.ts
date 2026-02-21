@@ -14,6 +14,7 @@ import meta from './routes/meta';
 import news from './routes/news';
 import chalk from 'chalk';
 import Utils from './utils';
+import { normalizeStreamLinks } from './utils/streamable';
 
 export const redis =
   process.env.REDIS_HOST &&
@@ -37,6 +38,10 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   await fastify.register(FastifyCors, {
     origin: '*',
     methods: 'GET',
+  });
+
+  fastify.addHook('preSerialization', async (_request, _reply, payload) => {
+    return normalizeStreamLinks(payload);
   });
 
   if (process.env.NODE_ENV === 'DEMO') {

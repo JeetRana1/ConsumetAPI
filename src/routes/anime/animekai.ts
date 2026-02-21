@@ -5,9 +5,11 @@ import { StreamingServers, SubOrSub } from '@consumet/extensions/dist/models';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import { fetchWithServerFallback } from '../../utils/streamable';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const animekai = new ANIME.AnimeKai();
+  const animekai = configureProvider(new ANIME.AnimeKai());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -255,17 +257,25 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               redis as Redis,
               `animekai:watch:${episodeId}:${server}:${dub}`,
               async () =>
-                await animekai.fetchEpisodeSources(
-                  episodeId,
+                await fetchWithServerFallback(
+                  async (selectedServer) =>
+                    await animekai.fetchEpisodeSources(
+                      episodeId,
+                      selectedServer,
+                      dub === true ? SubOrSub.DUB : SubOrSub.SUB,
+                    ),
                   server,
-                  dub === true ? SubOrSub.DUB : SubOrSub.SUB,
                 ),
               REDIS_TTL,
             )
-          : await animekai.fetchEpisodeSources(
-              episodeId,
+          : await fetchWithServerFallback(
+              async (selectedServer) =>
+                await animekai.fetchEpisodeSources(
+                  episodeId,
+                  selectedServer,
+                  dub === true ? SubOrSub.DUB : SubOrSub.SUB,
+                ),
               server,
-              dub === true ? SubOrSub.DUB : SubOrSub.SUB,
             );
 
         reply.status(200).send(res);

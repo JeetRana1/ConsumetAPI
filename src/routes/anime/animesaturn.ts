@@ -3,9 +3,10 @@ import { ANIME } from '@consumet/extensions';
 import Redis from 'ioredis/built';
 import { redis, REDIS_TTL } from '../../main';
 import cache from '../../utils/cache';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const animesaturn = new ANIME.AnimeSaturn();
+  const animesaturn = configureProvider(new ANIME.AnimeSaturn());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({

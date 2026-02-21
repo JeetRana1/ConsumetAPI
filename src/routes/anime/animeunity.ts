@@ -4,9 +4,10 @@ import { ANIME } from '@consumet/extensions';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import { configureProvider } from '../../utils/provider';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const animeunity = new ANIME.AnimeUnity();
+  const animeunity = configureProvider(new ANIME.AnimeUnity());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
