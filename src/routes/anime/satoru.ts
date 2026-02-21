@@ -5,10 +5,6 @@ import Redis from 'ioredis/built';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { configureProvider } from '../../utils/provider';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execPromise = promisify(exec);
 
 class SatoruProvider extends AnimeParser {
     name = 'Satoru';
@@ -18,15 +14,15 @@ class SatoruProvider extends AnimeParser {
 
     private async fetch(url: string, headers: any = {}): Promise<string> {
         const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-        let command = `curl.exe -s -L -H "User-Agent: ${userAgent}"`;
-        for (const [key, value] of Object.entries(headers)) {
-            if (key.toLowerCase() !== 'user-agent') {
-                command += ` -H "${key}: ${value}"`;
-            }
-        }
-        command += ` "${url}"`;
-        const { stdout } = await execPromise(command, { maxBuffer: 1024 * 1024 * 50 });
-        return stdout;
+        const { data } = await this.client.get<string>(url, {
+            headers: {
+                'User-Agent': userAgent,
+                ...headers,
+            },
+            timeout: 25000,
+            responseType: 'text',
+        });
+        return data;
     }
 
     async search(query: string, page: number = 1): Promise<ISearch<IAnimeResult>> {
