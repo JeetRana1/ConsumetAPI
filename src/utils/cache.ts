@@ -1,10 +1,16 @@
 import { Redis } from 'ioredis';
 
 const fetch = async <T>(redis: Redis, key: string, fetcher: () => T, expires: number) => {
-  const existing = await get<T>(redis, key);
-  if (existing !== null) return existing;
+  try {
+    const existing = await get<T>(redis, key);
+    if (existing !== null) return existing;
 
-  return set(redis, key, fetcher, expires);
+    return set(redis, key, fetcher, expires);
+  } catch (err: any) {
+    // Fail-open cache: never break API responses because Redis is unavailable.
+    console.warn(`[cache] bypassing redis for ${key}: ${err?.message || err}`);
+    return await fetcher();
+  }
 };
 
 const get = async <T>(redis: Redis, key: string): Promise<T> => {

@@ -22,6 +22,10 @@ export const redis =
     host: process.env.REDIS_HOST,
     port: Number(process.env.REDIS_PORT),
     password: process.env.REDIS_PASSWORD,
+    lazyConnect: true,
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
   });
 
 // Sets default TTL to 1 hour (3600 seconds) if not provided in .env
