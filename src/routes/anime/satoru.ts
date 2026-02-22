@@ -20,7 +20,13 @@ class SatoruProvider extends AnimeParser {
     classPath = 'ANIME.Satoru';
     private readonly requestTimeoutMs =
       Number(process.env.SATORU_FETCH_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 15000 : 10000);
+      (process.env.NODE_ENV === 'production' ? 7000 : 10000);
+    private readonly proxyRequestTimeoutMs =
+      Number(process.env.SATORU_PROXY_TIMEOUT_MS || '') ||
+      (process.env.NODE_ENV === 'production' ? 3500 : 5000);
+    private readonly maxProxyAttempts =
+      Number(process.env.SATORU_PROXY_MAX_ATTEMPTS || '') ||
+      (process.env.NODE_ENV === 'production' ? 2 : 3);
     private readonly preferWindowsCurl =
       process.platform === 'win32' && !['1', 'true', 'yes'].includes(String(process.env.SATORU_DISABLE_CURL || '').toLowerCase());
     private readonly satoruCookieHeader = (() => {
@@ -61,15 +67,20 @@ class SatoruProvider extends AnimeParser {
         }
 
         const proxyCandidates = await getProxyCandidates();
-        const chain = [undefined, ...proxyCandidates];
+        const chain = [
+            undefined,
+            ...proxyCandidates.slice(0, Math.max(0, this.maxProxyAttempts)),
+        ];
         let lastErr: unknown;
 
-        for (const proxyUrl of chain) {
+        for (let i = 0; i < chain.length; i += 1) {
+            const proxyUrl = chain[i];
             try {
                 const proxyOptions = toAxiosProxyOptions(proxyUrl);
                 const { data } = await this.client.get<string>(url, {
                     headers: mergedHeaders,
-                    timeout: this.requestTimeoutMs,
+                    // Direct attempt gets slightly longer timeout; proxy attempts are short.
+                    timeout: i === 0 ? this.requestTimeoutMs : this.proxyRequestTimeoutMs,
                     responseType: 'text',
                     ...(proxyOptions as any),
                 });
