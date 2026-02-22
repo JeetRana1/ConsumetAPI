@@ -7,6 +7,7 @@ import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
+import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const flixhq = configureProvider(new MOVIES.FlixHQ());
@@ -171,6 +172,19 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       reply.status(200).send(res);
     } catch (err: any) {
+      try {
+        const fallback = await getMovieEmbedFallbackSource(
+          flixhq as any,
+          episodeId,
+          mediaId,
+          server,
+        );
+
+        if (fallback) return reply.status(200).send(fallback);
+      } catch {
+        // Ignore fallback errors and return the original extraction error below.
+      }
+
       const message = err instanceof Error ? err.message : String(err);
       reply.status(404).send({ message });
     }
@@ -252,3 +266,5 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   });
 };
 export default routes;
+
+

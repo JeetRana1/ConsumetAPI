@@ -95,6 +95,7 @@ const IS_PRODUCTION =
 const DEFAULT_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 9000 : 15000;
 
 export const MOVIE_SERVER_FALLBACKS: StreamingServers[] = [
+  StreamingServers.VidStreaming,
   StreamingServers.VidCloud,
   StreamingServers.UpCloud,
   StreamingServers.MegaCloud,
@@ -102,6 +103,7 @@ export const MOVIE_SERVER_FALLBACKS: StreamingServers[] = [
 
 export type ServerFallbackOptions = {
   attemptTimeoutMs?: number;
+  requireDirectPlayable?: boolean;
 };
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
@@ -127,6 +129,8 @@ const scoreSourceUrl = (source: unknown): number => {
   const isMp4 = url.includes('.mp4');
 
   if (isEmbed) score -= 100;
+  if (url.includes('kaa.lt/intro.mp4') || url.endsWith('/intro.mp4')) score -= 250;
+  if (url.includes('/trailer') || url.includes('/preview')) score -= 180;
   if (isMp4) score += 90;
   if (isM3U8) score += 70;
   if (isDASH) score += 60;
@@ -137,7 +141,7 @@ const scoreSourceUrl = (source: unknown): number => {
   return score;
 };
 
-const hasDirectPlayableSource = (payload: unknown): boolean => {
+export const hasDirectPlayableSource = (payload: unknown): boolean => {
   if (!payload || typeof payload !== 'object') return false;
   const record = payload as Record<string, unknown>;
   if (!Array.isArray(record.sources)) return false;
@@ -159,6 +163,7 @@ export const fetchWithServerFallback = async <T>(
   options: ServerFallbackOptions = {},
 ): Promise<T> => {
   const attemptTimeoutMs = Number(options.attemptTimeoutMs || DEFAULT_ATTEMPT_TIMEOUT_MS);
+  const requireDirectPlayable = Boolean(options.requireDirectPlayable);
   const candidates: (StreamingServers | undefined)[] = [
     preferredServer,
     ...fallbackServers,
@@ -188,6 +193,9 @@ export const fetchWithServerFallback = async <T>(
   }
 
   if (typeof bestDirectResponse !== 'undefined') return bestDirectResponse;
+  if (requireDirectPlayable) {
+    throw lastError ?? new Error('No direct playable stream found (embed-only sources were skipped).');
+  }
   if (typeof firstWithSources !== 'undefined') return firstWithSources;
   if (typeof firstResponse !== 'undefined') return firstResponse;
   throw lastError ?? new Error('Failed to fetch stream sources.');
