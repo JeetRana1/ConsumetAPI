@@ -434,6 +434,17 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     // Check if it's an anime provider - redirect to anime route
     const providerLower = provider?.toLowerCase();
     if (providerLower && ANIME_PROVIDER_ROUTES[providerLower]) {
+      // Satoru episode ids are often HiAnime-style ids (slug$episode$nnn).
+      // On serverless, routing those through /anime/hianime/watch is more reliable
+      // than the Satoru origin and avoids upstream timeout stalls.
+      const isHiAnimeStyleEpisode = String(episodeId || '').includes('$episode$');
+      if (providerLower === 'satoru' && isHiAnimeStyleEpisode) {
+        const queryParts: string[] = ['category=both', 'server=vidstreaming'];
+        const queryString = `?${queryParts.join('&')}`;
+        const redirectUrl = `/anime/hianime/watch/${episodeId}${queryString}`;
+        return reply.redirect(redirectUrl);
+      }
+
       const animeBaseUrl = ANIME_PROVIDER_ROUTES[providerLower];
       const queryParts: string[] = [];
       if (server) queryParts.push(`server=${encodeURIComponent(server)}`);

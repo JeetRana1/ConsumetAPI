@@ -11,6 +11,20 @@ import { configureProvider } from '../../utils/provider';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const WATCH_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 8000 : 12000;
 
+const sanitizeKickassSources = (payload: any) => {
+  if (!payload || !Array.isArray(payload.sources)) return payload;
+  const cleaned = payload.sources.filter((src: any) => {
+    const url = String(src?.url || '').trim().toLowerCase();
+    if (!url) return false;
+    if (Boolean(src?.isEmbed)) return false;
+    if (url.includes('kaa.lt/intro.mp4') || url.endsWith('/intro.mp4')) return false;
+    // DASH links from this provider frequently fail with 403 on segment fetch.
+    if (url.includes('.mpd')) return false;
+    return true;
+  });
+  return { ...payload, sources: cleaned.length ? cleaned : payload.sources };
+};
+
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const kickassanime = configureProvider(new ANIME.KickAssAnime());
   (kickassanime as any).baseUrl = 'https://kaa.lt';
@@ -80,7 +94,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
           );
 
-        reply.status(200).send(res);
+        reply.status(200).send(sanitizeKickassSources(res));
       } catch (err) {
         reply
           .status(500)
