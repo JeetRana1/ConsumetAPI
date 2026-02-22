@@ -6,9 +6,11 @@ import dramacool from './dramacool';
 import goku from './goku';
 import sflix from './sflix';
 import himovies from './himovies';
+import netmirror from './netmirror';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(flixhq, { prefix: '/flixhq' });
+  await fastify.register(netmirror, { prefix: '/netmirror' });
   await fastify.register(dramacool, { prefix: '/dramacool' });
   await fastify.register(goku, { prefix: '/goku' });
   await fastify.register(sflix, { prefix: '/sflix' });
@@ -31,6 +33,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     queries.page = (request.query as { movieProvider: string; page: number }).page;
 
     if (queries.page! < 1) queries.page = 1;
+
+    if (queries.movieProvider.toLowerCase() === 'netmirror') {
+      return reply.redirect('/movies/netmirror');
+    }
 
     const provider = PROVIDERS_LIST.MOVIES.find(
       (provider: any) => provider.toString.name === queries.movieProvider,

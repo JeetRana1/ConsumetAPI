@@ -74,9 +74,13 @@ export const getMovieEmbedFallbackSource = async (
 
   const streamUrl = await resolveServerStreamUrl(provider, selected);
   if (!streamUrl) return undefined;
+  const referer =
+    typeof selected?.url === 'string' && selected.url.startsWith('http')
+      ? selected.url
+      : streamUrl;
 
   return {
-    headers: { Referer: streamUrl },
+    headers: { Referer: referer },
     sources: [
       {
         url: streamUrl,

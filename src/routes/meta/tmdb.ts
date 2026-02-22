@@ -5,6 +5,8 @@ import { load } from 'cheerio';
 import { tmdbApi } from '../../main';
 import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
+import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
+import { promoteEmbedSourcesToDirect } from '../../utils/embedToDirect';
 
 // Map of anime providers that have direct routes in this API
 const ANIME_PROVIDER_ROUTES: Record<string, string> = {
@@ -20,8 +22,8 @@ const resolveMovieProvider = (provider?: string) => {
   if (!provider) return undefined;
   switch (provider.toLowerCase()) {
     case 'netmirror':
-      // Legacy alias used by the player; map to FlixHQ extractor pipeline.
-      return configureProvider(new MOVIES.FlixHQ());
+      // Standalone netmirror pipeline (separate from flixhq route aliasing).
+      return configureProvider(new MOVIES.SFlix());
     case 'flixhq':
       return configureProvider(new MOVIES.FlixHQ());
     case 'goku':
@@ -488,29 +490,32 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     }
 
     // Movie/TV providers
-    let tmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+    let movieProvider: any = configureProvider(new MOVIES.FlixHQ());
+    let tmdb = new META.TMDB(tmdbApi, movieProvider);
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
       if (selectedProvider) {
+        movieProvider = selectedProvider as any;
         tmdb = new META.TMDB(tmdbApi, selectedProvider);
       } else {
         const possibleProvider = PROVIDERS_LIST.MOVIES.find(
           (p) => p.name.toLowerCase() === provider.toLocaleLowerCase(),
         );
+        movieProvider = (possibleProvider as any) || movieProvider;
         tmdb = new META.TMDB(tmdbApi, possibleProvider);
       }
     }
+    let sourceId = '';
+    let mediaId = '';
     try {
       // For movies, the id parameter contains the provider's media ID (e.g., "movie/watch-marty-supreme-139738")
       // We need to use this as the first parameter, not the TMDB episodeId
       // For TV shows, episodeId is the actual episode ID from the provider
-      let sourceId: string;
-      let mediaId: string;
-      
+
       if (type === 'movie' && id) {
-        // For movies, extract the media ID from the id parameter
-        // id format: "movie/watch-marty-supreme-139738" -> we need "watch-marty-supreme-139738"
-        sourceId = id.replace(/^movie\//, '');
+        // For movies, episodeId is the provider source ID in TMDB responses.
+        // Fall back to slug extraction only when episodeId is missing.
+        sourceId = String(episodeId || '').trim() || id.replace(/^movie\//, '');
         mediaId = id;
       } else {
         // For TV shows, use episodeId as sourceId and id as mediaId
@@ -533,8 +538,35 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         },
       );
 
-      reply.status(200).send(res);
+      const responsePayload =
+        String(provider || '').toLowerCase() === 'netmirror'
+          ? await promoteEmbedSourcesToDirect(movieProvider, res as any, server)
+          : res;
+
+      reply.status(200).send(responsePayload);
     } catch (err: any) {
+      if (type === 'movie' && sourceId) {
+        try {
+          const fallback = await getMovieEmbedFallbackSource(
+            movieProvider,
+            sourceId,
+            mediaId,
+            server,
+          );
+
+          if (fallback) {
+            const responsePayload =
+              String(provider || '').toLowerCase() === 'netmirror'
+                ? await promoteEmbedSourcesToDirect(movieProvider, fallback as any, server)
+                : fallback;
+
+            return reply.status(200).send(responsePayload);
+          }
+        } catch {
+          // Ignore fallback errors and return the extraction error below.
+        }
+      }
+
       const message = err instanceof Error ? err.message : String(err);
       reply.status(404).send({ message });
     }

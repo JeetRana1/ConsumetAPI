@@ -1,5 +1,6 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
 import { MegaCloud, RapidCloud, VidCloud } from '@consumet/extensions/dist/extractors';
+import { getProxyCandidates } from './outboundProxy';
 
 type ProviderWithClient = {
   client?: {
@@ -20,21 +21,9 @@ type ProviderWithClient = {
 };
 
 const parseProxyEnv = (): string | string[] | undefined => {
-  const raw = process.env.PROXY?.trim();
-  if (!raw) return undefined;
-
-  if (raw.startsWith('[')) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
-        return parsed;
-      }
-    } catch {
-      return undefined;
-    }
-  }
-
-  return raw;
+  const list = getProxyCandidates();
+  if (!list.length) return undefined;
+  return list.length === 1 ? list[0] : list;
 };
 
 const applyBrowserHeaders = (provider: ProviderWithClient) => {

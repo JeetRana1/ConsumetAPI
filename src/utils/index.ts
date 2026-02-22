@@ -1,5 +1,6 @@
 import { FastifyInstance, RegisterOptions } from 'fastify';
 import axios from 'axios';
+import { getProxyCandidates, toAxiosProxyOptions } from './outboundProxy';
 
 import Providers from './providers';
 
@@ -108,28 +109,50 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         pathLower.includes('playlist') ||
         queryLower.includes('.m3u8');
 
-      const upstream = await axios.get(target.toString(), {
+      const refererForRequest = referer || `${target.protocol}//${target.host}/`;
+      const baseRequestConfig = {
         responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
         timeout: looksLikeM3u8 ? 25000 : 60000,
         headers: {
-          Referer: referer || `${target.protocol}//${target.host}/`,
-          Origin: referer
-            ? (() => {
-                try {
-                  const u = new URL(referer);
-                  return `${u.protocol}//${u.host}`;
-                } catch {
-                  return `${target.protocol}//${target.host}`;
-                }
-              })()
-            : `${target.protocol}//${target.host}`,
+          Referer: refererForRequest,
+          Origin: (() => {
+            try {
+              const u = new URL(refererForRequest);
+              return `${u.protocol}//${u.host}`;
+            } catch {
+              return `${target.protocol}//${target.host}`;
+            }
+          })(),
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
           ...(incomingRange ? { Range: incomingRange } : {}),
         },
         maxRedirects: 5,
-        validateStatus: () => true,
-      });
+        validateStatus: () => true as const,
+      };
+
+      const proxyCandidates = getProxyCandidates();
+      const chain = [undefined, ...proxyCandidates];
+      const fetchWithChain = async (targetUrl: string, requestConfig: any) => {
+        let response: any = null;
+        let lastErr: any = null;
+        for (const proxyUrl of chain) {
+          try {
+            const proxyOptions = toAxiosProxyOptions(proxyUrl);
+            response = await axios.get(targetUrl, {
+              ...requestConfig,
+              ...proxyOptions,
+            } as any);
+            return response;
+          } catch (err: any) {
+            lastErr = err;
+            continue;
+          }
+        }
+        throw lastErr || new Error('proxy failed');
+      };
+
+      const upstream = await fetchWithChain(target.toString(), baseRequestConfig);
 
       if (upstream.status >= 400) {
         return reply.status(upstream.status).send({
@@ -147,33 +170,127 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const raw = Buffer.from(upstream.data).toString('utf8');
         const base = target.toString();
 
+        const normalizeManifestUri = (candidate: string) => {
+          let c = String(candidate || '').trim();
+          if (!c) return c;
+          // NetMirror sometimes emits malformed "https:///files/..." URIs.
+          if (/^https?:\/\/\/+/i.test(c)) {
+            c = c.replace(/^https?:\/\/\/+/i, '/');
+          }
+          // If parser produced "https://files/..." from malformed inputs, treat it as path.
+          if (/^https?:\/\/files\//i.test(c)) {
+            const u = new URL(c);
+            c = `/files${u.pathname}`;
+            if (u.search) c += u.search;
+          }
+          return c;
+        };
+
         const rewriteUri = (candidate: string) => {
           try {
-            const abs = new URL(candidate, base).toString();
-            const refererQuery = referer ? `&referer=${encodeURIComponent(referer)}` : '';
+            const normalized = normalizeManifestUri(candidate);
+            const abs = new URL(normalized, base).toString();
+            const childReferer = `${target.protocol}//${target.host}/`;
+            const refererQuery = `&referer=${encodeURIComponent(childReferer)}`;
             return `/utils/proxy?url=${encodeURIComponent(abs)}${refererQuery}`;
           } catch {
             return candidate;
           }
         };
 
+        const isMasterManifest = raw.includes('#EXT-X-STREAM-INF');
+        const lines = raw.split('\n');
+
+        const reachabilityCache = new Map<string, boolean>();
+        const isUriReachable = async (candidate: string): Promise<boolean> => {
+          try {
+            const normalized = normalizeManifestUri(candidate);
+            const abs = new URL(normalized, base).toString();
+            if (reachabilityCache.has(abs)) return reachabilityCache.get(abs) as boolean;
+
+            const probeTarget = new URL(abs);
+            const probeReferer = `${target.protocol}//${target.host}/`;
+            const probeConfig = {
+              responseType: 'arraybuffer',
+              timeout: 7000,
+              headers: {
+                Referer: probeReferer,
+                Origin: `${new URL(probeReferer).protocol}//${new URL(probeReferer).host}`,
+                'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              },
+              maxRedirects: 3,
+              validateStatus: () => true as const,
+            };
+
+            const probe = await fetchWithChain(probeTarget.toString(), probeConfig);
+            const ok = Number(probe?.status || 0) >= 200 && Number(probe?.status || 0) < 400;
+            reachabilityCache.set(abs, ok);
+            return ok;
+          } catch {
+            return false;
+          }
+        };
+
+        let filteredLines = [...lines];
+        if (isMasterManifest) {
+          const droppedLines = new Set<number>();
+          let keptVariantCount = 0;
+          let totalVariantCount = 0;
+
+          for (let i = 0; i < lines.length; i++) {
+            if (droppedLines.has(i)) continue;
+            const trimmed = String(lines[i] || '').trim();
+            if (!trimmed) continue;
+
+            if (trimmed.startsWith('#EXT-X-MEDIA:') && trimmed.includes('URI="')) {
+              const match = /URI="([^"]+)"/.exec(trimmed);
+              if (match?.[1]) {
+                const ok = await isUriReachable(match[1]);
+                if (!ok) droppedLines.add(i);
+              }
+              continue;
+            }
+
+            if (trimmed.startsWith('#EXT-X-STREAM-INF')) {
+              totalVariantCount += 1;
+              let j = i + 1;
+              while (j < lines.length && !String(lines[j] || '').trim()) j++;
+              if (j >= lines.length) continue;
+              const next = String(lines[j] || '').trim();
+              if (!next || next.startsWith('#')) continue;
+
+              const ok = await isUriReachable(next);
+              if (!ok) {
+                droppedLines.add(i);
+                droppedLines.add(j);
+              } else {
+                keptVariantCount += 1;
+              }
+            }
+          }
+
+          if (totalVariantCount > 0 && keptVariantCount === 0) {
+            return reply.status(502).send({ message: 'no live variants in master manifest' });
+          }
+
+          if (keptVariantCount > 0) {
+            filteredLines = lines.filter((_, idx) => !droppedLines.has(idx));
+          }
+        }
+
         // Rewrite all URIs in the manifest, including audio tracks
-        const rewritten = raw
-          .split('\n')
+        const rewritten = filteredLines
           .map((line) => {
             const trimmed = line.trim();
             if (!trimmed) return line;
-            // Rewrite URI in #EXT-X-MEDIA tags (for audio tracks)
             if (trimmed.startsWith('#EXT-X-MEDIA:') && trimmed.includes('URI="')) {
               return line.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${rewriteUri(uri)}"`);
             }
-            // Rewrite URI in #EXT-X-KEY tags
             if (trimmed.startsWith('#EXT-X-KEY') && trimmed.includes('URI="')) {
               return line.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${rewriteUri(uri)}"`);
             }
-            // Keep other tags as-is
             if (trimmed.startsWith('#')) return line;
-            // Rewrite non-tag lines (URIs)
             return rewriteUri(trimmed);
           })
           .join('\n');
