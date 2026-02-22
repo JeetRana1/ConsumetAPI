@@ -344,67 +344,76 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       try {
         if (category === 'both') {
           let lastBaseUrl = (hianime as any).baseUrl || HIANIME_BASE_URLS[0];
-          const res = await tryWithBaseUrlFallback(async (baseUrl) => {
-            lastBaseUrl = baseUrl;
-            const [subRes, dubRes] = await Promise.allSettled([
-              fetchWithServerFallback(
-                async (selectedServer) =>
-                  await hianime.fetchEpisodeSources(
-                    episodeId,
-                    selectedServer,
-                    SubOrSub.SUB,
-                  ),
-                server,
-                undefined,
-                { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
-              ),
-              fetchWithServerFallback(
-                async (selectedServer) =>
-                  await hianime.fetchEpisodeSources(
-                    episodeId,
-                    selectedServer,
-                    SubOrSub.DUB,
-                  ),
-                server,
-                undefined,
-                { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
-              ),
-            ]);
+          let res: any;
+          try {
+            res = await tryWithBaseUrlFallback(async (baseUrl) => {
+              lastBaseUrl = baseUrl;
+              const [subRes, dubRes] = await Promise.allSettled([
+                fetchWithServerFallback(
+                  async (selectedServer) =>
+                    await hianime.fetchEpisodeSources(
+                      episodeId,
+                      selectedServer,
+                      SubOrSub.SUB,
+                    ),
+                  server,
+                  undefined,
+                  { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
+                ),
+                fetchWithServerFallback(
+                  async (selectedServer) =>
+                    await hianime.fetchEpisodeSources(
+                      episodeId,
+                      selectedServer,
+                      SubOrSub.DUB,
+                    ),
+                  server,
+                  undefined,
+                  { attemptTimeoutMs: WATCH_ATTEMPT_TIMEOUT_MS },
+                ),
+              ]);
 
-            const sources: any[] = [];
-            const subtitles: any[] = [];
+              const sources: any[] = [];
+              const subtitles: any[] = [];
 
-            if (subRes.status === 'fulfilled' && hasSources(subRes.value)) {
-              sources.push(...subRes.value.sources.map((s) => ({ ...s, isDub: false })));
-              subtitles.push(...(subRes.value.subtitles || []));
+              if (subRes.status === 'fulfilled' && hasSources(subRes.value)) {
+                sources.push(...subRes.value.sources.map((s) => ({ ...s, isDub: false })));
+                subtitles.push(...(subRes.value.subtitles || []));
+              }
+              if (dubRes.status === 'fulfilled' && hasSources(dubRes.value)) {
+                sources.push(...dubRes.value.sources.map((s) => ({ ...s, isDub: true })));
+                subtitles.push(...(dubRes.value.subtitles || []));
+              }
+
+              if (sources.length > 0) {
+                return {
+                  sources,
+                  subtitles: [...new Set(subtitles.map((s) => JSON.stringify(s)))].map((s) => JSON.parse(s)),
+                  intro:
+                    subRes.status === 'fulfilled'
+                      ? subRes.value.intro
+                      : (dubRes.status === 'fulfilled' ? dubRes.value.intro : undefined),
+                  outro:
+                    subRes.status === 'fulfilled'
+                      ? subRes.value.outro
+                      : (dubRes.status === 'fulfilled' ? dubRes.value.outro : undefined),
+                };
+              }
+
+              return await fetchHianimeViaAjaxFallback(
+                baseUrl,
+                episodeId,
+                server || StreamingServers.VidStreaming,
+                SubOrSub.BOTH,
+              );
+            });
+          } catch (_) {
+            const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
+            if (!saturn || !hasSources(saturn)) {
+              throw _;
             }
-            if (dubRes.status === 'fulfilled' && hasSources(dubRes.value)) {
-              sources.push(...dubRes.value.sources.map((s) => ({ ...s, isDub: true })));
-              subtitles.push(...(dubRes.value.subtitles || []));
-            }
-
-            if (sources.length > 0) {
-              return {
-                sources,
-                subtitles: [...new Set(subtitles.map((s) => JSON.stringify(s)))].map((s) => JSON.parse(s)),
-                intro:
-                  subRes.status === 'fulfilled'
-                    ? subRes.value.intro
-                    : (dubRes.status === 'fulfilled' ? dubRes.value.intro : undefined),
-                outro:
-                  subRes.status === 'fulfilled'
-                    ? subRes.value.outro
-                    : (dubRes.status === 'fulfilled' ? dubRes.value.outro : undefined),
-              };
-            }
-
-            return await fetchHianimeViaAjaxFallback(
-              baseUrl,
-              episodeId,
-              server || StreamingServers.VidStreaming,
-              SubOrSub.BOTH,
-            );
-          });
+            res = saturn;
+          }
 
           if (!hasDirectPlayableSource(res)) {
             try {
@@ -452,14 +461,22 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             );
           });
 
-        res = redis
-          ? await cache.fetch(
-            redis as Redis,
-            `hianime:watch:${episodeId}:${server}:${category}`,
-            async () => await fetchWatch(),
-            REDIS_TTL,
-          )
-          : await fetchWatch();
+        try {
+          res = redis
+            ? await cache.fetch(
+              redis as Redis,
+              `hianime:watch:${episodeId}:${server}:${category}`,
+              async () => await fetchWatch(),
+              REDIS_TTL,
+            )
+            : await fetchWatch();
+        } catch (_) {
+          const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
+          if (!saturn || !hasSources(saturn)) {
+            throw _;
+          }
+          res = saturn;
+        }
 
         if (!hasDirectPlayableSource(res)) {
           try {
