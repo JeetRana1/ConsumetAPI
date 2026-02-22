@@ -9,6 +9,7 @@ import { redis, REDIS_TTL } from '../../main';
 import { configureProvider } from '../../utils/provider';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { getProxyCandidates, toAxiosProxyOptions } from '../../utils/outboundProxy';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,12 +60,28 @@ class SatoruProvider extends AnimeParser {
             }
         }
 
-        const { data } = await this.client.get<string>(url, {
-            headers: mergedHeaders,
-            timeout: this.requestTimeoutMs,
-            responseType: 'text',
-        });
-        return data;
+        const proxyCandidates = await getProxyCandidates();
+        const chain = [undefined, ...proxyCandidates];
+        let lastErr: unknown;
+
+        for (const proxyUrl of chain) {
+            try {
+                const proxyOptions = toAxiosProxyOptions(proxyUrl);
+                const { data } = await this.client.get<string>(url, {
+                    headers: mergedHeaders,
+                    timeout: this.requestTimeoutMs,
+                    responseType: 'text',
+                    ...(proxyOptions as any),
+                });
+                if (typeof data === 'string') return data;
+                return String(data || '');
+            } catch (err) {
+                lastErr = err;
+                continue;
+            }
+        }
+
+        throw lastErr instanceof Error ? lastErr : new Error('Satoru fetch failed');
     }
 
     private normalizeEpisodeId(episodeId: string): string {
