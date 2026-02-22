@@ -131,7 +131,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         validateStatus: () => true as const,
       };
 
-      const proxyCandidates = getProxyCandidates();
+      const proxyCandidates = await getProxyCandidates();
       const chain = [undefined, ...proxyCandidates];
       const fetchWithChain = async (targetUrl: string, requestConfig: any) => {
         let response: any = null;

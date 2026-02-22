@@ -1,6 +1,6 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
 import { MegaCloud, RapidCloud, VidCloud } from '@consumet/extensions/dist/extractors';
-import { getProxyCandidates } from './outboundProxy';
+import { getProxyCandidatesSync } from './outboundProxy';
 
 type ProviderWithClient = {
   client?: {
@@ -21,7 +21,7 @@ type ProviderWithClient = {
 };
 
 const parseProxyEnv = (): string | string[] | undefined => {
-  const list = getProxyCandidates();
+  const list = getProxyCandidatesSync();
   if (!list.length) return undefined;
   return list.length === 1 ? list[0] : list;
 };

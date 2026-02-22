@@ -33,7 +33,64 @@ const splitList = (raw: string): string[] => {
     .filter(Boolean);
 };
 
-export const getProxyCandidates = (): string[] => {
+const FALLBACK_PROXY_LIST_URL =
+  'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt';
+
+let remoteProxyCache: { proxies: string[]; expiresAt: number } = {
+  proxies: [],
+  expiresAt: 0,
+};
+
+const normalizeHostPortProxy = (line: string): string | null => {
+  const raw = String(line || '').trim();
+  if (!raw) return null;
+  if (raw.includes('://')) return raw;
+  if (!/^[^:\s]+:\d+$/.test(raw)) return null;
+  return `http://${raw}`;
+};
+
+const parseRemoteProxyBody = (body: string): string[] => {
+  return String(body || '')
+    .split(/\r?\n/)
+    .map((line) => normalizeHostPortProxy(line))
+    .filter((v): v is string => Boolean(v));
+};
+
+const getRemoteProxyList = async (): Promise<string[]> => {
+  const now = Date.now();
+  if (remoteProxyCache.expiresAt > now && remoteProxyCache.proxies.length > 0) {
+    return remoteProxyCache.proxies;
+  }
+
+  try {
+    const url = String(process.env.PUBLIC_PROXY_LIST_URL || FALLBACK_PROXY_LIST_URL).trim();
+    const ttlMs = Math.max(60_000, Number(process.env.PUBLIC_PROXY_CACHE_TTL_MS || 300_000));
+    const timeoutMs = Math.max(2_000, Number(process.env.PUBLIC_PROXY_FETCH_TIMEOUT_MS || 7_000));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!res.ok) throw new Error(`public proxy list http ${res.status}`);
+    const text = await res.text();
+    const parsed = parseRemoteProxyBody(text);
+
+    // Avoid extremely large pools on serverless cold starts.
+    const max = Math.max(20, Number(process.env.PUBLIC_PROXY_MAX || 200));
+    const bounded = parsed.slice(0, max);
+
+    remoteProxyCache = {
+      proxies: bounded,
+      expiresAt: now + ttlMs,
+    };
+    return bounded;
+  } catch {
+    return remoteProxyCache.proxies;
+  }
+};
+
+export const getProxyCandidatesSync = (): string[] => {
   const envA = splitList(String(process.env.OUTBOUND_PROXIES || ''));
   const envB = splitList(String(process.env.PROXY || ''));
   const merged = [...envA, ...envB].filter(Boolean);
@@ -43,6 +100,15 @@ export const getProxyCandidates = (): string[] => {
     if (torUrl) merged.push(torUrl);
   }
 
+  return merged.filter((v, i) => merged.indexOf(v) === i);
+};
+
+export const getProxyCandidates = async (): Promise<string[]> => {
+  const merged = [...getProxyCandidatesSync()];
+  if (String(process.env.ENABLE_PUBLIC_PROXY_LIST || '').toLowerCase() === 'true') {
+    const publicPool = await getRemoteProxyList();
+    merged.push(...publicPool);
+  }
   return merged.filter((v, i) => merged.indexOf(v) === i);
 };
 
@@ -81,4 +147,3 @@ export const toAxiosProxyOptions = (proxyUrl?: string): AxiosProxyOptions => {
     },
   };
 };
-
