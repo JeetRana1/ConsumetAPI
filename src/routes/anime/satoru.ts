@@ -20,13 +20,13 @@ class SatoruProvider extends AnimeParser {
     classPath = 'ANIME.Satoru';
     private readonly requestTimeoutMs =
       Number(process.env.SATORU_FETCH_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 7000 : 10000);
+      (process.env.NODE_ENV === 'production' ? 12000 : 10000);
     private readonly proxyRequestTimeoutMs =
       Number(process.env.SATORU_PROXY_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 3500 : 5000);
+      (process.env.NODE_ENV === 'production' ? 5000 : 5000);
     private readonly maxProxyAttempts =
       Number(process.env.SATORU_PROXY_MAX_ATTEMPTS || '') ||
-      (process.env.NODE_ENV === 'production' ? 2 : 3);
+      (process.env.NODE_ENV === 'production' ? 3 : 3);
     private readonly preferWindowsCurl =
       process.platform === 'win32' && !['1', 'true', 'yes'].includes(String(process.env.SATORU_DISABLE_CURL || '').toLowerCase());
     private readonly satoruCookieHeader = (() => {
@@ -473,6 +473,21 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const n = Number(ep?.number ?? ep?.episode ?? ep?.episodeNumber ?? ep?.episodeNum ?? 0);
         return Number.isFinite(n) ? n : 0;
     };
+    const sanitizeDirectNoDash = (payload: any): ISource | null => {
+        if (!payload || typeof payload !== 'object') return null;
+        const direct = (Array.isArray(payload?.sources) ? payload.sources : []).filter((src: any) => {
+            const url = String(src?.url || '').trim().toLowerCase();
+            if (!url) return false;
+            if (Boolean(src?.isEmbed)) return false;
+            if (url.includes('.mpd')) return false;
+            return url.includes('.m3u8') || url.includes('.mp4') || Boolean(src?.isM3U8);
+        });
+        if (!direct.length) return null;
+        return {
+            ...payload,
+            sources: direct,
+        } as ISource;
+    };
     const slugToTitle = (slug: string) =>
         String(slug || '')
             .replace(/-\d+$/, '')
@@ -621,7 +636,49 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             }
         })();
         if (!watch || !Array.isArray((watch as any).sources) || !(watch as any).sources.length) return null;
-        return watch;
+        return sanitizeDirectNoDash(watch);
+    };
+
+    const fallbackViaHiAnimeByOrdinal = async (satoruEpisodeId: string) => {
+        const slug = getSatoruSlug(satoruEpisodeId);
+        if (!slug) return null;
+        const normalizedEpisodeId = normalizeEpisodeIdForWatch(satoruEpisodeId);
+
+        const sInfo: any = await satoru.fetchAnimeInfo(slug);
+        const sEpisodes = Array.isArray(sInfo?.episodes) ? sInfo.episodes : [];
+        const current = sEpisodes.find((ep: any) => {
+            const id = String(ep?.id || '').trim();
+            return (
+                id === String(satoruEpisodeId) ||
+                id === normalizedEpisodeId ||
+                (normalizedEpisodeId && id.includes(normalizedEpisodeId))
+            );
+        });
+        const episodeNum = toEpisodeNum(current);
+        if (!episodeNum) return null;
+
+        const title = String(sInfo?.title || slugToTitle(slug)).trim();
+        if (!title) return null;
+
+        const hSearch: any = await hianimeFallback.search(title, 1);
+        const hResults = Array.isArray(hSearch?.results) ? hSearch.results : [];
+        if (!hResults.length) return null;
+        const hPicked = pickByTitle(hResults, title);
+        if (!hPicked?.id) return null;
+
+        const hInfo: any = await hianimeFallback.fetchAnimeInfo(hPicked.id);
+        const hEpisodes = Array.isArray(hInfo?.episodes) ? hInfo.episodes : [];
+        if (!hEpisodes.length) return null;
+        const hEpisode =
+            hEpisodes.find((ep: any) => toEpisodeNum(ep) === episodeNum) ||
+            hEpisodes[Math.max(0, Math.min(hEpisodes.length - 1, episodeNum - 1))];
+        if (!hEpisode?.id) return null;
+
+        const directFromRoute = sanitizeDirectNoDash(await fetchHiAnimeRouteFallbackSources(String(hEpisode.id)));
+        if (directFromRoute) return directFromRoute;
+
+        const directFromProvider = sanitizeDirectNoDash(await fetchHiAnimeFallbackSources(String(hEpisode.id)));
+        return directFromProvider;
     };
 
     fastify.get('/', (_, rp) => {
@@ -748,6 +805,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                                 return reply.status(500).send({ message: (fallbackErr2 as Error).message || (fallbackErr as Error).message });
                             }
                         }
+                    }
+                    try {
+                        const hi = await fallbackViaHiAnimeByOrdinal(episodeId);
+                        if (hi) return reply.status(200).send(hi);
+                    } catch {
+                        // ignore and continue
                     }
                     try {
                         const kick = await fallbackViaKickAssByOrdinal(episodeId);
