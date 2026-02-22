@@ -13,6 +13,8 @@ import { getProxyCandidates, toAxiosProxyOptions } from '../../utils/outboundPro
 
 const execFileAsync = promisify(execFile);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const PROD_DIRECT_RACE_TIMEOUT_MS =
+    Number(process.env.SATORU_PROD_DIRECT_RACE_TIMEOUT_MS || '') || 9000;
 
 class SatoruProvider extends AnimeParser {
     name = 'Satoru';
@@ -489,6 +491,30 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             sources: direct,
         } as ISource;
     };
+    const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+        return await Promise.race([
+            promise,
+            new Promise<T>((_, reject) =>
+                setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs),
+            ),
+        ]);
+    };
+    const firstSuccessful = async <T>(tasks: Array<Promise<T>>): Promise<T> => {
+        return await new Promise<T>((resolve, reject) => {
+            let pending = tasks.length;
+            let lastError: unknown = new Error('All strategies failed');
+            for (const task of tasks) {
+                task
+                    .then((value) => resolve(value))
+                    .catch((err) => {
+                        lastError = err;
+                        pending -= 1;
+                        if (pending <= 0) reject(lastError);
+                    });
+            }
+        });
+    };
     const slugToTitle = (slug: string) =>
         String(slug || '')
             .replace(/-\d+$/, '')
@@ -764,14 +790,49 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             // direct fallback is more reliable than waiting on Satoru origin.
             if (isHiAnimeStyle && IS_PRODUCTION) {
                 try {
-                    const fastDirect = sanitizeDirectNoDash(await fetchHiAnimeRouteFallbackSources(episodeId));
+                    const fastDirect = sanitizeDirectNoDash(
+                        await withTimeout(fetchHiAnimeRouteFallbackSources(episodeId), PROD_DIRECT_RACE_TIMEOUT_MS, 'HiAnime route fallback'),
+                    );
                     if (fastDirect) return reply.status(200).send(fastDirect);
                 } catch {
                     // Continue to provider fallback below.
                 }
                 try {
-                    const providerDirect = sanitizeDirectNoDash(await fetchHiAnimeFallbackSources(episodeId));
+                    const providerDirect = sanitizeDirectNoDash(
+                        await withTimeout(fetchHiAnimeFallbackSources(episodeId), PROD_DIRECT_RACE_TIMEOUT_MS, 'HiAnime provider fallback'),
+                    );
                     if (providerDirect) return reply.status(200).send(providerDirect);
+                } catch {
+                    // Continue to legacy path for resilience.
+                }
+
+                // Race multiple direct-only strategies and return the first usable source.
+                try {
+                    const winner = await withTimeout(
+                        firstSuccessful([
+                            (async () => {
+                                const direct = sanitizeDirectNoDash(await fetchHiAnimeRouteFallbackSources(episodeId));
+                                if (!direct) throw new Error('HiAnime route produced no direct source');
+                                return direct;
+                            })(),
+                            (async () => {
+                                const direct = sanitizeDirectNoDash(await fetchHiAnimeFallbackSources(episodeId));
+                                if (!direct) throw new Error('HiAnime provider produced no direct source');
+                                return direct;
+                            })(),
+                            (async () => {
+                                const mapped = await resolveSatoruEpisodeIdFromHiAnimeId(episodeId);
+                                if (!mapped) throw new Error('Failed to map HiAnime episode to Satoru episode');
+                                const raw = await satoru.fetchEpisodeSources(mapped, serverId);
+                                const direct = sanitizeDirectNoDash(raw);
+                                if (!direct) throw new Error('Mapped Satoru source was not direct playable');
+                                return direct;
+                            })(),
+                        ]),
+                        PROD_DIRECT_RACE_TIMEOUT_MS,
+                        'Direct strategy race',
+                    );
+                    return reply.status(200).send(winner);
                 } catch {
                     // Continue to legacy path for resilience.
                 }
@@ -803,6 +864,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                         REDIS_TTL,
                     )
                     : await satoru.fetchEpisodeSources(resolvedSatoruEpisodeId, serverId);
+
+                if (IS_PRODUCTION) {
+                    const direct = sanitizeDirectNoDash(res);
+                    if (direct) return reply.status(200).send(direct);
+                    throw new Error('Satoru returned no direct playable source');
+                }
 
                 reply.status(200).send(res);
             } catch (err) {
