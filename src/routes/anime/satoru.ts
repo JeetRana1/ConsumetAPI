@@ -13,6 +13,9 @@ import { getProxyCandidates, toAxiosProxyOptions } from '../../utils/outboundPro
 
 const execFileAsync = promisify(execFile);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const SATORU_ONLY_MODE = ['1', 'true', 'yes'].includes(
+    String(process.env.SATORU_ONLY_MODE || '').toLowerCase(),
+);
 const PROD_DIRECT_RACE_TIMEOUT_MS =
     Number(process.env.SATORU_PROD_DIRECT_RACE_TIMEOUT_MS || '') || 9000;
 
@@ -788,7 +791,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
             // In production, HiAnime-style IDs are the most common path and
             // direct fallback is more reliable than waiting on Satoru origin.
-            if (isHiAnimeStyle && IS_PRODUCTION) {
+            if (!SATORU_ONLY_MODE && isHiAnimeStyle && IS_PRODUCTION) {
                 try {
                     const fastDirect = sanitizeDirectNoDash(
                         await withTimeout(fetchHiAnimeRouteFallbackSources(episodeId), PROD_DIRECT_RACE_TIMEOUT_MS, 'HiAnime route fallback'),
@@ -878,6 +881,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     String((err as Error)?.message || '').toLowerCase().includes('no servers found') ||
                     isHiAnimeStyle
                 ) {
+                    if (SATORU_ONLY_MODE) {
+                        return reply.status(500).send({ message: (err as Error).message });
+                    }
                     if (isHiAnimeStyle) {
                         try {
                             const fallback = await fetchHiAnimeRouteFallbackSources(episodeId);
