@@ -12,6 +12,7 @@ import { promisify } from 'util';
 import { getProxyCandidates, toAxiosProxyOptions } from '../../utils/outboundProxy';
 
 const execFileAsync = promisify(execFile);
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 
 class SatoruProvider extends AnimeParser {
     name = 'Satoru';
@@ -758,6 +759,23 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const normalizedEpisodeId = normalizeEpisodeIdForWatch(episodeId);
             const isHiAnimeStyle = isHiAnimeEpisodeId(episodeId);
             let resolvedSatoruEpisodeId = normalizedEpisodeId;
+
+            // In production, HiAnime-style IDs are the most common path and
+            // direct fallback is more reliable than waiting on Satoru origin.
+            if (isHiAnimeStyle && IS_PRODUCTION) {
+                try {
+                    const fastDirect = sanitizeDirectNoDash(await fetchHiAnimeRouteFallbackSources(episodeId));
+                    if (fastDirect) return reply.status(200).send(fastDirect);
+                } catch {
+                    // Continue to provider fallback below.
+                }
+                try {
+                    const providerDirect = sanitizeDirectNoDash(await fetchHiAnimeFallbackSources(episodeId));
+                    if (providerDirect) return reply.status(200).send(providerDirect);
+                } catch {
+                    // Continue to legacy path for resilience.
+                }
+            }
 
             if (isHiAnimeStyle) {
                 try {
