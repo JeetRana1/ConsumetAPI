@@ -38,9 +38,6 @@ const resolveMovieProvider = (provider?: string) => {
       return undefined;
   }
 };
-const FORCE_HIANIME_FOR_SATORU = ['1', 'true', 'yes'].includes(
-  String(process.env.FORCE_HIANIME_FOR_SATORU || '').toLowerCase(),
-);
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const MOVIE_WATCH_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 2500 : 4000;
@@ -437,8 +434,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     // Check if it's an anime provider - redirect to anime route
     const providerLower = provider?.toLowerCase();
     if (providerLower && ANIME_PROVIDER_ROUTES[providerLower]) {
+      // Satoru episode ids are often HiAnime-style ids (slug$episode$nnn).
+      // On serverless, routing those through /anime/hianime/watch is more reliable
+      // than the Satoru origin and avoids upstream timeout stalls.
       const isHiAnimeStyleEpisode = String(episodeId || '').includes('$episode$');
-      if (FORCE_HIANIME_FOR_SATORU && providerLower === 'satoru' && isHiAnimeStyleEpisode) {
+      if (providerLower === 'satoru' && isHiAnimeStyleEpisode) {
         const queryParts: string[] = ['category=both', 'server=vidstreaming'];
         const queryString = `?${queryParts.join('&')}`;
         const redirectUrl = `/anime/hianime/watch/${episodeId}${queryString}`;
