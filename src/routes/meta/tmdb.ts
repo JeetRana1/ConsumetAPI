@@ -11,6 +11,7 @@ import { promoteEmbedSourcesToDirect } from '../../utils/embedToDirect';
 // Map of anime providers that have direct routes in this API
 const ANIME_PROVIDER_ROUTES: Record<string, string> = {
   satoru: '/anime/satoru',
+  desidubanime: '/anime/desidubanime',
   animesaturn: '/anime/animesaturn',
   hianime: '/anime/hianime',
   animepahe: '/anime/animepahe',

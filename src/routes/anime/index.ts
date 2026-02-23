@@ -8,6 +8,7 @@ import animekai from './animekai';
 import animesaturn from './animesaturn';
 import kickassanime from './kickassanime';
 import satoru from './satoru';
+import desidubanime from './desidubanime';
 
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
@@ -18,6 +19,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(animesaturn, { prefix: '/animesaturn' });
   await fastify.register(kickassanime, { prefix: '/kickassanime' });
   await fastify.register(satoru, { prefix: '/satoru' });
+  await fastify.register(desidubanime, { prefix: '/desidubanime' });
 
 
   fastify.get('/', async (request: any, reply: any) => {
