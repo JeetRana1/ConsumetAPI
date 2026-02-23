@@ -92,7 +92,11 @@ const DEFAULT_SERVER_FALLBACKS: StreamingServers[] = [
 
 const IS_PRODUCTION =
   process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 9000 : 15000;
+const envAttemptTimeout = Number(process.env.STREAMABLE_ATTEMPT_TIMEOUT_MS || '');
+const DEFAULT_ATTEMPT_TIMEOUT_MS =
+  Number.isFinite(envAttemptTimeout) && envAttemptTimeout > 0
+    ? envAttemptTimeout
+    : (IS_PRODUCTION ? 4500 : 7000);
 
 export const MOVIE_SERVER_FALLBACKS: StreamingServers[] = [
   StreamingServers.VidStreaming,
@@ -182,6 +186,9 @@ export const fetchWithServerFallback = async <T>(
       if (typeof firstResponse === 'undefined') firstResponse = response;
       if (hasUsableStreamSources(response) && typeof firstWithSources === 'undefined') {
         firstWithSources = response;
+        // Fast-path: for non-direct-only requests, return the first usable stream
+        // instead of waiting on additional slower providers/servers.
+        if (!requireDirectPlayable) return response;
       }
       if (hasDirectPlayableSource(response)) {
         bestDirectResponse = response;

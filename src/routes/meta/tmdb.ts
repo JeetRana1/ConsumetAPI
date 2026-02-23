@@ -82,6 +82,55 @@ const normalizeText = (value: string): string =>
     .trim()
     .toLowerCase();
 
+const safeJsonParse = (value: string) => {
+  try {
+    return JSON.parse(value || '{}');
+  } catch {
+    return {};
+  }
+};
+
+const toGenreNames = (genres: unknown): string[] => {
+  if (!Array.isArray(genres)) return [];
+  return genres
+    .map((genre: any) => {
+      if (typeof genre === 'string') return genre;
+      if (genre && typeof genre.name === 'string') return genre.name;
+      return '';
+    })
+    .filter(Boolean)
+    .map((genre) => normalizeText(genre));
+};
+
+const getTitleCandidatesFromMedia = (media: any): string[] => {
+  return [media?.title, media?.name, media?.originalTitle, media?.originalName]
+    .filter((v, i, arr) => typeof v === 'string' && v.trim() && arr.indexOf(v) === i)
+    .map((v) => String(v).trim());
+};
+
+const titleMatchScore = (candidateTitle: string, queries: string[]): number => {
+  const candidate = normalizeText(candidateTitle);
+  if (!candidate) return -1;
+  let score = 0;
+  for (const query of queries) {
+    const normQuery = normalizeText(query);
+    if (!normQuery) continue;
+    if (candidate === normQuery) score = Math.max(score, 1000);
+    else if (candidate.includes(normQuery) || normQuery.includes(candidate))
+      score = Math.max(score, 700);
+  }
+  return score;
+};
+
+const isAnimeLikeMovie = (media: any): boolean => {
+  const genreNames = toGenreNames(media?.genres);
+  const hasAnimationGenre = genreNames.some((genre) => genre.includes('animation'));
+  const hasAnimeGenre = genreNames.some((genre) => genre.includes('anime'));
+  const lang = normalizeText(String(media?.originalLanguage || media?.original_language || ''));
+  const isJapanese = lang === 'ja';
+  return hasAnimeGenre || (hasAnimationGenre && isJapanese);
+};
+
 const normalizeSlug = (value: string): string =>
   String(value || '')
     .toLowerCase()
@@ -118,6 +167,92 @@ const buildDramaSlugVariants = (dramaSlug: string): string[] => {
 };
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
+  const tryAnimeProvidersForMovie = async ({
+    titleCandidates,
+    server,
+  }: {
+    titleCandidates: string[];
+    server?: StreamingServers;
+  }) => {
+    if (!titleCandidates.length) return null;
+    const providersInOrder = [
+      'satoru',
+      'hianime',
+      'animekai',
+      'kickassanime',
+      'animesaturn',
+      'animepahe',
+    ];
+
+    for (const providerKey of providersInOrder) {
+      const baseRoute = ANIME_PROVIDER_ROUTES[providerKey];
+      if (!baseRoute) continue;
+      for (const query of titleCandidates) {
+        try {
+          const searchRes = await fastify.inject({
+            method: 'GET',
+            url: `${baseRoute}/${encodeURIComponent(query)}`,
+          });
+          if (searchRes.statusCode >= 400) continue;
+          const searchPayload: any = safeJsonParse(searchRes.body);
+          const searchRows = Array.isArray(searchPayload?.results) ? searchPayload.results : [];
+          if (!searchRows.length) continue;
+
+          const picked = searchRows
+            .map((item: any) => ({
+              item,
+              score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
+            }))
+            .sort((a: any, b: any) => b.score - a.score)[0]?.item;
+
+          if (!picked?.id) continue;
+
+          const infoRes = await fastify.inject({
+            method: 'GET',
+            url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
+          });
+          if (infoRes.statusCode >= 400) continue;
+          const infoPayload: any = safeJsonParse(infoRes.body);
+          const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
+          if (!episodes.length) continue;
+
+          const episodeIds = Array.from(
+            new Set(
+              [
+                episodes[0]?.id,
+                episodes[episodes.length - 1]?.id,
+                episodes.find((ep: any) => Number(ep?.number || 0) === 1)?.id,
+              ]
+                .filter((value) => typeof value === 'string' && value.trim())
+                .map((value) => String(value).trim()),
+            ),
+          );
+          if (!episodeIds.length) continue;
+
+          for (const candidateEpisodeId of episodeIds) {
+            const queryParts: string[] = [];
+            if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
+            if (providerKey === 'hianime') queryParts.push('category=both');
+            const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
+            const watchRes = await fastify.inject({
+              method: 'GET',
+              url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
+            });
+            if (watchRes.statusCode >= 400) continue;
+            const watchPayload: any = safeJsonParse(watchRes.body);
+            if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
+              return watchPayload;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    return null;
+  };
+
   const fetchDramacoolWpSearch = async (query: string) => {
     const dramacool = configureProvider(new MOVIES.DramaCool()) as any;
     const endpoint = `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/wp-json/wp/v2/search?search=${encodeURIComponent(query)}&per_page=20`;
@@ -500,6 +635,23 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     }
 
+    if (type === 'movie' && !providerLower && id) {
+      try {
+        const discoveryTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+        const mediaInfo: any = await discoveryTmdb.fetchMediaInfo(id, type);
+        const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
+        if (isAnimeLikeMovie(mediaInfo) && titleCandidates.length) {
+          const animeFallback = await tryAnimeProvidersForMovie({
+            titleCandidates,
+            server,
+          });
+          if (animeFallback) return reply.status(200).send(animeFallback);
+        }
+      } catch {
+        // Ignore discovery errors and continue with movie providers.
+      }
+    }
+
     // Movie/TV providers
     let movieProvider: any = configureProvider(new MOVIES.FlixHQ());
     let tmdb = new META.TMDB(tmdbApi, movieProvider);
@@ -556,6 +708,23 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       reply.status(200).send(responsePayload);
     } catch (err: any) {
+      if (type === 'movie' && id) {
+        try {
+          const discoveryTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+          const mediaInfo: any = await discoveryTmdb.fetchMediaInfo(id, type);
+          const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
+          if (titleCandidates.length) {
+            const animeFallback = await tryAnimeProvidersForMovie({
+              titleCandidates,
+              server,
+            });
+            if (animeFallback) return reply.status(200).send(animeFallback);
+          }
+        } catch {
+          // Ignore anime fallback errors and continue existing fallback logic.
+        }
+      }
+
       if (type === 'movie' && sourceId) {
         try {
           const fallback = await getMovieEmbedFallbackSource(

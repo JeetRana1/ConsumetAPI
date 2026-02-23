@@ -7,6 +7,113 @@ import Providers from './providers';
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(new Providers().getProviders);
 
+  const normalizeTitleForMatch = (v: any): string =>
+    String(v || '')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\(([^)]*)\)/g, ' ')
+      .replace(/\[[^\]]*\]/g, ' ')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const toArrayPayload = (payload: any): any[] => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.results)) return payload.results;
+    if (Array.isArray(payload?.data)) return payload.data;
+    return [];
+  };
+
+  const pickBestSearchResult = (title: string, results: any[]): any | null => {
+    const norm = normalizeTitleForMatch(title);
+    if (!norm) return null;
+    const titleTokens = new Set(norm.split(' ').filter(Boolean));
+    let best: { score: number; item: any | null } = { score: 0, item: null };
+
+    for (const item of results || []) {
+      const name = String(
+        item?.title || item?.name || item?.title_english || item?.titleEnglish || item?.japanese_title || '',
+      ).trim();
+      const itemNorm = normalizeTitleForMatch(name);
+      if (!itemNorm) continue;
+      let score = 0;
+      if (itemNorm === norm) score += 120;
+      if (itemNorm.includes(norm) || norm.includes(itemNorm)) score += 30;
+      const tokens = itemNorm.split(' ').filter(Boolean);
+      let overlap = 0;
+      tokens.forEach((t) => {
+        if (titleTokens.has(t)) overlap += 1;
+      });
+      score += overlap * 8;
+      if (score > best.score) best = { score, item };
+    }
+    return best.score > 0 ? best.item : null;
+  };
+
+  const parseStatusFromEpisode = (ep: any): 'manga' | 'mixed' | 'filler' | null => {
+    const boolFiller = ep?.isFiller === true || ep?.filler === true;
+    const boolMixed = ep?.isMixed === true || ep?.mixed === true;
+    const boolCanon =
+      ep?.isMangaCanon === true ||
+      ep?.isCanon === true ||
+      ep?.mangaCanon === true ||
+      ep?.canon === true;
+
+    const text = normalizeTitleForMatch(
+      `${ep?.title || ''} ${ep?.description || ''} ${ep?.type || ''} ${ep?.category || ''}`,
+    );
+    const textFiller = text.includes('filler');
+    const textMixed = text.includes('mixed canon filler') || text.includes('mixed canon');
+    const textCanon = text.includes('manga canon') || text.includes('canon');
+
+    if (boolFiller || textFiller) return 'filler';
+    if (boolMixed || textMixed) return 'mixed';
+    if (boolCanon || textCanon) return 'manga';
+    return null;
+  };
+
+  const buildEpisodeStatusMap = (infoPayload: any): Record<string, 'manga' | 'mixed' | 'filler'> => {
+    const map: Record<string, 'manga' | 'mixed' | 'filler'> = {};
+    const episodes = toArrayPayload(infoPayload?.episodes ? infoPayload.episodes : infoPayload);
+    episodes.forEach((ep, idx) => {
+      const epNo = Number(ep?.number || ep?.episodeNumber || ep?.episode || idx + 1);
+      if (!Number.isFinite(epNo) || epNo <= 0) return;
+      const status = parseStatusFromEpisode(ep);
+      if (!status) return;
+      map[String(epNo)] = status;
+    });
+    return map;
+  };
+
+  const fetchFillerFromMetaProvider = async (provider: 'mal' | 'anilist', title: string) => {
+    try {
+      const searchRes = await fastify.inject({
+        method: 'GET',
+        url: `/meta/${provider}/${encodeURIComponent(title)}?page=1`,
+      });
+      if (searchRes.statusCode >= 400) return { provider, id: null, episodes: {} as Record<string, any> };
+      const searchPayload = JSON.parse(searchRes.body || '{}');
+      const best = pickBestSearchResult(title, toArrayPayload(searchPayload));
+      const contentId = best?.id || best?.anilistId || best?.malId || best?._id;
+      if (!contentId) return { provider, id: null, episodes: {} as Record<string, any> };
+
+      const infoRes = await fastify.inject({
+        method: 'GET',
+        url: `/meta/${provider}/info/${encodeURIComponent(String(contentId))}?fetchFiller=true`,
+      });
+      if (infoRes.statusCode >= 400) return { provider, id: contentId, episodes: {} as Record<string, any> };
+      const infoPayload = JSON.parse(infoRes.body || '{}');
+      return {
+        provider,
+        id: contentId,
+        episodes: buildEpisodeStatusMap(infoPayload),
+      };
+    } catch {
+      return { provider, id: null, episodes: {} as Record<string, any> };
+    }
+  };
+
   // Handle audio track requests - return minimal valid m3u8 with dummy segment to prevent HLS errors
   // The segment URL points to a valid location but will return empty content
   const dummySegmentUrl = 'data:application/octet-stream;';
@@ -330,6 +437,37 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     } catch (err: any) {
       return reply.status(502).send({ message: err?.message || 'proxy failed' });
     }
+  });
+
+  fastify.get('/filler', async (request: any, reply: any) => {
+    const title = String(request.query?.title || '').trim();
+    if (!title) return reply.status(400).send({ message: 'title is required' });
+
+    const mal = await fetchFillerFromMetaProvider('mal', title);
+    if (Object.keys(mal.episodes).length > 0) {
+      return reply.status(200).send({
+        title,
+        source: 'meta-mal',
+        providerId: mal.id,
+        episodes: mal.episodes,
+      });
+    }
+
+    const anilist = await fetchFillerFromMetaProvider('anilist', title);
+    if (Object.keys(anilist.episodes).length > 0) {
+      return reply.status(200).send({
+        title,
+        source: 'meta-anilist',
+        providerId: anilist.id,
+        episodes: anilist.episodes,
+      });
+    }
+
+    return reply.status(200).send({
+      title,
+      source: 'none',
+      episodes: {},
+    });
   });
 
   fastify.get('/', async (request: any, reply: any) => {

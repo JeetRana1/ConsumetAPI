@@ -57,7 +57,7 @@ const applyTimeoutConfig = (provider: ProviderWithClient) => {
   const envTimeout = Number(process.env.PROVIDER_FETCH_TIMEOUT_MS || '');
   const timeoutMs = Number.isFinite(envTimeout) && envTimeout > 0
     ? envTimeout
-    : (isProduction ? 30000 : 20000);
+    : (isProduction ? 12000 : 10000);
 
   defaults.timeout = timeoutMs;
 };
