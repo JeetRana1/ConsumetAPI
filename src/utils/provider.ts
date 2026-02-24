@@ -1,8 +1,9 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
-import { MegaCloud, RapidCloud, VidCloud } from '@consumet/extensions/dist/extractors';
+import { MegaCloud, RapidCloud, VidCloud, VideoStr } from '@consumet/extensions/dist/extractors';
 import { getProxyCandidatesSync } from './outboundProxy';
 
 type ProviderWithClient = {
+  name?: string;
   client?: {
     get?: (url: string, options?: unknown) => Promise<{ data?: any }>;
     defaults?: {
@@ -18,6 +19,7 @@ type ProviderWithClient = {
   fetchEpisodeSources?: (...args: any[]) => Promise<any>;
   fetchEpisodeServers?: (...args: any[]) => Promise<any[]>;
   __sourceRescueWrapped?: boolean;
+  __flixhqServersWrapped?: boolean;
 };
 
 const parseProxyEnv = (): string | string[] | undefined => {
@@ -60,6 +62,87 @@ const applyTimeoutConfig = (provider: ProviderWithClient) => {
     : (isProduction ? 12000 : 10000);
 
   defaults.timeout = timeoutMs;
+};
+
+const isFlixhqProvider = (provider: ProviderWithClient): boolean =>
+  String(provider.name || '').toLowerCase() === 'flixhq';
+
+const normalizeBaseUrl = (value: string): string => value.replace(/\/+$/, '');
+
+const applyFlixhqBaseUrl = (provider: ProviderWithClient) => {
+  if (!isFlixhqProvider(provider)) return;
+  const desiredBase = normalizeBaseUrl(
+    String(process.env.FLIXHQ_BASE_URL || 'https://flixhq-tv.lol').trim(),
+  );
+  if (!desiredBase) return;
+  provider.baseUrl = desiredBase;
+};
+
+const parseAttr = (tag: string, attr: string): string | undefined => {
+  const match = tag.match(new RegExp(`${attr}=["']([^"']+)["']`, 'i'));
+  return match?.[1]?.trim();
+};
+
+const parseFlixhqServerList = (html: string) => {
+  const rows: Array<{ id: string; name: string }> = [];
+  const seen = new Set<string>();
+  const linkMatches = html.match(/<a\b[^>]*>/gi) || [];
+
+  for (const linkTag of linkMatches) {
+    const dataId = parseAttr(linkTag, 'data-id');
+    if (!dataId || seen.has(dataId)) continue;
+    const title = parseAttr(linkTag, 'title') || '';
+    const normalizedName = title
+      .replace(/^server\s*/i, '')
+      .trim()
+      .toLowerCase();
+    rows.push({ id: dataId, name: normalizedName || 'unknown' });
+    seen.add(dataId);
+  }
+
+  return rows;
+};
+
+const buildFlixhqWatchUrl = (
+  baseUrl: string,
+  mediaId: string | undefined,
+  serverId: string,
+): string => {
+  const base = normalizeBaseUrl(baseUrl);
+  const rawMediaId = String(mediaId || '').trim();
+  if (!rawMediaId) return `${base}/watch.${serverId}`;
+  return `${base}/${rawMediaId}.${serverId}`;
+};
+
+const wrapFlixhqServerFetcher = (provider: ProviderWithClient) => {
+  if (provider.__flixhqServersWrapped || typeof provider.fetchEpisodeServers !== 'function') return;
+  if (!isFlixhqProvider(provider) || !provider.client?.get || !provider.baseUrl) return;
+
+  const original = provider.fetchEpisodeServers.bind(provider);
+
+  provider.fetchEpisodeServers = async (...args: any[]) => {
+    try {
+      return await original(...args);
+    } catch (error) {
+      const episodeId = String(args?.[0] || '').trim();
+      const mediaId = typeof args?.[1] === 'string' ? args[1].trim() : undefined;
+      if (!episodeId) throw error;
+
+      const fallbackUrl = `${provider.baseUrl}/ajax/episode/servers/${encodeURIComponent(episodeId)}`;
+      const response = await provider.client!.get!(fallbackUrl);
+      const html = String(response?.data || '');
+      const parsed = parseFlixhqServerList(html).map((entry) => ({
+        name: entry.name,
+        id: entry.id,
+        url: buildFlixhqWatchUrl(String(provider.baseUrl), mediaId, entry.id),
+      }));
+
+      if (!parsed.length) throw error;
+      return parsed;
+    }
+  };
+
+  provider.__flixhqServersWrapped = true;
 };
 
 const toServerName = (value?: unknown): string => String(value || '').toLowerCase().trim();
@@ -157,11 +240,15 @@ const extractWithFallback = async (
   requestedServer: StreamingServers,
 ) => {
   const url = new URL(streamUrl);
+  const host = String(url.hostname || '').toLowerCase();
+  const isVideoStr = host.includes('videostr.');
 
   const primary =
-    requestedServer === StreamingServers.MegaCloud
-      ? [MegaCloud, VidCloud, RapidCloud]
-      : [VidCloud, RapidCloud, MegaCloud];
+    isVideoStr
+      ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
+      : requestedServer === StreamingServers.MegaCloud
+        ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
+        : [VidCloud, RapidCloud, MegaCloud, VideoStr];
 
   for (const Extractor of primary) {
     try {
@@ -246,9 +333,11 @@ const wrapMovieSourceFetcher = (provider: ProviderWithClient) => {
 
 export const configureProvider = <T>(provider: T): T => {
   const target = provider as unknown as ProviderWithClient;
+  applyFlixhqBaseUrl(target);
   applyBrowserHeaders(target);
   applyProxyConfig(target);
   applyTimeoutConfig(target);
+  wrapFlixhqServerFetcher(target);
   wrapMovieSourceFetcher(target);
   return provider;
 };

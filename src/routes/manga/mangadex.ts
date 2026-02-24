@@ -1,5 +1,6 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { MANGA } from '@consumet/extensions';
+import axios from 'axios';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
@@ -7,6 +8,36 @@ import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const mangadex = new MANGA.MangaDex();
+
+  const fetchChapterPagesWithFallback = async (chapterId: string) => {
+    try {
+      return await mangadex.fetchChapterPages(chapterId);
+    } catch {
+      const { data } = await axios.get(
+        `https://api.mangadex.org/at-home/server/${encodeURIComponent(chapterId)}`,
+        {
+          timeout: 15000,
+          headers: {
+            Accept: 'application/json',
+            'User-Agent': 'Mozilla/5.0',
+          },
+        },
+      );
+
+      const baseUrl = String(data?.baseUrl || '');
+      const hash = String(data?.chapter?.hash || '');
+      const files = Array.isArray(data?.chapter?.data) ? data.chapter.data : [];
+
+      if (!baseUrl || !hash || !files.length) {
+        throw new Error('No chapter pages found');
+      }
+
+      return files.map((file: string, idx: number) => ({
+        img: `${baseUrl}/data/${hash}/${file}`,
+        page: String(idx + 1),
+      }));
+    }
+  };
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -72,10 +103,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           ? await cache.fetch(
               redis as Redis,
               `mangadex:read:${chapterId}`,
-              () => mangadex.fetchChapterPages(chapterId),
+              () => fetchChapterPagesWithFallback(chapterId),
               REDIS_TTL,
             )
-          : await mangadex.fetchChapterPages(chapterId);
+          : await fetchChapterPagesWithFallback(chapterId);
 
         reply.status(200).send(res);
       } catch (err) {

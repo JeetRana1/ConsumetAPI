@@ -1,5 +1,5 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
-import { MegaCloud, RapidCloud, VidCloud } from '@consumet/extensions/dist/extractors';
+import { MegaCloud, RapidCloud, VidCloud, VideoStr } from '@consumet/extensions/dist/extractors';
 import axios from 'axios';
 
 type SourceEntry = {
@@ -74,10 +74,13 @@ const tryExtractor = async (
   const url = new URL(embedUrl);
 
   for (const server of serverOrder) {
+    const isVideoStr = String(url.hostname || '').toLowerCase().includes('videostr.');
     const extractors =
-      server === StreamingServers.MegaCloud
-        ? [MegaCloud, VidCloud, RapidCloud]
-        : [VidCloud, RapidCloud, MegaCloud];
+      isVideoStr
+        ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
+        : server === StreamingServers.MegaCloud
+          ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
+          : [VidCloud, RapidCloud, MegaCloud, VideoStr];
 
     for (const Extractor of extractors) {
       try {

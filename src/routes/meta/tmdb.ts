@@ -6,12 +6,10 @@ import { tmdbApi } from '../../main';
 import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
-import { promoteEmbedSourcesToDirect } from '../../utils/embedToDirect';
 
 // Map of anime providers that have direct routes in this API
 const ANIME_PROVIDER_ROUTES: Record<string, string> = {
   satoru: '/anime/satoru',
-  desidubanime: '/anime/desidubanime',
   animesaturn: '/anime/animesaturn',
   hianime: '/anime/hianime',
   animepahe: '/anime/animepahe',
@@ -22,9 +20,6 @@ const ANIME_PROVIDER_ROUTES: Record<string, string> = {
 const resolveMovieProvider = (provider?: string) => {
   if (!provider) return undefined;
   switch (provider.toLowerCase()) {
-    case 'netmirror':
-      // Standalone netmirror pipeline (separate from flixhq route aliasing).
-      return configureProvider(new MOVIES.SFlix());
     case 'flixhq':
       return configureProvider(new MOVIES.FlixHQ());
     case 'goku':
@@ -589,7 +584,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const redirectUrl = `${animeBaseUrl}/watch/${episodeId}${queryString}`;
       return reply.redirect(redirectUrl);
     }
-
     if (providerLower === 'dramacool') {
       try {
         let dramacoolEpisodeId = episodeId;
@@ -702,12 +696,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         },
       );
 
-      const responsePayload =
-        String(provider || '').toLowerCase() === 'netmirror'
-          ? await promoteEmbedSourcesToDirect(movieProvider, res as any, server)
-          : res;
-
-      reply.status(200).send(responsePayload);
+      reply.status(200).send(res);
     } catch (err: any) {
       if (type === 'movie' && id) {
         try {
@@ -736,12 +725,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           );
 
           if (fallback) {
-            const responsePayload =
-              String(provider || '').toLowerCase() === 'netmirror'
-                ? await promoteEmbedSourcesToDirect(movieProvider, fallback as any, server)
-                : fallback;
-
-            return reply.status(200).send(responsePayload);
+            return reply.status(200).send(fallback);
           }
         } catch {
           // Ignore fallback errors and return the extraction error below.
@@ -757,3 +741,4 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 };
 
 export default routes;
+

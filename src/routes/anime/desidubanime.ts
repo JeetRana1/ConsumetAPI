@@ -1,988 +1,300 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
-import { AnimeParser, ISearch, IAnimeResult, IAnimeInfo, IEpisodeServer, ISource, MediaFormat, MediaStatus } from '@consumet/extensions/dist/models';
-import { ANIME } from '@consumet/extensions';
-import { StreamingServers, SubOrSub } from '@consumet/extensions/dist/models';
-import { load } from 'cheerio';
-import Redis from 'ioredis/built';
+import axios from 'axios';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
-import { configureProvider } from '../../utils/provider';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import { getProxyCandidates, toAxiosProxyOptions } from '../../utils/outboundProxy';
-
-const execFileAsync = promisify(execFile);
-const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
-const PROD_DIRECT_RACE_TIMEOUT_MS =
-    Number(process.env.SATORU_PROD_DIRECT_RACE_TIMEOUT_MS || '') || 9000;
-
-class DesiDubAnimeProvider extends AnimeParser {
-    name = 'DesiDubAnime';
-    baseUrl = 'https://satoru.one';
-    logo = 'https://satoru.one/satoru-full-logo.png';
-    classPath = 'ANIME.DesiDubAnime';
-    private readonly requestTimeoutMs =
-      Number(process.env.SATORU_FETCH_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 12000 : 10000);
-    private readonly proxyRequestTimeoutMs =
-      Number(process.env.SATORU_PROXY_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 5000 : 5000);
-    private readonly maxProxyAttempts =
-      Number(process.env.SATORU_PROXY_MAX_ATTEMPTS || '') ||
-      (process.env.NODE_ENV === 'production' ? 3 : 3);
-    private readonly preferWindowsCurl =
-      process.platform === 'win32' && !['1', 'true', 'yes'].includes(String(process.env.SATORU_DISABLE_CURL || '').toLowerCase());
-    private readonly satoruCookieHeader = (() => {
-        const rawCookie = String(process.env.SATORU_COOKIE || '').trim();
-        const cfClearance = String(process.env.SATORU_CF_CLEARANCE || '').trim();
-        const parts: string[] = [];
-        if (rawCookie) parts.push(rawCookie);
-        if (cfClearance) parts.push(`cf_clearance=${cfClearance}`);
-        return parts.join('; ');
-    })();
-
-    private async fetch(url: string, headers: any = {}): Promise<string> {
-        const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-        const mergedHeaders: Record<string, string> = {
-            'User-Agent': userAgent,
-            ...(this.satoruCookieHeader ? { Cookie: this.satoruCookieHeader } : {}),
-            ...(headers || {}),
-        };
-
-        if (this.preferWindowsCurl) {
-            try {
-                const curlArgs: string[] = ['-sS', '-L', '--compressed', '-A', userAgent];
-                for (const [key, value] of Object.entries(mergedHeaders)) {
-                    if (String(key).toLowerCase() === 'user-agent') continue;
-                    curlArgs.push('-H', `${key}: ${String(value)}`);
-                }
-                curlArgs.push(url);
-                const { stdout } = await execFileAsync('curl.exe', curlArgs, {
-                    maxBuffer: 1024 * 1024 * 50,
-                    timeout: this.requestTimeoutMs,
-                });
-                if (String(stdout || '').trim()) {
-                    return stdout;
-                }
-            } catch {
-                // Fall through to axios client.
-            }
-        }
-
-        const proxyCandidates = await getProxyCandidates();
-        const chain = [
-            undefined,
-            ...proxyCandidates.slice(0, Math.max(0, this.maxProxyAttempts)),
-        ];
-        let lastErr: unknown;
-
-        for (let i = 0; i < chain.length; i += 1) {
-            const proxyUrl = chain[i];
-            try {
-                const proxyOptions = toAxiosProxyOptions(proxyUrl);
-                const { data } = await this.client.get<string>(url, {
-                    headers: mergedHeaders,
-                    // Direct attempt gets slightly longer timeout; proxy attempts are short.
-                    timeout: i === 0 ? this.requestTimeoutMs : this.proxyRequestTimeoutMs,
-                    responseType: 'text',
-                    ...(proxyOptions as any),
-                });
-                if (typeof data === 'string') return data;
-                return String(data || '');
-            } catch (err) {
-                lastErr = err;
-                continue;
-            }
-        }
-
-        throw lastErr instanceof Error ? lastErr : new Error('DesiDubAnime fetch failed');
-    }
-
-    private normalizeEpisodeId(episodeId: string): string {
-        const raw = String(episodeId || '').trim();
-        if (!raw) return raw;
-        if (raw.includes('$episode$')) {
-            const tail = raw.split('$episode$').pop() || raw;
-            return tail.trim();
-        }
-        return raw;
-    }
-
-    async search(query: string, page: number = 1): Promise<ISearch<IAnimeResult>> {
-        const data = await this.fetch(`${this.baseUrl}/filter?keyword=${encodeURIComponent(query)}&page=${page}`, {
-            'Referer': this.baseUrl,
-        });
-        const $ = load(data);
-        const results: IAnimeResult[] = [];
-
-        $('.flw-item').each((i, el) => {
-            const card = $(el);
-            const title = card.find('.film-name a').text().trim();
-            const href = card.find('.film-name a').attr('href') || '';
-            const slug = href.split('/').pop() || '';
-            // movieId is the numeric data-id on the poster anchor
-            const movieId = card.find('.film-poster-ahref').attr('data-id') || '';
-            // id format: "slug:movieId" to carry both pieces of info
-            const id = movieId ? `${slug}:${movieId}` : slug;
-            const image = card.find('img').attr('data-src') || card.find('img').attr('src');
-
-            const typeStr = card.find('.fdi-item').first().text().trim().toUpperCase();
-            let type: MediaFormat | undefined;
-            if (typeStr === 'TV') type = MediaFormat.TV;
-            else if (typeStr === 'MOVIE') type = MediaFormat.MOVIE;
-            else if (typeStr === 'OVA') type = MediaFormat.OVA;
-            else if (typeStr === 'ONA') type = MediaFormat.ONA;
-            else if (typeStr === 'SPECIAL') type = MediaFormat.SPECIAL;
-
-            results.push({
-                id,
-                title,
-                image,
-                url: `${this.baseUrl}/watch/${slug}`,
-                type,
-            });
-        });
-
-        return {
-            currentPage: page,
-            hasNextPage: $('.pagination .active').next().length > 0,
-            results,
-        };
-    }
-
-    async fetchAnimeInfo(id: string): Promise<IAnimeInfo> {
-        // id can be "slug:movieId" or just a slug
-        const parts = id.split(':');
-        const slug = parts[0];
-        let movieId = parts[1] || '';
-
-        const data = await this.fetch(`${this.baseUrl}/watch/${slug}`, {
-            'Referer': this.baseUrl,
-        });
-        const $ = load(data);
-
-        // Extract movieId from the inline script: const movieId = 3;
-        if (!movieId) {
-            const movieIdMatch = data.match(/const movieId = (\d+);/);
-            movieId = movieIdMatch ? movieIdMatch[1] : '';
-        }
-
-        const animeInfo: IAnimeInfo = {
-            id,
-            title: $('h2.film-name a.dynamic-name, .anisc-detail h2.film-name a').first().text().trim(),
-            image: $('.anisc-poster .film-poster-img').attr('src'),
-            description: $('.film-description p.text').text().trim(),
-            episodes: [],
-        };
-
-        $('.anisc-info .item-title').each((i, el) => {
-            const item = $(el);
-            const label = item.find('.item-head').text().toLowerCase();
-            const value = item.find('.name').text().trim();
-            if (label.includes('japanese')) animeInfo.japaneseTitle = value;
-            if (label.includes('status')) {
-                if (value.includes('Finished')) animeInfo.status = MediaStatus.COMPLETED;
-                else if (value.includes('Currently')) animeInfo.status = MediaStatus.ONGOING;
-            }
-            if (label.includes('premiered')) animeInfo.season = value;
-            if (label.includes('duration')) animeInfo.duration = parseInt(value);
-        });
-
-        animeInfo.genres = $('.item-list a').map((i, el) => $(el).text().trim()).get();
-
-        if (movieId) {
-            // Correct endpoint: /ajax/episode/list/{movieId} (path param, not query)
-            const episodeDataStr = await this.fetch(`${this.baseUrl}/ajax/episode/list/${movieId}`, {
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': `${this.baseUrl}/watch/${slug}`,
-            });
-            try {
-                const episodeData = JSON.parse(episodeDataStr);
-                const $eps = load(episodeData.html || '');
-
-                $eps('.ep-item').each((i, el) => {
-                    const ep = $eps(el);
-                    const epHref = ep.attr('href') || '';
-                    const epUrl = epHref.startsWith('http') ? epHref : `${this.baseUrl}${epHref}`;
-                    animeInfo.episodes?.push({
-                        id: ep.attr('data-id') || '',
-                        number: parseFloat(ep.attr('data-number') || '0'),
-                        title: ep.find('.ep-name').text().trim() || `Episode ${ep.attr('data-number')}`,
-                        url: epUrl,
-                    });
-                });
-            } catch {
-                // episode list parse failed, continue with empty list
-            }
-        }
-
-        return animeInfo;
-    }
-
-    async fetchEpisodeServers(episodeId: string): Promise<IEpisodeServer[]> {
-        const normalizedEpisodeId = this.normalizeEpisodeId(episodeId);
-        const dataStr = await this.fetch(`${this.baseUrl}/ajax/episode/servers?episodeId=${normalizedEpisodeId}`, {
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': this.baseUrl,
-        });
-        const data = JSON.parse(dataStr);
-        const $ = load(data.html);
-        const servers: IEpisodeServer[] = [];
-
-        $('.server-item').each((i, el) => {
-            const item = $(el);
-            const langText = item.closest('.d-flex').find('span').first().text().trim();
-            servers.push({
-                name: `${item.find('a').text().trim()} (${langText})`,
-                url: item.attr('data-id') || '',
-            });
-        });
-
-        return servers;
-    }
-
-    async fetchEpisodeSources(episodeId: string, serverId?: string): Promise<ISource> {
-        const normalizedEpisodeId = this.normalizeEpisodeId(episodeId);
-        const candidateServerIds: string[] = [];
-        if (serverId) candidateServerIds.push(serverId);
-        try {
-            const servers = await this.fetchEpisodeServers(normalizedEpisodeId);
-            for (const srv of servers) {
-                const id = String(srv?.url || '').trim();
-                if (id && !candidateServerIds.includes(id)) candidateServerIds.push(id);
-            }
-        } catch {
-            // If server list endpoint fails, we'll still try any provided serverId.
-        }
-        if (!candidateServerIds.length) throw new Error('No servers found');
-
-        let data: any = null;
-        let resolvedServerId: string | undefined;
-        for (const candidate of candidateServerIds) {
-            try {
-                const dataStr = await this.fetch(`${this.baseUrl}/ajax/episode/sources?id=${candidate}`, {
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Referer': this.baseUrl,
-                });
-                const parsed = JSON.parse(dataStr);
-                const link = String(parsed?.link || '').trim();
-                if (link) {
-                    data = parsed;
-                    resolvedServerId = candidate;
-                    break;
-                }
-                const message = String(parsed?.message || '').toLowerCase();
-                if (message.includes("couldn't find server") || message.includes('server')) {
-                    continue;
-                }
-            } catch {
-                continue;
-            }
-        }
-
-        if (!data?.link) {
-            throw new Error("Couldn't find server. Try another server");
-        }
-
-        let sources = [
-            {
-                url: data.link,
-                isM3U8: String(data.link).includes('.m3u8'),
-            }
-        ];
-        const subtitleTracks: Array<{ url: string; lang: string }> = [];
-        const subtitleSeen = new Set<string>();
-        const addSubtitle = (urlLike: unknown, langLike?: unknown) => {
-            const url = String(urlLike || '').trim();
-            if (!/^https?:\/\//i.test(url)) return;
-            const lower = url.toLowerCase();
-            if (!(/\.(vtt|srt|ass|ssa|ttml|dfxp)(\?|$)/i.test(lower) || lower.includes('/subtitle'))) {
-                return;
-            }
-            if (subtitleSeen.has(lower)) return;
-            subtitleSeen.add(lower);
-            const langRaw = String(langLike || '').trim();
-            subtitleTracks.push({
-                url,
-                lang: langRaw || 'Unknown',
-            });
-        };
-
-        const addSubtitlesFromPayload = (payload: any) => {
-            const arrays = [
-                payload?.subtitles,
-                payload?.captions,
-                payload?.tracks,
-            ];
-            arrays.forEach((arr) => {
-                if (!Array.isArray(arr)) return;
-                arr.forEach((item: any) => {
-                    const kind = String(item?.kind || '').toLowerCase();
-                    if (kind && kind !== 'captions' && kind !== 'subtitles') return;
-                    addSubtitle(item?.url || item?.src || item?.file, item?.lang || item?.label || item?.srclang);
-                });
-            });
-        };
-        addSubtitlesFromPayload(data);
-
-        let embedURL = data.type === 'iframe' ? data.link : undefined;
-
-        if (embedURL) {
-            try {
-                // Follow the embed link to see if we can scrape a direct video file from the HTML
-                const embedHtml = await this.fetch(embedURL, { 'Referer': this.baseUrl });
-
-                // Try to find m3u8 or mp4
-                const m3u8Match = embedHtml.match(/(https?:\/\/[^\s"'<>]+?\.m3u8[^\s"'<>]*)/i);
-                if (m3u8Match) {
-                    sources = [{ url: m3u8Match[1], isM3U8: true }];
-                } else {
-                    const mp4Match = embedHtml.match(/(https?:\/\/[^\s"'<>]+?\.mp4[^\s"'<>]*)/i);
-                    if (mp4Match) {
-                        sources = [{ url: mp4Match[1], isM3U8: false }];
-                    }
-                }
-
-                // Pull subtitle file links from embed HTML when available.
-                const subtitleRegex = /(https?:\/\/[^\s"'<>]+?\.(?:vtt|srt|ass|ssa|ttml|dfxp)[^\s"'<>]*)/gi;
-                let subMatch: RegExpExecArray | null = null;
-                while ((subMatch = subtitleRegex.exec(embedHtml)) !== null) {
-                    addSubtitle(subMatch[1], 'Unknown');
-                }
-            } catch (e) {
-                // Ignore extraction failures and fallback down to embedURL
-            }
-        }
-
-        const result: any = {
-            headers: { Referer: this.baseUrl },
-            sources: sources,
-            embedURL: embedURL,
-            serverId: resolvedServerId,
-            subtitles: subtitleTracks,
-        };
-        // Pass through upstream skip timing metadata when available.
-        if (data?.intro) result.intro = data.intro;
-        if (data?.outro) result.outro = data.outro;
-        if (data?.skip) result.skip = data.skip;
-        if (data?.skips) result.skips = data.skips;
-        if (data?.timestamps) result.timestamps = data.timestamps;
-        return result as ISource;
-    }
-}
-
-const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-    const satoru = configureProvider(new DesiDubAnimeProvider());
-    const hianimeFallback = configureProvider(new ANIME.Hianime());
-    const localEpisodeMapCache = new Map<string, { id: string; ts: number }>();
-    const EPISODE_MAP_TTL_MS = 60 * 60 * 1000;
-
-    const isSatoruBlockedError = (err: any) => {
-        const message = String(err?.message || err || '').toLowerCase();
-        return (
-          message.includes('status code 403') ||
-          message.includes('forbidden') ||
-          message.includes('timed out') ||
-          message.includes('timeout') ||
-          message.includes('etimedout') ||
-          message.includes('aborted')
-        );
-    };
-
-    const normalizeAnimeIdForFallback = (id: string) => String(id || '').split(':')[0];
-    const isHiAnimeEpisodeId = (id: string) => String(id || '').includes('$episode$');
-    const getSatoruSlug = (episodeId: string) => String(episodeId || '').split('$episode$')[0];
-    const normalizeEpisodeIdForWatch = (id: string) => {
-        const raw = String(id || '').trim();
-        if (!raw) return raw;
-        if (raw.includes('$episode$')) {
-            return (raw.split('$episode$').pop() || raw).trim();
-        }
-        return raw;
-    };
-    const fetchHiAnimeFallbackSources = async (episodeId: string) => {
-        const serversToTry = [
-            StreamingServers.VidCloud,
-            StreamingServers.VidStreaming,
-            StreamingServers.MegaCloud,
-        ];
-        let lastErr: unknown;
-        for (const server of serversToTry) {
-            try {
-                const res = await hianimeFallback.fetchEpisodeSources(
-                    episodeId,
-                    server,
-                    SubOrSub.BOTH,
-                );
-                if (Array.isArray((res as any)?.sources) && (res as any).sources.length) return res;
-            } catch (err) {
-                lastErr = err;
-                continue;
-            }
-        }
-        throw lastErr ?? new Error('HiAnime fallback failed');
-    };
-    const fetchHiAnimeRouteFallbackSources = async (episodeId: string) => {
-        const encodedEpisodeId = encodeURIComponent(episodeId);
-        const attempts = [
-            // Keep this list short to avoid long-endpoint stalls.
-            { url: `/anime/hianime/watch/${encodedEpisodeId}`, forceIsDub: undefined as undefined | boolean },
-            { url: `/anime/hianime/watch/${encodedEpisodeId}?server=vidcloud`, forceIsDub: undefined as undefined | boolean },
-            { url: `/anime/hianime/watch/${encodedEpisodeId}?server=vidstreaming`, forceIsDub: undefined as undefined | boolean },
-        ];
-
-        const runAttempt = async (attempt: { url: string; forceIsDub?: boolean }) => {
-                const res = await fastify.inject({ method: 'GET', url: attempt.url });
-                if (res.statusCode >= 400) {
-                    let bodyMessage = '';
-                    try {
-                        const body = JSON.parse(res.body || '{}');
-                        bodyMessage = String(body?.message || '');
-                    } catch {
-                        // ignore parse errors
-                    }
-                    throw new Error(bodyMessage || `HiAnime route failed (${res.statusCode})`);
-                }
-
-                const payload: any = JSON.parse(res.body || '{}');
-                const cleanedSources = (Array.isArray(payload?.sources) ? payload.sources : [])
-                    .filter((src: any) => {
-                        const rawUrl = String(src?.url || '');
-                        return !!rawUrl && !rawUrl.includes('.replace(');
-                    })
-                    .map((src: any) => ({
-                        ...src,
-                        url: String(src.url),
-                        isDub: typeof attempt.forceIsDub === 'boolean' ? attempt.forceIsDub : src?.isDub,
-                    }));
-
-                if (!cleanedSources.length) {
-                    throw new Error('HiAnime route returned no usable sources');
-                }
-                return {
-                    sources: cleanedSources,
-                    subtitles: Array.isArray(payload?.subtitles) ? payload.subtitles : [],
-                    headers: payload?.headers,
-                    intro: payload?.intro,
-                    outro: payload?.outro,
-                } as ISource;
-        };
-
-        return await new Promise<ISource>((resolve, reject) => {
-            let settled = false;
-            let remaining = attempts.length;
-            let lastErr: unknown = new Error('HiAnime route fallback failed');
-
-            for (const attempt of attempts) {
-                runAttempt(attempt)
-                    .then((result) => {
-                        if (settled) return;
-                        settled = true;
-                        resolve(result);
-                    })
-                    .catch((err) => {
-                        lastErr = err;
-                        remaining -= 1;
-                        if (!settled && remaining <= 0) {
-                            settled = true;
-                            reject(lastErr);
-                        }
-                    });
-            }
-        });
-    };
-
-    const pickByTitle = (results: any[], title: string) => {
-        const norm = (v: string) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-        const q = norm(title);
-        if (!q) return results[0];
-        let best = results[0];
-        let bestScore = -1;
-        for (const item of results) {
-            const t = norm(item?.title || item?.name || '');
-            if (!t) continue;
-            let score = 0;
-            if (t === q) score += 100;
-            else if (t.includes(q) || q.includes(t)) score += 70;
-            const qw = q.split(' ').filter(Boolean);
-            const tw = t.split(' ').filter(Boolean);
-            score += qw.filter((w) => tw.includes(w)).length * 10;
-            if (score > bestScore) {
-                bestScore = score;
-                best = item;
-            }
-        }
-        return best;
-    };
-
-    const toEpisodeNum = (ep: any): number => {
-        const n = Number(ep?.number ?? ep?.episode ?? ep?.episodeNumber ?? ep?.episodeNum ?? 0);
-        return Number.isFinite(n) ? n : 0;
-    };
-    const sanitizeDirectNoDash = (payload: any): ISource | null => {
-        if (!payload || typeof payload !== 'object') return null;
-        const direct = (Array.isArray(payload?.sources) ? payload.sources : []).filter((src: any) => {
-            const url = String(src?.url || '').trim().toLowerCase();
-            if (!url) return false;
-            if (Boolean(src?.isEmbed)) return false;
-            if (url.includes('.mpd')) return false;
-            return url.includes('.m3u8') || url.includes('.mp4') || Boolean(src?.isM3U8);
-        });
-        if (!direct.length) return null;
-        return {
-            ...payload,
-            sources: direct,
-        } as ISource;
-    };
-    const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
-        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
-        return await Promise.race([
-            promise,
-            new Promise<T>((_, reject) =>
-                setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs),
-            ),
-        ]);
-    };
-    const firstSuccessful = async <T>(tasks: Array<Promise<T>>): Promise<T> => {
-        return await new Promise<T>((resolve, reject) => {
-            let pending = tasks.length;
-            let lastError: unknown = new Error('All strategies failed');
-            for (const task of tasks) {
-                task
-                    .then((value) => resolve(value))
-                    .catch((err) => {
-                        lastError = err;
-                        pending -= 1;
-                        if (pending <= 0) reject(lastError);
-                    });
-            }
-        });
-    };
-    const slugToTitle = (slug: string) =>
-        String(slug || '')
-            .replace(/-\d+$/, '')
-            .replace(/-/g, ' ')
-            .trim();
-
-    const resolveSatoruEpisodeIdFromHiAnimeId = async (hiEpisodeId: string): Promise<string | null> => {
-        if (!isHiAnimeEpisodeId(hiEpisodeId)) return null;
-        const cached = localEpisodeMapCache.get(hiEpisodeId);
-        if (cached && Date.now() - cached.ts < EPISODE_MAP_TTL_MS) {
-            return cached.id;
-        }
-        const hiSlug = getSatoruSlug(hiEpisodeId);
-        if (!hiSlug) return null;
-
-        let episodeNum = 0;
-        let titleGuess = slugToTitle(hiSlug);
-        try {
-            const hInfo: any = await hianimeFallback.fetchAnimeInfo(hiSlug);
-            titleGuess = String(hInfo?.title || titleGuess).trim() || titleGuess;
-            const hEpisodes = Array.isArray(hInfo?.episodes) ? hInfo.episodes : [];
-            const hCurrent = hEpisodes.find((ep: any) => String(ep?.id || '') === String(hiEpisodeId));
-            episodeNum = toEpisodeNum(hCurrent);
-        } catch {
-            // continue with guessed title
-        }
-
-        if (!episodeNum) {
-            const slugEp = hiSlug.match(/-episode-(\d+)$/i);
-            if (slugEp) episodeNum = Number(slugEp[1] || 0);
-        }
-        if (!episodeNum) return null;
-
-        let sInfo: any = null;
-        const directCandidates = [hiSlug, hiSlug.replace(/-\d+$/, '')].filter(Boolean);
-        for (const candidate of directCandidates) {
-            try {
-                const info = await satoru.fetchAnimeInfo(candidate);
-                if (Array.isArray(info?.episodes) && info.episodes.length) {
-                    sInfo = info;
-                    break;
-                }
-            } catch {
-                // try next candidate
-            }
-        }
-
-        if (!sInfo) {
-            try {
-                const sSearch = await satoru.search(titleGuess, 1);
-                const results = Array.isArray(sSearch?.results) ? sSearch.results : [];
-                if (results.length) {
-                    const picked = pickByTitle(results, titleGuess);
-                    if (picked?.id) {
-                        sInfo = await satoru.fetchAnimeInfo(picked.id);
-                    }
-                }
-            } catch {
-                // no-op
-            }
-        }
-
-        const sEpisodes = Array.isArray(sInfo?.episodes) ? sInfo.episodes : [];
-        if (!sEpisodes.length) return null;
-
-        const exact = sEpisodes.find((ep: any) => toEpisodeNum(ep) === episodeNum);
-        if (exact?.id) {
-            const mappedId = String(exact.id);
-            localEpisodeMapCache.set(hiEpisodeId, { id: mappedId, ts: Date.now() });
-            return mappedId;
-        }
-
-        const idx = Math.max(0, Math.min(sEpisodes.length - 1, episodeNum - 1));
-        const byIndex = sEpisodes[idx];
-        if (byIndex?.id) {
-            const mappedId = String(byIndex.id);
-            localEpisodeMapCache.set(hiEpisodeId, { id: mappedId, ts: Date.now() });
-            return mappedId;
-        }
-
-        return null;
-    };
-
-    const fallbackViaKickAssByOrdinal = async (satoruEpisodeId: string) => {
-        const slug = getSatoruSlug(satoruEpisodeId);
-        if (!slug) return null;
-        const normalizedEpisodeId = normalizeEpisodeIdForWatch(satoruEpisodeId);
-
-        const sInfo: any = await satoru.fetchAnimeInfo(slug);
-        const sEpisodes = Array.isArray(sInfo?.episodes) ? sInfo.episodes : [];
-        const current = sEpisodes.find((ep: any) => {
-            const id = String(ep?.id || '').trim();
-            return (
-                id === String(satoruEpisodeId) ||
-                id === normalizedEpisodeId ||
-                (normalizedEpisodeId && id.includes(normalizedEpisodeId))
-            );
-        });
-        const episodeNum = toEpisodeNum(current);
-        if (!episodeNum) return null;
-
-        const title = String(sInfo?.title || slug).trim();
-        const searchRes = await fastify.inject({
-            method: 'GET',
-            url: `/anime/kickassanime/${encodeURIComponent(title)}`,
-        });
-        const search = (() => {
-            try {
-                return JSON.parse(searchRes.body || '{}');
-            } catch {
-                return {};
-            }
-        })();
-        const results = Array.isArray(search?.results) ? search.results : [];
-        if (!results.length) return null;
-        const picked = pickByTitle(results, title);
-        if (!picked?.id) return null;
-
-        const infoRes = await fastify.inject({
-            method: 'GET',
-            url: `/anime/kickassanime/info?id=${encodeURIComponent(picked.id)}`,
-        });
-        const kInfo: any = (() => {
-            try {
-                return JSON.parse(infoRes.body || '{}');
-            } catch {
-                return {};
-            }
-        })();
-        const kEpisodes = Array.isArray(kInfo?.episodes) ? kInfo.episodes : [];
-        if (!kEpisodes.length) return null;
-        const kEpisode =
-            kEpisodes.find((ep: any) => toEpisodeNum(ep) === episodeNum) ||
-            kEpisodes[Math.max(0, Math.min(kEpisodes.length - 1, episodeNum - 1))];
-        if (!kEpisode?.id) return null;
-
-        const watchRes = await fastify.inject({
-            method: 'GET',
-            url: `/anime/kickassanime/watch/${encodeURIComponent(kEpisode.id)}`,
-        });
-        const watch: any = (() => {
-            try {
-                return JSON.parse(watchRes.body || '{}');
-            } catch {
-                return {};
-            }
-        })();
-        if (!watch || !Array.isArray((watch as any).sources) || !(watch as any).sources.length) return null;
-        return sanitizeDirectNoDash(watch);
-    };
-
-    const fallbackViaHiAnimeByOrdinal = async (satoruEpisodeId: string) => {
-        const slug = getSatoruSlug(satoruEpisodeId);
-        if (!slug) return null;
-        const normalizedEpisodeId = normalizeEpisodeIdForWatch(satoruEpisodeId);
-
-        const sInfo: any = await satoru.fetchAnimeInfo(slug);
-        const sEpisodes = Array.isArray(sInfo?.episodes) ? sInfo.episodes : [];
-        const current = sEpisodes.find((ep: any) => {
-            const id = String(ep?.id || '').trim();
-            return (
-                id === String(satoruEpisodeId) ||
-                id === normalizedEpisodeId ||
-                (normalizedEpisodeId && id.includes(normalizedEpisodeId))
-            );
-        });
-        const episodeNum = toEpisodeNum(current);
-        if (!episodeNum) return null;
-
-        const title = String(sInfo?.title || slugToTitle(slug)).trim();
-        if (!title) return null;
-
-        const hSearch: any = await hianimeFallback.search(title, 1);
-        const hResults = Array.isArray(hSearch?.results) ? hSearch.results : [];
-        if (!hResults.length) return null;
-        const hPicked = pickByTitle(hResults, title);
-        if (!hPicked?.id) return null;
-
-        const hInfo: any = await hianimeFallback.fetchAnimeInfo(hPicked.id);
-        const hEpisodes = Array.isArray(hInfo?.episodes) ? hInfo.episodes : [];
-        if (!hEpisodes.length) return null;
-        const hEpisode =
-            hEpisodes.find((ep: any) => toEpisodeNum(ep) === episodeNum) ||
-            hEpisodes[Math.max(0, Math.min(hEpisodes.length - 1, episodeNum - 1))];
-        if (!hEpisode?.id) return null;
-
-        const directFromRoute = sanitizeDirectNoDash(await fetchHiAnimeRouteFallbackSources(String(hEpisode.id)));
-        if (directFromRoute) return directFromRoute;
-
-        const directFromProvider = sanitizeDirectNoDash(await fetchHiAnimeFallbackSources(String(hEpisode.id)));
-        return directFromProvider;
-    };
-
-    fastify.get('/', (_, rp) => {
-        rp.status(200).send({
-            intro:
-                "Welcome to the DesiDubAnime provider: check out the provider's website @ https://satoru.one/",
-            routes: ['/:query', '/info/:id', '/watch/:episodeId', '/servers/:episodeId'],
-        });
+import { Redis } from 'ioredis';
+
+const BASE_URL = 'https://www.desidubanime.me';
+const JINA_PREFIX = 'https://r.jina.ai/http://';
+
+type SearchResult = {
+  id: string;
+  title: string;
+  url: string;
+  image?: string;
+  type?: string;
+};
+
+const toJinaUrl = (url: string) => `${JINA_PREFIX}${url.replace(/^https?:\/\//i, '')}`;
+
+const fetchJinaText = async (url: string) => {
+  const res = await axios.get(toJinaUrl(url), {
+    timeout: 45000,
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    },
+  });
+  return String(res.data || '');
+};
+
+const extractSlug = (animeUrl: string) => {
+  const m = animeUrl.match(/\/anime\/([^\/\s)]+)\/?/i);
+  return m ? m[1] : '';
+};
+
+const extractEpisodeNumber = (watchSlug: string) => {
+  const m = String(watchSlug).match(/-episode-(\d+)(?:\/)?$/i);
+  return m ? Number(m[1]) : 0;
+};
+
+const parseSearchResultsFromMarkdown = (md: string): SearchResult[] => {
+  const out: SearchResult[] = [];
+  const seen = new Set<string>();
+  const regex = /###\s+\[([^\]]+?)\]\((https?:\/\/www\.desidubanime\.me\/anime\/[^)\s]+)\)/gi;
+  let m: RegExpExecArray | null = null;
+  while ((m = regex.exec(md)) !== null) {
+    const title = String(m[1] || '').trim();
+    const url = String(m[2] || '').trim();
+    const id = extractSlug(url);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      title,
+      url,
+      type: 'TV',
     });
+  }
+  return out;
+};
 
-    fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
-        const query = (request.params as { query: string }).query;
-        const page = (request.query as { page?: number }).page || 1;
+const parseInfoFromMarkdown = (id: string, md: string) => {
+  const titleMatch = md.match(/^Title:\s*(.+?)\s*-\s*Desi Dub Anime/im);
+  const title = String(titleMatch?.[1] || id).trim();
 
-        try {
-            let res = redis
-                ? await cache.fetch(
-                    redis as Redis,
-                    `desidubanime:search:${query}:${page}`,
-                    async () => await satoru.search(query, page),
-                    REDIS_TTL,
-                )
-                : await satoru.search(query, page);
+  const overviewMatch = md.match(/Overview:([\s\S]+?)(?:\n\n\*|More Season|Episodes|-{3,}|###)/i);
+  const description = overviewMatch ? String(overviewMatch[1]).trim() : '';
 
-            reply.status(200).send(res);
-        } catch (err) {
-            if (isSatoruBlockedError(err)) {
-                try {
-                    const fallback = await hianimeFallback.search(query, page);
-                    return reply.status(200).send(fallback);
-                } catch (fallbackErr) {
-                    return reply.status(500).send({
-                        message: (fallbackErr as Error).message,
-                    });
-                }
-            }
-            reply.status(500).send({
-                message: (err as Error).message,
-            });
-        }
+  const imgMatch = md.match(/!\[Image[^\]]*\]\((https?:\/\/[^\s)]+)\)/i);
+  const image = imgMatch?.[1];
+
+  const epRegex =
+    /\[!\[Image[^\]]*\]\([^)]+\)\s+(.+?)\s+play_circle_filled\s+Episode\s+(\d+)\]\((https?:\/\/www\.desidubanime\.me\/watch\/[^)\s]+)\s+/gi;
+  const episodes: any[] = [];
+  let em: RegExpExecArray | null = null;
+  while ((em = epRegex.exec(md)) !== null) {
+    const epTitle = String(em[1] || '').trim();
+    const number = Number(em[2] || 0);
+    const url = String(em[3] || '').trim();
+    const watchSlug = url
+      .replace(/^https?:\/\/www\.desidubanime\.me\/watch\//i, '')
+      .replace(/\/+$/, '');
+    if (!watchSlug || !number) continue;
+    episodes.push({
+      id: watchSlug,
+      number,
+      title: epTitle || `Episode ${number}`,
+      url,
     });
+  }
 
-    fastify.get('/info/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-        const id = (request.params as { id: string }).id;
+  episodes.sort((a, b) => a.number - b.number);
 
-        try {
-            let res = redis
-                ? await cache.fetch(
-                    redis as Redis,
-                    `desidubanime:info:${id}`,
-                    async () => await satoru.fetchAnimeInfo(id),
-                    REDIS_TTL,
-                )
-                : await satoru.fetchAnimeInfo(id);
+  return {
+    id,
+    title,
+    image,
+    description,
+    episodes,
+  };
+};
 
-            reply.status(200).send(res);
-        } catch (err) {
-            if (isSatoruBlockedError(err)) {
-                try {
-                    const fallback = await hianimeFallback.fetchAnimeInfo(normalizeAnimeIdForFallback(id));
-                    return reply.status(200).send(fallback);
-                } catch (fallbackErr) {
-                    return reply.status(500).send({ message: (fallbackErr as Error).message });
-                }
-            }
-            reply
-                .status(500)
-                .send({ message: (err as Error).message });
-        }
+const sanitizeSources = (payload: any, opts?: { allowEmbedIfNoDirect?: boolean }) => {
+  const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+  const direct = sources.filter((s: any) => {
+    const u = String(s?.url || '').toLowerCase();
+    if (!u) return false;
+    if (u.includes('.mpd')) return false;
+    return !Boolean(s?.isEmbed) && (Boolean(s?.isM3U8) || u.includes('.m3u8') || u.includes('.mp4'));
+  });
+
+  const allowEmbedIfNoDirect = Boolean(opts?.allowEmbedIfNoDirect);
+  const embed = allowEmbedIfNoDirect
+    ? sources.filter((s: any) => {
+        const u = String(s?.url || '').toLowerCase();
+        if (!u || u.includes('.mpd')) return false;
+        return Boolean(s?.isEmbed);
+      })
+    : [];
+  const filtered = direct.length ? direct : embed;
+
+  return {
+    ...payload,
+    sources: filtered,
+  };
+};
+
+const pickBestByTitle = (results: any[], title: string) => {
+  const needle = String(title || '').toLowerCase().trim();
+  if (!needle) return results[0];
+  const exact = results.find((r) => String(r?.title || '').toLowerCase().trim() === needle);
+  if (exact) return exact;
+  const contains = results.find((r) =>
+    String(r?.title || '').toLowerCase().includes(needle),
+  );
+  if (contains) return contains;
+  return results[0];
+};
+
+const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
+  fastify.get('/', async (_, reply) => {
+    reply.status(200).send({
+      intro: `Welcome to the desidubanime provider: ${BASE_URL}`,
+      note: 'Catalog is read from desidubanime.me. On watch failure, fallback is Satoru only.',
+      routes: ['/:query', '/info', '/info/:id', '/watch/:episodeId'],
     });
+  });
 
-    fastify.get(
-        '/watch/:episodeId',
-        async (request: FastifyRequest, reply: FastifyReply) => {
-            const episodeId = (request.params as { episodeId: string }).episodeId;
-            const serverId = (request.query as { serverId?: string }).serverId;
-            const normalizedEpisodeId = normalizeEpisodeIdForWatch(episodeId);
-            const isHiAnimeStyle = isHiAnimeEpisodeId(episodeId);
-            let resolvedSatoruEpisodeId = normalizedEpisodeId;
+  fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = (request.params as { query: string }).query;
+    const page = Number((request.query as { page?: number }).page || 1);
 
-            // In production, HiAnime-style IDs are the most common path and
-            // direct fallback is more reliable than waiting on Satoru origin.
-            if (isHiAnimeStyle && IS_PRODUCTION) {
-                try {
-                    const fastDirect = sanitizeDirectNoDash(
-                        await withTimeout(fetchHiAnimeRouteFallbackSources(episodeId), PROD_DIRECT_RACE_TIMEOUT_MS, 'HiAnime route fallback'),
-                    );
-                    if (fastDirect) return reply.status(200).send(fastDirect);
-                } catch {
-                    // Continue to provider fallback below.
-                }
-                try {
-                    const providerDirect = sanitizeDirectNoDash(
-                        await withTimeout(fetchHiAnimeFallbackSources(episodeId), PROD_DIRECT_RACE_TIMEOUT_MS, 'HiAnime provider fallback'),
-                    );
-                    if (providerDirect) return reply.status(200).send(providerDirect);
-                } catch {
-                    // Continue to legacy path for resilience.
-                }
+    try {
+      const key = `desidubanime:search:${query}:${page}`;
+      const data = redis
+        ? await cache.fetch(
+            redis as Redis,
+            key,
+            async () => {
+              const md = await fetchJinaText(`${BASE_URL}/search?keyword=${encodeURIComponent(query)}`);
+              return parseSearchResultsFromMarkdown(md);
+            },
+            REDIS_TTL,
+          )
+        : parseSearchResultsFromMarkdown(
+            await fetchJinaText(`${BASE_URL}/search?keyword=${encodeURIComponent(query)}`),
+          );
 
-                // Race multiple direct-only strategies and return the first usable source.
-                try {
-                    const winner = await withTimeout(
-                        firstSuccessful([
-                            (async () => {
-                                const direct = sanitizeDirectNoDash(await fetchHiAnimeRouteFallbackSources(episodeId));
-                                if (!direct) throw new Error('HiAnime route produced no direct source');
-                                return direct;
-                            })(),
-                            (async () => {
-                                const direct = sanitizeDirectNoDash(await fetchHiAnimeFallbackSources(episodeId));
-                                if (!direct) throw new Error('HiAnime provider produced no direct source');
-                                return direct;
-                            })(),
-                            (async () => {
-                                const mapped = await resolveSatoruEpisodeIdFromHiAnimeId(episodeId);
-                                if (!mapped) throw new Error('Failed to map HiAnime episode to Satoru episode');
-                                const raw = await satoru.fetchEpisodeSources(mapped, serverId);
-                                const direct = sanitizeDirectNoDash(raw);
-                                if (!direct) throw new Error('Mapped Satoru source was not direct playable');
-                                return direct;
-                            })(),
-                        ]),
-                        PROD_DIRECT_RACE_TIMEOUT_MS,
-                        'Direct strategy race',
-                    );
-                    return reply.status(200).send(winner);
-                } catch {
-                    // Continue to legacy path for resilience.
-                }
-            }
+      reply.status(200).send({
+        currentPage: page,
+        hasNextPage: false,
+        results: data,
+      });
+    } catch (err) {
+      reply.status(500).send({
+        message: (err as Error).message,
+      });
+    }
+  });
 
-            if (isHiAnimeStyle) {
-                try {
-                    const mapKey = `desidubanime:episode-map:${episodeId}`;
-                    const mapped = redis
-                        ? await cache.fetch(
-                            redis as Redis,
-                            mapKey,
-                            async () => (await resolveSatoruEpisodeIdFromHiAnimeId(episodeId)) || '',
-                            REDIS_TTL,
-                        )
-                        : (await resolveSatoruEpisodeIdFromHiAnimeId(episodeId)) || '';
-                    if (mapped) resolvedSatoruEpisodeId = mapped;
-                } catch {
-                    // mapping failed; keep normalized fallback id
-                }
-            }
+  const infoHandler = async (id: string, reply: FastifyReply) => {
+    try {
+      const key = `desidubanime:info:${id}`;
+      const data = redis
+        ? await cache.fetch(
+            redis as Redis,
+            key,
+            async () => {
+              const md = await fetchJinaText(`${BASE_URL}/anime/${id}/`);
+              return parseInfoFromMarkdown(id, md);
+            },
+            REDIS_TTL,
+          )
+        : parseInfoFromMarkdown(id, await fetchJinaText(`${BASE_URL}/anime/${id}/`));
 
-            try {
-                let res = redis
-                    ? await cache.fetch(
-                        redis as Redis,
-                        `desidubanime:watch:${resolvedSatoruEpisodeId}:${serverId}`,
-                        async () => await satoru.fetchEpisodeSources(resolvedSatoruEpisodeId, serverId),
-                        REDIS_TTL,
-                    )
-                    : await satoru.fetchEpisodeSources(resolvedSatoruEpisodeId, serverId);
+      reply.status(200).send(data);
+    } catch (err) {
+      reply.status(500).send({
+        message: (err as Error).message,
+      });
+    }
+  };
 
-                if (IS_PRODUCTION) {
-                    const direct = sanitizeDirectNoDash(res);
-                    if (direct) return reply.status(200).send(direct);
-                    throw new Error('Satoru returned no direct playable source');
-                }
+  fastify.get('/info', async (request: FastifyRequest, reply: FastifyReply) => {
+    const id = String((request.query as { id?: string }).id || '').trim();
+    if (!id) return reply.status(400).send({ message: 'id is required' });
+    return infoHandler(id, reply);
+  });
 
-                reply.status(200).send(res);
-            } catch (err) {
-                if (
-                    isSatoruBlockedError(err) ||
-                    String((err as Error)?.message || '').toLowerCase().includes('no servers found') ||
-                    isHiAnimeStyle
-                ) {
-                    if (isHiAnimeStyle) {
-                        try {
-                            const fallback = await fetchHiAnimeRouteFallbackSources(episodeId);
-                            return reply.status(200).send(fallback);
-                        } catch (fallbackErr) {
-                            try {
-                                const fallback = await fetchHiAnimeFallbackSources(episodeId);
-                                return reply.status(200).send(fallback);
-                            } catch (fallbackErr2) {
-                                return reply.status(500).send({ message: (fallbackErr2 as Error).message || (fallbackErr as Error).message });
-                            }
-                        }
-                    }
-                    try {
-                        const hi = await fallbackViaHiAnimeByOrdinal(episodeId);
-                        if (hi) return reply.status(200).send(hi);
-                    } catch {
-                        // ignore and continue
-                    }
-                    try {
-                        const kick = await fallbackViaKickAssByOrdinal(episodeId);
-                        if (kick) return reply.status(200).send(kick);
-                    } catch {
-                        // ignore and continue
-                    }
-                }
-                reply
-                    .status(500)
-                    .send({ message: (err as Error).message });
-            }
-        },
-    );
+  fastify.get('/info/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const id = String((request.params as { id: string }).id || '').trim();
+    if (!id) return reply.status(400).send({ message: 'id is required' });
+    return infoHandler(id, reply);
+  });
 
-    fastify.get(
-        '/servers/:episodeId',
-        async (request: FastifyRequest, reply: FastifyReply) => {
-            const episodeId = (request.params as { episodeId: string }).episodeId;
+  fastify.get('/watch/:episodeId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const episodeId = String((request.params as { episodeId: string }).episodeId || '').trim();
 
-            try {
-                let res = redis
-                    ? await cache.fetch(
-                        redis as Redis,
-                        `desidubanime:servers:${episodeId}`,
-                        async () => await satoru.fetchEpisodeServers(episodeId),
-                        REDIS_TTL,
-                    )
-                    : await satoru.fetchEpisodeServers(episodeId);
+    if (!episodeId) return reply.status(400).send({ message: 'episodeId is required' });
 
-                reply.status(200).send(res);
-            } catch (err) {
-                if (isSatoruBlockedError(err)) {
-                    return reply.status(200).send([
-                        { name: 'VidCloud (fallback)', url: 'vidcloud' },
-                        { name: 'VidStreaming (fallback)', url: 'vidstreaming' },
-                    ]);
-                }
-                reply
-                    .status(500)
-                    .send({ message: (err as Error).message });
-            }
-        },
-    );
+    try {
+      const epNumber = extractEpisodeNumber(episodeId);
+      if (!epNumber) {
+        return reply.status(404).send({ message: 'Could not parse episode number from id.' });
+      }
+
+      const md = await fetchJinaText(`${BASE_URL}/watch/${episodeId}/`);
+      const animeLinkMatch = md.match(
+        /####\s+\[[^\]]+?\]\(https?:\/\/www\.desidubanime\.me\/anime\/([^\/)\s]+)\/?/i,
+      );
+      const animeSlug = String(animeLinkMatch?.[1] || '').trim();
+      if (!animeSlug) {
+        return reply.status(404).send({ message: 'Could not resolve anime slug from episode page.' });
+      }
+
+      const info = parseInfoFromMarkdown(animeSlug, await fetchJinaText(`${BASE_URL}/anime/${animeSlug}/`));
+      const title = String(info?.title || animeSlug.replace(/-/g, ' ')).trim();
+      // Fallback policy requested by user: Satoru only.
+      const sSearchRes = await fastify.inject({
+        method: 'GET',
+        url: `/anime/satoru/${encodeURIComponent(title)}`,
+      });
+      if (sSearchRes.statusCode >= 400) {
+        return reply.status(502).send({ message: 'DesiDubAnime failed and Satoru search failed.' });
+      }
+      const sSearchPayload: any = JSON.parse(sSearchRes.body || '{}');
+      const sResults = Array.isArray(sSearchPayload?.results) ? sSearchPayload.results : [];
+      if (!sResults.length) {
+        return reply.status(404).send({ message: 'DesiDubAnime failed and no Satoru match found.' });
+      }
+      const picked = pickBestByTitle(sResults, title);
+      if (!picked?.id) {
+        return reply.status(404).send({ message: 'DesiDubAnime failed and no Satoru match found.' });
+      }
+
+      const sInfoRes = await fastify.inject({
+        method: 'GET',
+        url: `/anime/satoru/info/${encodeURIComponent(String(picked.id))}`,
+      });
+      if (sInfoRes.statusCode >= 400) {
+        return reply.status(502).send({ message: 'DesiDubAnime failed and Satoru info failed.' });
+      }
+      const sInfoPayload: any = JSON.parse(sInfoRes.body || '{}');
+      const sEpisodes = Array.isArray(sInfoPayload?.episodes) ? sInfoPayload.episodes : [];
+      const sEpisode =
+        sEpisodes.find((ep: any) => Number(ep?.number) === epNumber) ||
+        sEpisodes[Math.max(0, Math.min(sEpisodes.length - 1, epNumber - 1))];
+      if (!sEpisode?.id) {
+        return reply.status(404).send({ message: 'DesiDubAnime failed and Satoru episode not found.' });
+      }
+
+      const encodedWatchId = encodeURIComponent(String(sEpisode.id));
+      const watchCandidates = [
+        `/anime/satoru/watch/${encodedWatchId}`,
+        `/anime/satoru/watch/${encodedWatchId}?serverId=hd-1`,
+      ];
+
+      for (const watchUrl of watchCandidates) {
+        const sWatchRes = await fastify.inject({
+          method: 'GET',
+          url: watchUrl,
+        });
+        if (sWatchRes.statusCode >= 400) continue;
+        const sWatchPayload: any = JSON.parse(sWatchRes.body || '{}');
+        const clean = sanitizeSources(sWatchPayload, { allowEmbedIfNoDirect: true });
+        if (Array.isArray(clean?.sources) && clean.sources.length) {
+          return reply.status(200).send(clean);
+        }
+      }
+
+      return reply.status(502).send({ message: 'DesiDubAnime failed and Satoru watch returned no sources.' });
+    } catch (err) {
+      reply.status(500).send({
+        message: (err as Error).message,
+      });
+    }
+  });
 };
 
 export default routes;

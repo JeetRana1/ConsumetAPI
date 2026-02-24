@@ -1,8 +1,15 @@
 const DIRECT_MEDIA_REGEX =
   /(https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4|mpd)(?:\?[^\s"'<>]*)?)/gi;
 
-const isDirectMediaUrl = (value: string): boolean =>
-  /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || ''));
+const HLS_PROXY_REGEX = /(https?:\/\/[^\s"'<>]+?\/m3u8-proxy\?[^\s"'<>]+)/gi;
+
+const isDirectMediaUrl = (value: string): boolean => {
+  const normalized = String(value || '');
+  if (/\.(m3u8|mp4|mpd)(\?|$)/i.test(normalized)) return true;
+  if (/\/m3u8-proxy\?/i.test(normalized)) return true;
+  if (/m3u8-proxy/i.test(normalized) && /[?&]url=/i.test(normalized)) return true;
+  return false;
+};
 
 const normalizeUrl = (value?: string): string | undefined => {
   const raw = String(value || '').trim();
@@ -18,6 +25,12 @@ const parseUrlsFromText = (text: string): string[] => {
     const url = normalizeUrl(match[1]);
     if (url && isDirectMediaUrl(url)) found.add(url);
   }
+
+  while ((match = HLS_PROXY_REGEX.exec(text)) !== null) {
+    const url = normalizeUrl(match[1]);
+    if (url && isDirectMediaUrl(url)) found.add(url);
+  }
+
   return [...found];
 };
 
@@ -114,8 +127,7 @@ export const extractDirectSourcesWithPlaywright = async (
     .map((url) => ({
       url,
       quality: 'auto',
-      isM3U8: url.includes('.m3u8'),
+      isM3U8: /\.m3u8(\?|$)/i.test(url) || /\/m3u8-proxy\?/i.test(url),
       isEmbed: false as const,
     }));
 };
-
