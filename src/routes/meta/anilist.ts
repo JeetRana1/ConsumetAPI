@@ -338,7 +338,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                   async () =>
                     await fetchWithServerFallback(
                       async (selectedServer) =>
-                        provider === 'zoro' || provider === 'animekai'
+                        provider === 'zoro'
                           ? await anilist.fetchEpisodeSources(
                               episodeId,
                               selectedServer,
@@ -355,7 +355,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               .send(
                 await fetchWithServerFallback(
                   async (selectedServer) =>
-                    provider === 'zoro' || provider === 'animekai'
+                    provider === 'zoro'
                       ? await anilist.fetchEpisodeSources(
                           episodeId,
                           selectedServer,

@@ -1,22 +1,14 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { PROVIDERS_LIST } from '@consumet/extensions';
 
-import animeunity from './animeunity';
-import animepahe from './animepahe';
 import hianime from './hianime';
-import animekai from './animekai';
 import animesaturn from './animesaturn';
-import kickassanime from './kickassanime';
 import satoru from './satoru';
 
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  await fastify.register(animepahe, { prefix: '/animepahe' });
-  await fastify.register(animeunity, { prefix: '/animeunity' });
   await fastify.register(hianime, { prefix: '/hianime' });
-  await fastify.register(animekai, { prefix: '/animekai' });
   await fastify.register(animesaturn, { prefix: '/animesaturn' });
-  await fastify.register(kickassanime, { prefix: '/kickassanime' });
   await fastify.register(satoru, { prefix: '/satoru' });
 
 

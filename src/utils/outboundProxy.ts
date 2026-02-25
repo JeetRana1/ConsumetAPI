@@ -1,13 +1,14 @@
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
 type AxiosProxyValue =
   | false
   | {
-      protocol?: string;
-      host: string;
-      port: number;
-      auth?: { username: string; password: string };
-    };
+    protocol?: string;
+    host: string;
+    port: number;
+    auth?: { username: string; password: string };
+  };
 
 type AxiosProxyOptions = {
   proxy?: AxiosProxyValue;
@@ -146,4 +147,28 @@ export const toAxiosProxyOptions = (proxyUrl?: string): AxiosProxyOptions => {
       ...(username ? { auth: { username, password } } : {}),
     },
   };
+};
+
+/**
+ * Drop-in replacement for `axios.get` that automatically routes through
+ * the first configured proxy (from the OUTBOUND_PROXIES env var).
+ * Falls back to a direct connection if no proxy is configured or if the proxy fails.
+ */
+export const proxyGet = async <T = any>(
+  url: string,
+  config: import('axios').AxiosRequestConfig = {},
+): Promise<import('axios').AxiosResponse<T>> => {
+  const proxies = getProxyCandidatesSync();
+  const first = proxies[0];
+
+  if (first) {
+    try {
+      const proxyOptions = toAxiosProxyOptions(first);
+      return await axios.get<T>(url, { ...config, ...(proxyOptions as any) });
+    } catch {
+      // Proxy failed — fall through to direct request.
+    }
+  }
+
+  return axios.get<T>(url, config);
 };

@@ -9,14 +9,18 @@ import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 import { fetchWithServerFallback } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
+import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
+import { proxyGet } from '../../utils/outboundProxy';
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-const HIANIME_BASE_URLS = ['https://hianime.to', 'https://hianime.sx'];
+const HIANIME_BASE_URLS = ['https://hianime.to', 'https://hianime.sx', 'https://9animetv.to'];
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const WATCH_ATTEMPT_TIMEOUT_MS = IS_PRODUCTION ? 8000 : 12000;
 const EMBED_CHECK_TIMEOUT_MS = IS_PRODUCTION ? 8000 : 10000;
 const SERVER_HTML_TIMEOUT_MS = IS_PRODUCTION ? 9000 : 12000;
+const EMBED_EXTRACT_TIMEOUT_MS = IS_PRODUCTION ? 7000 : 9000;
+const BROWSER_SUBTITLE_TIMEOUT_MS = IS_PRODUCTION ? 9000 : 13000;
 
 const serverIdMap: Record<string, string> = {
   [StreamingServers.VidCloud]: '1',
@@ -28,6 +32,96 @@ const serverIdMap: Record<string, string> = {
 const getEpisodeNumberFromId = (episodeId: string) => {
   const after = episodeId.split('$episode$')[1] || '';
   return after.split('$')[0] || '';
+};
+
+const watchUrlFromEpisodeId = (baseUrl: string, episodeId: string) =>
+  `${baseUrl}/watch/${episodeId.replace('$episode$', '?ep=').replace(/\$auto|\$sub|\$dub/gi, '')}`;
+
+const subtitleUrlRegex = /https?:\/\/[^\s"'<>]+?\.(?:vtt|srt)(?:\?[^\s"'<>]*)?/gi;
+
+const parseSubtitleUrlsFromText = (text: string): string[] => {
+  const out = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = subtitleUrlRegex.exec(String(text || ''))) !== null) {
+    const url = String(m[0] || '').trim();
+    if (url) out.add(url);
+  }
+  return [...out];
+};
+
+const subtitleLangFromUrl = (url: string): string => {
+  const u = String(url || '').toLowerCase();
+  if (/(^|[\/._-])(en|eng|english)([\/._-]|$)/i.test(u)) return 'English';
+  if (/(^|[\/._-])(ja|jpn|japanese)([\/._-]|$)/i.test(u)) return 'Japanese';
+  if (/(^|[\/._-])(es|spa|spanish)([\/._-]|$)/i.test(u)) return 'Spanish';
+  if (/(^|[\/._-])(fr|fre|french)([\/._-]|$)/i.test(u)) return 'French';
+  return 'Unknown';
+};
+
+const fetchHianimeSubtitlesViaBrowser = async (
+  baseUrl: string,
+  episodeId: string,
+): Promise<Array<{ lang: string; url: string; kind: string }>> => {
+  let chromium: any;
+  try {
+    ({ chromium } = await import('playwright'));
+  } catch {
+    return [];
+  }
+
+  const watchUrl = watchUrlFromEpisodeId(baseUrl, episodeId);
+  const found = new Set<string>();
+  let browser: any;
+
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    const context = await browser.newContext({ userAgent: UA });
+    const page = await context.newPage();
+
+    page.on('request', (req: any) => {
+      const u = String(req.url?.() || req.url || '').trim();
+      if (!u) return;
+      if (/\.vtt(\?|$)|\.srt(\?|$)/i.test(u)) found.add(u);
+    });
+
+    page.on('response', async (res: any) => {
+      try {
+        const u = String(res.url?.() || '').trim();
+        if (u && /\.vtt(\?|$)|\.srt(\?|$)/i.test(u)) found.add(u);
+
+        const ct = String((res.headers?.()['content-type'] || '')).toLowerCase();
+        if (ct.includes('json') || ct.includes('javascript') || ct.includes('text')) {
+          const body = String((await res.text()) || '');
+          for (const sub of parseSubtitleUrlsFromText(body)) found.add(sub);
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: BROWSER_SUBTITLE_TIMEOUT_MS });
+    await page.waitForTimeout(3500);
+    await context.close();
+  } catch {
+    // ignore browser failures
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return [...found].map((url) => ({
+    lang: subtitleLangFromUrl(url),
+    url,
+    kind: 'captions',
+  }));
 };
 
 const extractServerDataIds = (
@@ -66,7 +160,7 @@ const DEAD_EMBED_REGEX = /(file not found|we're sorry|can't find the file|copyri
 
 const isEmbedAlive = async (embedLink: string, referer: string) => {
   try {
-    const res = await axios.get(embedLink, {
+    const res = await proxyGet(embedLink, {
       headers: {
         'User-Agent': UA,
         Referer: referer,
@@ -96,14 +190,14 @@ const fetchHianimeViaAjaxFallback = async (
   const epNum = getEpisodeNumberFromId(episodeId);
   if (!epNum) throw new Error('Invalid episode id');
 
-  const referer = `${baseUrl}/watch/${episodeId.replace('$episode$', '?ep=').replace(/\$auto|\$sub|\$dub/gi, '')}`;
+  const referer = watchUrlFromEpisodeId(baseUrl, episodeId);
   const commonHeaders = {
     'User-Agent': UA,
     Referer: referer,
     'X-Requested-With': 'XMLHttpRequest',
   };
 
-  const serversRes = await axios.get(`${baseUrl}/ajax/v2/episode/servers?episodeId=${epNum}`, {
+  const serversRes = await proxyGet(`${baseUrl}/ajax/v2/episode/servers?episodeId=${epNum}`, {
     headers: commonHeaders,
   });
   const dataIds = extractServerDataIds(serversRes?.data?.html || '', server, category);
@@ -113,7 +207,7 @@ const fetchHianimeViaAjaxFallback = async (
   const subtitles: any[] = [];
 
   for (const dataId of dataIds) {
-    const sourceMeta = await axios.get(`${baseUrl}/ajax/v2/episode/sources?id=${encodeURIComponent(dataId)}`, {
+    const sourceMeta = await proxyGet(`${baseUrl}/ajax/v2/episode/sources?id=${encodeURIComponent(dataId)}`, {
       headers: commonHeaders,
     });
     const embedLink = sourceMeta?.data?.link;
@@ -123,7 +217,7 @@ const fetchHianimeViaAjaxFallback = async (
     let crawlrTracks: any[] = [];
     try {
       const crawlrUrl = `https://crawlr.cc/9D7F1B3E8?url=${encodeURIComponent(embedLink)}`;
-      const crawlrRes = await axios.get(crawlrUrl, { headers: { 'User-Agent': UA } });
+      const crawlrRes = await proxyGet(crawlrUrl, { headers: { 'User-Agent': UA } });
       const crawlrData = crawlrRes?.data || {};
       crawlrSources = Array.isArray(crawlrData?.sources) ? crawlrData.sources : [];
       crawlrTracks = Array.isArray(crawlrData?.tracks) ? crawlrData.tracks : [];
@@ -150,6 +244,26 @@ const fetchHianimeViaAjaxFallback = async (
       });
     });
 
+    // Try extracting direct stream URLs from embed page before keeping embed fallback.
+    if (!crawlrSources.length) {
+      try {
+        const extracted = await extractDirectSourcesWithPlaywright(embedLink, referer, EMBED_EXTRACT_TIMEOUT_MS);
+        extracted.forEach((s: any) => {
+          const u = String(s?.url || '').toLowerCase();
+          if (!u || u.includes('.mpd')) return;
+          if (!(Boolean(s?.isM3U8) || u.includes('.m3u8') || u.includes('m3u8-proxy') || u.includes('.mp4'))) return;
+          sources.push({
+            url: s.url,
+            quality: s.quality || 'auto',
+            isM3U8: Boolean(s?.isM3U8) || u.includes('.m3u8') || u.includes('m3u8-proxy'),
+            isEmbed: false,
+          });
+        });
+      } catch (_) {
+        // Continue to iframe fallback checks below.
+      }
+    }
+
     // New HiAnime often returns iframe-only payloads. Keep it only if embed page is alive.
     if (!crawlrSources.length) {
       const alive = await isEmbedAlive(embedLink, referer);
@@ -165,7 +279,17 @@ const fetchHianimeViaAjaxFallback = async (
   }
 
   const dedupSources = [...new Map(sources.map((s) => [String(s.url), s])).values()];
-  const dedupSubs = [...new Map(subtitles.map((s) => [String(s.url), s])).values()];
+  let dedupSubs = [...new Map(subtitles.map((s) => [String(s.url), s])).values()];
+  if (!dedupSubs.length) {
+    try {
+      const browserSubs = await fetchHianimeSubtitlesViaBrowser(baseUrl, episodeId);
+      if (browserSubs.length) {
+        dedupSubs = [...new Map(browserSubs.map((s) => [String(s.url), s])).values()];
+      }
+    } catch {
+      // ignore subtitle browser fallback failures
+    }
+  }
   if (!dedupSources.length && !dedupSubs.length) {
     throw new Error('HiAnime fallback returned no sources and no subtitles');
   }
@@ -179,6 +303,21 @@ const fetchHianimeViaAjaxFallback = async (
 const hasSources = (payload: any): boolean =>
   !!payload && Array.isArray(payload.sources) && payload.sources.length > 0;
 
+const mergeSubtitles = (primary: any, secondary: any) => {
+  const p = Array.isArray(primary) ? primary : [];
+  const s = Array.isArray(secondary) ? secondary : [];
+  const merged = [...p, ...s].filter((row) => row && (row.url || row.file || row.src));
+  return [...new Map(merged.map((row: any) => [String(row.url || row.file || row.src), row])).values()];
+};
+
+const withMergedSubtitles = (payload: any, subtitles: any[]) => {
+  const merged = mergeSubtitles(payload?.subtitles, subtitles);
+  return {
+    ...(payload || {}),
+    subtitles: merged,
+  };
+};
+
 const hasDirectPlayableSource = (payload: any): boolean =>
   !!payload &&
   Array.isArray(payload.sources) &&
@@ -190,10 +329,55 @@ const hasDirectPlayableSource = (payload: any): boolean =>
     return (isM3U8 || isMp4) && !isEmbed;
   });
 
+const resolveDirectFromEmbedPayload = async (payload: any, referer?: string) => {
+  const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+  const embedUrls = sources
+    .filter((s: any) => Boolean(s?.isEmbed))
+    .map((s: any) => String(s?.url || '').trim())
+    .filter((url: string) => /^https?:\/\//i.test(url))
+    .slice(0, 2);
+
+  if (!embedUrls.length) return payload;
+
+  const directSources: any[] = [];
+  for (const embedUrl of embedUrls) {
+    try {
+      const extracted = await extractDirectSourcesWithPlaywright(
+        embedUrl,
+        referer || embedUrl,
+        EMBED_EXTRACT_TIMEOUT_MS,
+      );
+      extracted.forEach((s: any) => {
+        const u = String(s?.url || '').toLowerCase();
+        if (!u || u.includes('.mpd')) return;
+        if (!(Boolean(s?.isM3U8) || u.includes('.m3u8') || u.includes('m3u8-proxy') || u.includes('.mp4'))) return;
+        directSources.push({
+          ...s,
+          isEmbed: false,
+          isM3U8: Boolean(s?.isM3U8) || u.includes('.m3u8') || u.includes('m3u8-proxy'),
+        });
+      });
+    } catch {
+      // ignore single embed extraction failure
+    }
+  }
+
+  if (!directSources.length) return payload;
+
+  const dedupDirect = [...new Map(directSources.map((s: any) => [String(s.url), s])).values()];
+  return {
+    ...payload,
+    sources: dedupDirect,
+  };
+};
+
 const getAnimeSearchNameFromEpisodeId = (episodeId: string) =>
   String(episodeId.split('$episode$')[0] || '')
+    .replace(/-(tv|movie|ova|ona|special)(-\d+)?$/i, '')
     .replace(/-\d+$/, '')
     .replace(/-/g, ' ')
+    .replace(/\b(tv|movie|ova|ona|special)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 
 const getEpisodeOrdinalFromServersHtml = async (baseUrl: string, episodeId: string) => {
@@ -201,7 +385,7 @@ const getEpisodeOrdinalFromServersHtml = async (baseUrl: string, episodeId: stri
     const epNum = getEpisodeNumberFromId(episodeId);
     if (!epNum) return null;
     const referer = `${baseUrl}/watch/${episodeId.replace('$episode$', '?ep=').replace(/\$auto|\$sub|\$dub/gi, '')}`;
-    const res = await axios.get(`${baseUrl}/ajax/v2/episode/servers?episodeId=${epNum}`, {
+    const res = await proxyGet(`${baseUrl}/ajax/v2/episode/servers?episodeId=${epNum}`, {
       headers: {
         'User-Agent': UA,
         Referer: referer,
@@ -248,9 +432,87 @@ const fallbackViaAnimeSaturn = async (
   return watch;
 };
 
+const extractSubtitleRows = (payload: any): Array<{ lang: string; url: string; kind: string }> => {
+  const all = [
+    ...(Array.isArray(payload?.subtitles) ? payload.subtitles : []),
+    ...(Array.isArray(payload?.captions) ? payload.captions : []),
+    ...(Array.isArray(payload?.tracks) ? payload.tracks : []),
+  ];
+
+  const rows = all
+    .map((row: any) => {
+      const url = row?.url || row?.file || row?.src;
+      if (!url || typeof url !== 'string') return null;
+      return {
+        lang: String(row?.lang || row?.label || row?.language || 'Unknown'),
+        url: String(url),
+        kind: String(row?.kind || 'captions'),
+      };
+    })
+    .filter(Boolean) as Array<{ lang: string; url: string; kind: string }>;
+
+  return [...new Map(rows.map((row) => [String(row.url), row])).values()];
+};
+
+const fallbackViaAnimeKaiSubtitles = async (
+  animekai: any,
+  episodeId: string,
+  baseUrl: string,
+  category: SubOrSub,
+) => {
+  const searchName = getAnimeSearchNameFromEpisodeId(episodeId);
+  if (!searchName) return [];
+  const targetEpisode = await getEpisodeOrdinalFromServersHtml(baseUrl, episodeId);
+  if (!targetEpisode) return [];
+
+  const searchRes = await animekai.search(searchName, 1);
+  const results = Array.isArray(searchRes?.results) ? searchRes.results : [];
+  if (!results.length) return [];
+
+  const normQuery = String(searchName).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const picked = results
+    .map((row: any) => {
+      const title = String(row?.title || row?.name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      let score = 0;
+      if (title === normQuery) score += 100;
+      else if (title.includes(normQuery) || normQuery.includes(title)) score += 70;
+      score -= Math.abs(title.length - normQuery.length) * 0.1;
+      return { row, score };
+    })
+    .sort((a: any, b: any) => b.score - a.score)[0]?.row;
+
+  if (!picked?.id) return [];
+
+  const info = await animekai.fetchAnimeInfo(String(picked.id));
+  const episodes = Array.isArray(info?.episodes) ? info.episodes : [];
+  if (!episodes.length) return [];
+
+  const ep =
+    episodes.find((e: any) => Number(e?.number || e?.episode || e?.episodeNum || 0) === targetEpisode) ||
+    episodes[Math.max(0, Math.min(episodes.length - 1, targetEpisode - 1))];
+  if (!ep?.id) return [];
+
+  const collectFor = async (subOrDub: SubOrSub) => {
+    try {
+      const watch = await animekai.fetchEpisodeSources(String(ep.id), undefined, subOrDub);
+      return extractSubtitleRows(watch);
+    } catch {
+      return [];
+    }
+  };
+
+  if (category === SubOrSub.BOTH) {
+    const [subRows, dubRows] = await Promise.all([collectFor(SubOrSub.SUB), collectFor(SubOrSub.DUB)]);
+    return [...new Map([...subRows, ...dubRows].map((row) => [String(row.url), row])).values()];
+  }
+
+  return await collectFor(category === SubOrSub.DUB ? SubOrSub.DUB : SubOrSub.SUB);
+};
+
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const hianime = configureProvider(new ANIME.Hianime());
   const animesaturn = configureProvider(new ANIME.AnimeSaturn());
+  const animekai = configureProvider(new ANIME.AnimeKai());
   const tryWithBaseUrlFallback = async <T>(
     worker: (baseUrl: string) => Promise<T>,
   ): Promise<T> => {
@@ -345,6 +607,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         if (category === 'both') {
           let lastBaseUrl = (hianime as any).baseUrl || HIANIME_BASE_URLS[0];
           let res: any;
+          let hianimeSubs: any[] = [];
           try {
             res = await tryWithBaseUrlFallback(async (baseUrl) => {
               lastBaseUrl = baseUrl;
@@ -386,9 +649,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               }
 
               if (sources.length > 0) {
+                hianimeSubs = [...new Set(subtitles.map((s) => JSON.stringify(s)))].map((s) => JSON.parse(s));
                 return {
                   sources,
-                  subtitles: [...new Set(subtitles.map((s) => JSON.stringify(s)))].map((s) => JSON.parse(s)),
+                  subtitles: hianimeSubs,
                   intro:
                     subRes.status === 'fulfilled'
                       ? subRes.value.intro
@@ -407,19 +671,38 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 SubOrSub.BOTH,
               );
             });
+            hianimeSubs = mergeSubtitles(hianimeSubs, res?.subtitles);
           } catch (_) {
             const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
             if (!saturn || !hasSources(saturn)) {
               throw _;
             }
-            res = saturn;
+            res = withMergedSubtitles(saturn, hianimeSubs);
+          }
+
+          if (!hasDirectPlayableSource(res)) {
+            res = await resolveDirectFromEmbedPayload(
+              res,
+              `${lastBaseUrl}/watch/${episodeId.replace('$episode$', '?ep=').replace(/\$auto|\$sub|\$dub/gi, '')}`,
+            );
+          }
+
+          if (!Array.isArray(res?.subtitles) || !res.subtitles.length) {
+            try {
+              const anikaiSubs = await fallbackViaAnimeKaiSubtitles(animekai, episodeId, lastBaseUrl, SubOrSub.BOTH);
+              if (anikaiSubs.length) {
+                res = withMergedSubtitles(res, anikaiSubs);
+              }
+            } catch {
+              // ignore anikai subtitle fallback errors
+            }
           }
 
           if (!hasDirectPlayableSource(res)) {
             try {
               const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
               if (saturn && hasSources(saturn)) {
-                reply.status(200).send(saturn);
+                reply.status(200).send(withMergedSubtitles(saturn, res?.subtitles));
                 return;
               }
             } catch (_) {
@@ -433,6 +716,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         let res;
         let lastBaseUrl = (hianime as any).baseUrl || HIANIME_BASE_URLS[0];
+        let hianimeSubs: any[] = [];
         const fetchWatch = async () =>
           await tryWithBaseUrlFallback(async (baseUrl) => {
             lastBaseUrl = baseUrl;
@@ -453,12 +737,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               // Ignore and try ajax fallback below.
             }
 
-            return await fetchHianimeViaAjaxFallback(
+            const ajaxRes = await fetchHianimeViaAjaxFallback(
               baseUrl,
               episodeId,
               server || StreamingServers.VidStreaming,
               category as SubOrSub,
             );
+            hianimeSubs = mergeSubtitles(hianimeSubs, ajaxRes?.subtitles);
+            return ajaxRes;
           });
 
         try {
@@ -475,14 +761,37 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           if (!saturn || !hasSources(saturn)) {
             throw _;
           }
-          res = saturn;
+          res = withMergedSubtitles(saturn, hianimeSubs);
+        }
+
+        if (!hasDirectPlayableSource(res)) {
+          res = await resolveDirectFromEmbedPayload(
+            res,
+            `${lastBaseUrl}/watch/${episodeId.replace('$episode$', '?ep=').replace(/\$auto|\$sub|\$dub/gi, '')}`,
+          );
+        }
+
+        if (!Array.isArray(res?.subtitles) || !res.subtitles.length) {
+          try {
+            const anikaiSubs = await fallbackViaAnimeKaiSubtitles(
+              animekai,
+              episodeId,
+              lastBaseUrl,
+              category as SubOrSub,
+            );
+            if (anikaiSubs.length) {
+              res = withMergedSubtitles(res, anikaiSubs);
+            }
+          } catch {
+            // ignore anikai subtitle fallback errors
+          }
         }
 
         if (!hasDirectPlayableSource(res)) {
           try {
             const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
             if (saturn && hasSources(saturn)) {
-              reply.status(200).send(saturn);
+              reply.status(200).send(withMergedSubtitles(saturn, mergeSubtitles(hianimeSubs, res?.subtitles)));
               return;
             }
           } catch (_) {

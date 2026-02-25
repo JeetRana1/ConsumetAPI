@@ -12,9 +12,6 @@ const ANIME_PROVIDER_ROUTES: Record<string, string> = {
   satoru: '/anime/satoru',
   animesaturn: '/anime/animesaturn',
   hianime: '/anime/hianime',
-  animepahe: '/anime/animepahe',
-  animekai: '/anime/animekai',
-  kickassanime: '/anime/kickassanime',
 };
 
 const resolveMovieProvider = (provider?: string) => {
@@ -174,10 +171,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const providersInOrder = [
       'satoru',
       'hianime',
-      'animekai',
-      'kickassanime',
       'animesaturn',
-      'animepahe',
     ];
 
     for (const providerKey of providersInOrder) {
@@ -428,12 +422,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const payload = JSON.parse(delegated.body || '{}');
         const fallbackEpisodes = Array.isArray(payload?.episodes)
           ? payload.episodes
-              .map((ep: any) => ({
-                id: ep?.id || ep?.url,
-                url: ep?.url || ep?.id,
-                episode: parseEpisodeNumber(String(ep?.id || ep?.url || ep?.title || '')),
-              }))
-              .filter((ep: any) => typeof ep.id === 'string')
+            .map((ep: any) => ({
+              id: ep?.id || ep?.url,
+              url: ep?.url || ep?.id,
+              episode: parseEpisodeNumber(String(ep?.id || ep?.url || ep?.title || '')),
+            }))
+            .filter((ep: any) => typeof ep.id === 'string')
           : [];
         if (fallbackEpisodes.length) {
           dcEpisodes = fallbackEpisodes;
@@ -596,8 +590,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             : undefined;
           const epMatch = Array.isArray(seasonMatch?.episodes)
             ? seasonMatch.episodes.find(
-                (ep: any) => Number(ep?.episode || ep?.number || 0) === requestedEpisode,
-              )
+              (ep: any) => Number(ep?.episode || ep?.number || 0) === requestedEpisode,
+            )
             : undefined;
           dramacoolEpisodeId = epMatch?.id;
         }
@@ -687,9 +681,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         server
           ? [server]
           : [
-              StreamingServers.VidCloud,
-              StreamingServers.UpCloud,
-            ],
+            StreamingServers.VidCloud,
+            StreamingServers.UpCloud,
+          ],
         {
           attemptTimeoutMs: MOVIE_WATCH_ATTEMPT_TIMEOUT_MS,
           requireDirectPlayable: directOnly,

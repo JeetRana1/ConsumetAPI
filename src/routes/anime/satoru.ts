@@ -598,74 +598,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         return null;
     };
 
-    const fallbackViaKickAssByOrdinal = async (satoruEpisodeId: string) => {
-        const slug = getSatoruSlug(satoruEpisodeId);
-        if (!slug) return null;
-        const normalizedEpisodeId = normalizeEpisodeIdForWatch(satoruEpisodeId);
-
-        const sInfo: any = await satoru.fetchAnimeInfo(slug);
-        const sEpisodes = Array.isArray(sInfo?.episodes) ? sInfo.episodes : [];
-        const current = sEpisodes.find((ep: any) => {
-            const id = String(ep?.id || '').trim();
-            return (
-                id === String(satoruEpisodeId) ||
-                id === normalizedEpisodeId ||
-                (normalizedEpisodeId && id.includes(normalizedEpisodeId))
-            );
-        });
-        const episodeNum = toEpisodeNum(current);
-        if (!episodeNum) return null;
-
-        const title = String(sInfo?.title || slug).trim();
-        const searchRes = await fastify.inject({
-            method: 'GET',
-            url: `/anime/kickassanime/${encodeURIComponent(title)}`,
-        });
-        const search = (() => {
-            try {
-                return JSON.parse(searchRes.body || '{}');
-            } catch {
-                return {};
-            }
-        })();
-        const results = Array.isArray(search?.results) ? search.results : [];
-        if (!results.length) return null;
-        const picked = pickByTitle(results, title);
-        if (!picked?.id) return null;
-
-        const infoRes = await fastify.inject({
-            method: 'GET',
-            url: `/anime/kickassanime/info?id=${encodeURIComponent(picked.id)}`,
-        });
-        const kInfo: any = (() => {
-            try {
-                return JSON.parse(infoRes.body || '{}');
-            } catch {
-                return {};
-            }
-        })();
-        const kEpisodes = Array.isArray(kInfo?.episodes) ? kInfo.episodes : [];
-        if (!kEpisodes.length) return null;
-        const kEpisode =
-            kEpisodes.find((ep: any) => toEpisodeNum(ep) === episodeNum) ||
-            kEpisodes[Math.max(0, Math.min(kEpisodes.length - 1, episodeNum - 1))];
-        if (!kEpisode?.id) return null;
-
-        const watchRes = await fastify.inject({
-            method: 'GET',
-            url: `/anime/kickassanime/watch/${encodeURIComponent(kEpisode.id)}`,
-        });
-        const watch: any = (() => {
-            try {
-                return JSON.parse(watchRes.body || '{}');
-            } catch {
-                return {};
-            }
-        })();
-        if (!watch || !Array.isArray((watch as any).sources) || !(watch as any).sources.length) return null;
-        return sanitizeDirectNoDash(watch);
-    };
-
     const fallbackViaHiAnimeByOrdinal = async (satoruEpisodeId: string) => {
         const slug = getSatoruSlug(satoruEpisodeId);
         if (!slug) return null;
@@ -894,12 +826,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     try {
                         const hi = await fallbackViaHiAnimeByOrdinal(episodeId);
                         if (hi) return reply.status(200).send(hi);
-                    } catch {
-                        // ignore and continue
-                    }
-                    try {
-                        const kick = await fallbackViaKickAssByOrdinal(episodeId);
-                        if (kick) return reply.status(200).send(kick);
                     } catch {
                         // ignore and continue
                     }
