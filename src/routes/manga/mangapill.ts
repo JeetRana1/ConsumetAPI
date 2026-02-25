@@ -1,12 +1,13 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { MANGA } from '@consumet/extensions';
+import { configureProvider } from '../../utils/provider';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const mangapill = new MANGA.MangaPill();
+  const mangapill = configureProvider(new MANGA.MangaPill());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -22,11 +23,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `mangapill:search:${query}`,
-            () => mangapill.search(query),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `mangapill:search:${query}`,
+          () => mangapill.search(query),
+          REDIS_TTL,
+        )
         : await mangapill.search(query);
 
       reply.status(200).send(res);
@@ -45,11 +46,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `mangapill:info:${id}`,
-            () => mangapill.fetchMangaInfo(id),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `mangapill:info:${id}`,
+          () => mangapill.fetchMangaInfo(id),
+          REDIS_TTL,
+        )
         : await mangapill.fetchMangaInfo(id);
 
       reply.status(200).send(res);
@@ -68,11 +69,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `mangapill:read:${chapterId}`,
-            () => mangapill.fetchChapterPages(chapterId),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `mangapill:read:${chapterId}`,
+          () => mangapill.fetchChapterPages(chapterId),
+          REDIS_TTL,
+        )
         : await mangapill.fetchChapterPages(chapterId);
 
       reply.status(200).send(res);

@@ -1,12 +1,13 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { MANGA } from '@consumet/extensions';
+import { configureProvider } from '../../utils/provider';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const mangahere = new MANGA.MangaHere();
+  const mangahere = configureProvider(new MANGA.MangaHere());
 
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
@@ -23,11 +24,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `mangahere:search:${query}:${page ?? 1}`,
-            () => mangahere.search(query, page),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `mangahere:search:${query}:${page ?? 1}`,
+          () => mangahere.search(query, page),
+          REDIS_TTL,
+        )
         : await mangahere.search(query, page);
 
       reply.status(200).send(res);
@@ -46,11 +47,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `mangahere:info:${id}`,
-            () => mangahere.fetchMangaInfo(id),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `mangahere:info:${id}`,
+          () => mangahere.fetchMangaInfo(id),
+          REDIS_TTL,
+        )
         : await mangahere.fetchMangaInfo(id);
 
       reply.status(200).send(res);
@@ -69,11 +70,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
-            `mangahere:read:${chapterId}`,
-            () => mangahere.fetchChapterPages(chapterId),
-            REDIS_TTL,
-          )
+          redis as Redis,
+          `mangahere:read:${chapterId}`,
+          () => mangahere.fetchChapterPages(chapterId),
+          REDIS_TTL,
+        )
         : await mangahere.fetchChapterPages(chapterId);
 
       reply.status(200).send(res);

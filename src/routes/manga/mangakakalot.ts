@@ -1,14 +1,15 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { MANGA } from '@consumet/extensions';
+import { configureProvider } from '../../utils/provider';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const mangakakalot = new MANGA.MangaKakalot();
-  const mangapill = new MANGA.MangaPill();
-  const mangahere = new MANGA.MangaHere();
+  const mangakakalot = configureProvider(new MANGA.MangaKakalot());
+  const mangapill = configureProvider(new MANGA.MangaPill());
+  const mangahere = configureProvider(new MANGA.MangaHere());
 
   const fromCache = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
     return redis ? await cache.fetch(redis as Redis, key, fn, REDIS_TTL) : await fn();
