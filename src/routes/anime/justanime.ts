@@ -104,6 +104,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 ];
 
                 return {
+                    headers: { Referer: 'https://justanime.to/' },
                     sources,
                     subtitles,
                     intro: data.sub?.intro || data.dub?.intro,
