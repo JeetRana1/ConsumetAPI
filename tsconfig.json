@@ -3,7 +3,8 @@
     /* Language and Environment */
     "target": "es2021" /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */,
     "lib": [
-      "es2021"
+      "es2021",
+      "dom"
     ],
     /* Modules */
     "module": "commonjs" /* Specify what module code is generated. */,
