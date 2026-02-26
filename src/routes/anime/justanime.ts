@@ -42,6 +42,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     isFiller: ep.isFiller
                 }));
 
+                console.log('info is', info);
+                console.log('episodes is', episodes);
                 return {
                     ...info,
                     episodes
