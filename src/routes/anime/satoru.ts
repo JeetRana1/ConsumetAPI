@@ -23,13 +23,13 @@ class SatoruProvider extends AnimeParser {
     classPath = 'ANIME.Satoru';
     private readonly requestTimeoutMs =
       Number(process.env.SATORU_FETCH_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 12000 : 10000);
+      (process.env.NODE_ENV === 'production' ? 10000 : 8000);
     private readonly proxyRequestTimeoutMs =
       Number(process.env.SATORU_PROXY_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 5000 : 5000);
+      (process.env.NODE_ENV === 'production' ? 4000 : 4000);
     private readonly maxProxyAttempts =
       Number(process.env.SATORU_PROXY_MAX_ATTEMPTS || '') ||
-      (process.env.NODE_ENV === 'production' ? 3 : 3);
+      (process.env.NODE_ENV === 'production' ? 2 : 2);
     private readonly preferWindowsCurl =
       process.platform === 'win32' && !['1', 'true', 'yes'].includes(String(process.env.SATORU_DISABLE_CURL || '').toLowerCase());
     private readonly satoruCookieHeader = (() => {
@@ -256,28 +256,26 @@ class SatoruProvider extends AnimeParser {
         }
         if (!candidateServerIds.length) throw new Error('No servers found');
 
+        // Try all servers IN PARALLEL - first one with a link wins (no waiting for slow servers)
+        const tryServer = async (candidate: string): Promise<{ data: any; resolvedServerId: string }> => {
+            const dataStr = await this.fetch(`${this.baseUrl}/ajax/episode/sources?id=${candidate}`, {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': this.baseUrl,
+            });
+            const parsed = JSON.parse(dataStr);
+            const link = String(parsed?.link || '').trim();
+            if (!link) throw new Error(`Server ${candidate} returned no link`);
+            return { data: parsed, resolvedServerId: candidate };
+        };
+
         let data: any = null;
         let resolvedServerId: string | undefined;
-        for (const candidate of candidateServerIds) {
-            try {
-                const dataStr = await this.fetch(`${this.baseUrl}/ajax/episode/sources?id=${candidate}`, {
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Referer': this.baseUrl,
-                });
-                const parsed = JSON.parse(dataStr);
-                const link = String(parsed?.link || '').trim();
-                if (link) {
-                    data = parsed;
-                    resolvedServerId = candidate;
-                    break;
-                }
-                const message = String(parsed?.message || '').toLowerCase();
-                if (message.includes("couldn't find server") || message.includes('server')) {
-                    continue;
-                }
-            } catch {
-                continue;
-            }
+        try {
+            const winner = await Promise.any(candidateServerIds.map(tryServer));
+            data = winner.data;
+            resolvedServerId = winner.resolvedServerId;
+        } catch {
+            throw new Error("Couldn't find server. Try another server");
         }
 
         if (!data?.link) {
