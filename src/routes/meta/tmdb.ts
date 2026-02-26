@@ -10,7 +10,6 @@ import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
 // Map of anime providers that have direct routes in this API
 const ANIME_PROVIDER_ROUTES: Record<string, string> = {
   satoru: '/anime/satoru',
-  animesaturn: '/anime/animesaturn',
   hianime: '/anime/hianime',
   justanime: '/anime/justanime',
 };
@@ -172,7 +171,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const providersInOrder = [
       'satoru',
       'hianime',
-      'animesaturn',
     ];
 
     for (const providerKey of providersInOrder) {

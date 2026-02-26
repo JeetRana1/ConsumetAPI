@@ -402,36 +402,6 @@ const getEpisodeOrdinalFromServersHtml = async (baseUrl: string, episodeId: stri
   }
 };
 
-const fallbackViaAnimeSaturn = async (
-  animesaturn: any,
-  episodeId: string,
-  baseUrl: string,
-) => {
-  const searchName = getAnimeSearchNameFromEpisodeId(episodeId);
-  if (!searchName) return null;
-
-  const targetEpisode = await getEpisodeOrdinalFromServersHtml(baseUrl, episodeId);
-  const searchRes = await animesaturn.search(searchName);
-  const results = Array.isArray(searchRes?.results) ? searchRes.results : [];
-  const first = results[0];
-  if (!first?.id) return null;
-
-  const info = await animesaturn.fetchAnimeInfo(first.id);
-  const episodes = Array.isArray(info?.episodes) ? info.episodes : [];
-  if (!episodes.length) return null;
-
-  let picked = episodes[0];
-  if (targetEpisode) {
-    const exact = episodes.find((ep: any) => Number(ep?.number) === targetEpisode);
-    if (exact) picked = exact;
-  }
-
-  if (!picked?.id) return null;
-  const watch = await animesaturn.fetchEpisodeSources(picked.id);
-  if (!hasSources(watch)) return null;
-  return watch;
-};
-
 const extractSubtitleRows = (payload: any): Array<{ lang: string; url: string; kind: string }> => {
   const all = [
     ...(Array.isArray(payload?.subtitles) ? payload.subtitles : []),
@@ -511,7 +481,6 @@ const fallbackViaAnimeKaiSubtitles = async (
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const hianime = configureProvider(new ANIME.Hianime());
-  const animesaturn = configureProvider(new ANIME.AnimeSaturn());
   const animekai = configureProvider(new ANIME.AnimeKai());
   const tryWithBaseUrlFallback = async <T>(
     worker: (baseUrl: string) => Promise<T>,
@@ -673,11 +642,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             });
             hianimeSubs = mergeSubtitles(hianimeSubs, res?.subtitles);
           } catch (_) {
-            const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
-            if (!saturn || !hasSources(saturn)) {
-              throw _;
-            }
-            res = withMergedSubtitles(saturn, hianimeSubs);
+            throw _;
           }
 
           if (!hasDirectPlayableSource(res)) {
@@ -695,18 +660,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               }
             } catch {
               // ignore anikai subtitle fallback errors
-            }
-          }
-
-          if (!hasDirectPlayableSource(res)) {
-            try {
-              const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
-              if (saturn && hasSources(saturn)) {
-                reply.status(200).send(withMergedSubtitles(saturn, res?.subtitles));
-                return;
-              }
-            } catch (_) {
-              // keep original response when fallback fails
             }
           }
 
@@ -757,11 +710,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             )
             : await fetchWatch();
         } catch (_) {
-          const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
-          if (!saturn || !hasSources(saturn)) {
-            throw _;
-          }
-          res = withMergedSubtitles(saturn, hianimeSubs);
+          throw _;
         }
 
         if (!hasDirectPlayableSource(res)) {
@@ -784,18 +733,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             }
           } catch {
             // ignore anikai subtitle fallback errors
-          }
-        }
-
-        if (!hasDirectPlayableSource(res)) {
-          try {
-            const saturn = await fallbackViaAnimeSaturn(animesaturn, episodeId, lastBaseUrl);
-            if (saturn && hasSources(saturn)) {
-              reply.status(200).send(withMergedSubtitles(saturn, mergeSubtitles(hianimeSubs, res?.subtitles)));
-              return;
-            }
-          } catch (_) {
-            // keep original response when fallback fails
           }
         }
 
