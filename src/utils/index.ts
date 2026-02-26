@@ -397,7 +397,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           try {
             const normalized = normalizeManifestUri(candidate);
             const abs = new URL(normalized, base).toString();
-            const childReferer = `${target.protocol}//${target.host}/`;
+            const childReferer = referer || `${target.protocol}//${target.host}/`;
             const refererQuery = `&referer=${encodeURIComponent(childReferer)}`;
             return `/utils/proxy?url=${encodeURIComponent(abs)}${refererQuery}`;
           } catch {
@@ -416,7 +416,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             if (reachabilityCache.has(abs)) return reachabilityCache.get(abs) as boolean;
 
             const probeTarget = new URL(abs);
-            const probeReferer = `${target.protocol}//${target.host}/`;
+            const probeReferer = referer || `${target.protocol}//${target.host}/`;
             const probeConfig = {
               responseType: 'arraybuffer',
               timeout: 7000,
