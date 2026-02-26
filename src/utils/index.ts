@@ -319,7 +319,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const refererForRequest = referer || `${target.protocol}//${target.host}/`;
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
-        timeout: looksLikeM3u8 ? 35000 : 75000,
+        timeout: looksLikeM3u8 ? 60000 : 90000,
         headers: {
           Referer: refererForRequest,
           Origin: (() => {
