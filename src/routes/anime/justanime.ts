@@ -86,13 +86,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 const sources = [
                     ...(sub.sources || []).map((s: any) => ({
                         url: s.file,
-                        quality: s.label || 'auto',
+                        quality: 'Subbed',
                         isM3U8: String(s.file).includes('.m3u8'),
                         isSub: true
                     })),
                     ...(dub.sources || []).map((s: any) => ({
                         url: s.file,
-                        quality: s.label || 'auto',
+                        quality: 'Dubbed',
                         isM3U8: String(s.file).includes('.m3u8'),
                         isSub: false
                     }))
