@@ -3,6 +3,7 @@ import axios from 'axios';
 import { getProxyCandidates, toAxiosProxyOptions } from './outboundProxy';
 
 import Providers from './providers';
+import * as cheerio from 'cheerio';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(new Providers().getProviders);
@@ -114,10 +115,109 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     }
   };
 
+  let aflIndexCache: { name: string; slug: string; norm: string }[] | null = null;
+
+  const fetchFillerFromAFL = async (title: string): Promise<{ id: string | null; episodes: Record<string, 'manga' | 'mixed' | 'filler'> }> => {
+    try {
+      const buildSlugCandidates = (t: string) => {
+        const raw = normalizeTitleForMatch(t);
+        if (!raw) return [];
+        const cleaned = raw
+          .replace(/\b(tv|season|part|cour|movie|ona|ova)\b/g, ' ')
+          .replace(/[^\w\s-]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const tokens = cleaned.split(' ').filter(Boolean);
+        if (!tokens.length) return [];
+        return [
+          tokens.join('-'),
+          tokens.slice(0, 3).join('-'),
+          tokens.slice(0, 2).join('-')
+        ];
+      };
+
+      const slugCandidates = [...new Set(buildSlugCandidates(title))];
+      if (!slugCandidates.length) return { id: null, episodes: {} };
+
+      if (!aflIndexCache) {
+        try {
+          const { data } = await axios.get('https://www.animefillerlist.com/shows', {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36' },
+            timeout: 10000,
+          });
+          const $ = cheerio.load(data);
+          const entries: { name: string; slug: string; norm: string }[] = [];
+          $('#ShowList .Group li a').each((_, el) => {
+            const name = $(el).text().trim();
+            const href = $(el).attr('href') || '';
+            const slug = href.split('/').pop() || '';
+            if (name && slug) {
+              entries.push({ name, slug, norm: normalizeTitleForMatch(name) });
+            }
+          });
+          if (entries.length > 0) aflIndexCache = entries;
+        } catch { }
+      }
+
+      if (aflIndexCache && aflIndexCache.length > 0) {
+        const titleTokens = new Set(normalizeTitleForMatch(title).split(' ').filter(Boolean));
+        let best = { score: 0, slug: '' };
+        for (const entry of aflIndexCache) {
+          const entryNorm = entry.norm;
+          let score = 0;
+          if (entryNorm === normalizeTitleForMatch(title)) score += 100;
+          if (entryNorm.includes(normalizeTitleForMatch(title)) || normalizeTitleForMatch(title).includes(entryNorm)) score += 35;
+          const entryTokens = entryNorm.split(' ').filter(Boolean);
+          let overlap = 0;
+          entryTokens.forEach(t => { if (titleTokens.has(t)) overlap += 1; });
+          score += overlap * 8;
+          if (score > best.score) best = { score, slug: entry.slug };
+        }
+        if (best.score >= 16 && best.slug) {
+          slugCandidates.unshift(best.slug);
+        }
+      }
+
+      const uniqueSlugs = [...new Set(slugCandidates.filter(Boolean))];
+
+      for (const slug of uniqueSlugs) {
+        try {
+          const { data } = await axios.get(`https://www.animefillerlist.com/shows/${slug}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36' },
+            timeout: 8000,
+          });
+          const $ = cheerio.load(data);
+          const episodes: Record<string, 'manga' | 'mixed' | 'filler'> = {};
+          let found = false;
+          $('table.EpisodeList tbody tr').each((_, el) => {
+            const epNumStr = $(el).find('td.Number').text().trim();
+            const epNum = parseInt(epNumStr, 10);
+            if (isNaN(epNum)) return;
+            found = true;
+            const typeStr = $(el).find('td.Type').text().trim().toLowerCase();
+            let status: 'manga' | 'mixed' | 'filler' = 'manga';
+            if (typeStr.includes('filler')) {
+              if (typeStr.includes('mixed') || typeStr.includes('mostly')) status = 'mixed';
+              else status = 'filler';
+            } else if (typeStr.includes('canon')) {
+              status = 'manga';
+            }
+            episodes[epNum] = status;
+          });
+
+          if (found) {
+            return { id: slug, episodes };
+          }
+        } catch { }
+      }
+    } catch { }
+    return { id: null, episodes: {} };
+  };
+
   // Handle audio track requests - return minimal valid m3u8 with dummy segment to prevent HLS errors
   // The segment URL points to a valid location but will return empty content
   const dummySegmentUrl = 'data:application/octet-stream;';
-  
+
   // Direct routes
   fastify.get('/audio_tam/*', async (request, reply) => {
     return reply
@@ -460,6 +560,16 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         source: 'meta-anilist',
         providerId: anilist.id,
         episodes: anilist.episodes,
+      });
+    }
+
+    const afl = await fetchFillerFromAFL(title);
+    if (Object.keys(afl.episodes).length > 0) {
+      return reply.status(200).send({
+        title,
+        source: 'animefillerlist',
+        providerId: afl.id,
+        episodes: afl.episodes,
       });
     }
 
