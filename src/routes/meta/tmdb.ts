@@ -12,6 +12,7 @@ const ANIME_PROVIDER_ROUTES: Record<string, string> = {
   satoru: '/anime/satoru',
   animesaturn: '/anime/animesaturn',
   hianime: '/anime/hianime',
+  justanime: '/anime/justanime',
 };
 
 const resolveMovieProvider = (provider?: string) => {
