@@ -22,12 +22,12 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build and push
         if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' && secrets.DOCKERHUB_TAGS != '' }}
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v6
         with:
           push: true
           tags: ${{ secrets.DOCKERHUB_TAGS }}
       - name: Build only (no push, secrets not configured)
         if: ${{ secrets.DOCKERHUB_USERNAME == '' || secrets.DOCKERHUB_TOKEN == '' || secrets.DOCKERHUB_TAGS == '' }}
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v6
         with:
           push: false
