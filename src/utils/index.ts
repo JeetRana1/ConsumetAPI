@@ -393,7 +393,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const normalizeManifestUri = (candidate: string) => {
           let c = String(candidate || '').trim();
           if (!c) return c;
-          // NetMirror sometimes emits malformed "https:///files/..." URIs.
+          // Some providers emit malformed "https:///files/..." URIs.
           if (/^https?:\/\/\/+/i.test(c)) {
             c = c.replace(/^https?:\/\/\/+/i, '/');
           }
