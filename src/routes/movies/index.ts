@@ -6,6 +6,7 @@ import dramacool from './dramacool';
 import goku from './goku';
 import sflix from './sflix';
 import himovies from './himovies';
+import netmirror from './netmirror';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(flixhq, { prefix: '/flixhq' });
@@ -13,6 +14,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(goku, { prefix: '/goku' });
   await fastify.register(sflix, { prefix: '/sflix' });
   await fastify.register(himovies, { prefix: '/himovies' });
+  await fastify.register(netmirror, { prefix: '/netmirror' });
 
   fastify.get('/', async (request: any, reply: any) => {
     reply.status(200).send('Welcome to Consumet Movies and TV Shows');
