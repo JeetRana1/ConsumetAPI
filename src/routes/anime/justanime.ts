@@ -5,53 +5,15 @@ import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 
 const JUSTANIME_BASE = 'https://backend.justanime.to/api';
-const JUSTANIME_API_FALLBACK =
-  process.env.JUSTANIME_API_FALLBACK?.trim().replace(/\/+$/, '') ||
-  'http://34.132.4.102:3000/anime/justanime';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const COMMON_HEADERS = { 'User-Agent': UA, Referer: 'https://justanime.to/', Origin: 'https://justanime.to' };
 
-const buildFallbackUrl = (path: string) => {
-  const p = String(path || '');
-
-  const infoMatch = p.match(/^\/anime\/([^/]+)$/i);
-  if (infoMatch) {
-    return `${JUSTANIME_API_FALLBACK}/info?id=${encodeURIComponent(infoMatch[1])}`;
-  }
-
-  const episodesMatch = p.match(/^\/anime\/([^/]+)\/episodes$/i);
-  if (episodesMatch) {
-    return `${JUSTANIME_API_FALLBACK}/info?id=${encodeURIComponent(episodesMatch[1])}`;
-  }
-
-  const watchMatch = p.match(/^\/watch\/([^/]+)\/episode\/([^/]+)\/hianime$/i);
-  if (watchMatch) {
-    const id = encodeURIComponent(watchMatch[1]);
-    const ep = encodeURIComponent(watchMatch[2]);
-    return `${JUSTANIME_API_FALLBACK}/watch/${id}$episode$${ep}`;
-  }
-
-  return `${JUSTANIME_API_FALLBACK}${p}`;
-};
-
-const fetchJustAnimeWithFallback = async (path: string) => {
-  try {
-    return await proxyGet(`${JUSTANIME_BASE}${path}`, { headers: COMMON_HEADERS });
-  } catch (_) {
-    return await proxyGet(buildFallbackUrl(path));
-  }
-};
+const fetchJustAnime = async (path: string) =>
+  proxyGet(`${JUSTANIME_BASE}${path}`, { headers: COMMON_HEADERS });
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const searchJustAnime = async (query: string) => {
         const encoded = encodeURIComponent(query);
-        // Prefer cloud proxy search first because backend.justanime.to search can return noisy/incorrect suggestions.
-        try {
-            return await proxyGet(`${JUSTANIME_API_FALLBACK}/${encoded}`);
-        } catch (_) {
-            // fall through to direct upstream candidates
-        }
-
         const candidates = [
             `/search/suggestions?query=${encoded}`,
             `/search?query=${encoded}`,
@@ -61,7 +23,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         let lastErr: any = null;
         for (const path of candidates) {
             try {
-                return await fetchJustAnimeWithFallback(path);
+                return await fetchJustAnime(path);
             } catch (err: any) {
                 lastErr = err;
             }
@@ -86,8 +48,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         try {
             const fetchInfo = async () => {
                 const [infoRes, epRes] = await Promise.all([
-                    fetchJustAnimeWithFallback(`/anime/${id}`),
-                    fetchJustAnimeWithFallback(`/anime/${id}/episodes`)
+                    fetchJustAnime(`/anime/${id}`),
+                    fetchJustAnime(`/anime/${id}/episodes`)
                 ]);
 
                 const infoPayload = (infoRes?.data?.data ?? infoRes?.data ?? {}) as any;
@@ -130,7 +92,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         try {
             const fetchWatch = async () => {
-                const res = await fetchJustAnimeWithFallback(`/watch/${id}/episode/${ep}/hianime`);
+                const res = await fetchJustAnime(`/watch/${id}/episode/${ep}/hianime`);
 
                 const data = (res?.data?.data ?? res?.data ?? {}) as any;
                 if (Array.isArray(data?.sources) && data.sources.length > 0) {
