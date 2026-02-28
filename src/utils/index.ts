@@ -319,7 +319,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const refererForRequest = referer || `${target.protocol}//${target.host}/`;
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
-        timeout: looksLikeM3u8 ? 35000 : 75000,
+        timeout: looksLikeM3u8 ? 60000 : 90000,
         headers: {
           Referer: refererForRequest,
           Origin: (() => {
@@ -343,10 +343,23 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const fetchWithChain = async (targetUrl: string, requestConfig: any) => {
         let response: any = null;
         let lastErr: any = null;
-        for (const proxyUrl of chain) {
+        const host = (() => {
+          try {
+            return new URL(targetUrl).hostname.toLowerCase();
+          } catch {
+            return '';
+          }
+        })();
+        const forceDirectOnly =
+          /(^|\.)net20\.cc$/.test(host) || /(^|\.)nm-cdn\d+\.top$/.test(host);
+        const effectiveChain = forceDirectOnly ? [undefined] : chain;
+
+        for (const proxyUrl of effectiveChain) {
           try {
             const proxyOptions = toAxiosProxyOptions(proxyUrl);
             response = await axios.get(targetUrl, {
+              // Prevent implicit HTTP(S)_PROXY env usage on direct attempts.
+              proxy: false,
               ...requestConfig,
               ...proxyOptions,
             } as any);
@@ -380,7 +393,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const normalizeManifestUri = (candidate: string) => {
           let c = String(candidate || '').trim();
           if (!c) return c;
-          // NetMirror sometimes emits malformed "https:///files/..." URIs.
+          // Some providers emit malformed "https:///files/..." URIs.
           if (/^https?:\/\/\/+/i.test(c)) {
             c = c.replace(/^https?:\/\/\/+/i, '/');
           }
@@ -406,6 +419,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         };
 
         const isMasterManifest = raw.includes('#EXT-X-STREAM-INF');
+        const isNet20Manifest = /(\.|^)net20\.cc$/i.test(target.hostname || '');
         const lines = raw.split('\n');
 
         const reachabilityCache = new Map<string, boolean>();
@@ -440,7 +454,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         };
 
         let filteredLines = [...lines];
-        if (isMasterManifest) {
+        const shouldFilterMasterVariants = !isNet20Manifest;
+        if (isMasterManifest && shouldFilterMasterVariants) {
           const droppedLines = new Set<number>();
           let keptVariantCount = 0;
           let totalVariantCount = 0;
