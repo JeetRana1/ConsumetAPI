@@ -5,16 +5,76 @@ import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 
 const JUSTANIME_BASE = 'https://backend.justanime.to/api';
+const JUSTANIME_API_FALLBACK =
+  process.env.JUSTANIME_API_FALLBACK?.trim().replace(/\/+$/, '') ||
+  'http://34.132.4.102:3000/anime/justanime';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const COMMON_HEADERS = { 'User-Agent': UA, Referer: 'https://justanime.to/', Origin: 'https://justanime.to' };
+
+const buildFallbackUrl = (path: string) => {
+  const p = String(path || '');
+
+  const infoMatch = p.match(/^\/anime\/([^/]+)$/i);
+  if (infoMatch) {
+    return `${JUSTANIME_API_FALLBACK}/info?id=${encodeURIComponent(infoMatch[1])}`;
+  }
+
+  const episodesMatch = p.match(/^\/anime\/([^/]+)\/episodes$/i);
+  if (episodesMatch) {
+    return `${JUSTANIME_API_FALLBACK}/info?id=${encodeURIComponent(episodesMatch[1])}`;
+  }
+
+  const watchMatch = p.match(/^\/watch\/([^/]+)\/episode\/([^/]+)\/hianime$/i);
+  if (watchMatch) {
+    const id = encodeURIComponent(watchMatch[1]);
+    const ep = encodeURIComponent(watchMatch[2]);
+    return `${JUSTANIME_API_FALLBACK}/watch/${id}$episode$${ep}`;
+  }
+
+  return `${JUSTANIME_API_FALLBACK}${p}`;
+};
+
+const fetchJustAnimeWithFallback = async (path: string) => {
+  try {
+    return await proxyGet(`${JUSTANIME_BASE}${path}`, { headers: COMMON_HEADERS });
+  } catch (_) {
+    return await proxyGet(buildFallbackUrl(path));
+  }
+};
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
+    const searchJustAnime = async (query: string) => {
+        const encoded = encodeURIComponent(query);
+        // Prefer cloud proxy search first because backend.justanime.to search can return noisy/incorrect suggestions.
+        try {
+            return await proxyGet(`${JUSTANIME_API_FALLBACK}/${encoded}`);
+        } catch (_) {
+            // fall through to direct upstream candidates
+        }
+
+        const candidates = [
+            `/search/suggestions?query=${encoded}`,
+            `/search?query=${encoded}`,
+            `/anime/search?query=${encoded}`,
+        ];
+
+        let lastErr: any = null;
+        for (const path of candidates) {
+            try {
+                return await fetchJustAnimeWithFallback(path);
+            } catch (err: any) {
+                lastErr = err;
+            }
+        }
+        throw lastErr || new Error('JustAnime search failed');
+    };
+
     fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
         const query = (request.params as { query: string }).query;
         try {
-            const res = await proxyGet(`${JUSTANIME_BASE}/search/suggestions?query=${encodeURIComponent(query)}`, {
-                headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
-            });
-            reply.status(200).send(res.data);
+            const res = await searchJustAnime(query);
+            const payload = res?.data?.data ?? res?.data ?? [];
+            reply.status(200).send(payload);
         } catch (err: any) {
             console.error('JustAnime search error:', err.message);
             reply.status(500).send({ message: 'Error searching JustAnime', error: err.message });
@@ -26,26 +86,21 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         try {
             const fetchInfo = async () => {
                 const [infoRes, epRes] = await Promise.all([
-                    proxyGet(`${JUSTANIME_BASE}/anime/${id}`, {
-                        headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
-                    }),
-                    proxyGet(`${JUSTANIME_BASE}/anime/${id}/episodes`, {
-                        headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
-                    })
+                    fetchJustAnimeWithFallback(`/anime/${id}`),
+                    fetchJustAnimeWithFallback(`/anime/${id}/episodes`)
                 ]);
 
-                const info = infoRes.data?.data;
-                const episodes = (epRes.data?.data || []).map((ep: any) => ({
+                const infoPayload = (infoRes?.data?.data ?? infoRes?.data ?? {}) as any;
+                const rawEpisodes = epRes?.data?.data ?? epRes?.data?.episodes ?? epRes?.data ?? [];
+                const episodes = (Array.isArray(rawEpisodes) ? rawEpisodes : []).map((ep: any) => ({
                     id: `${id}$episode$${ep.number}`,
                     number: ep.number,
                     title: ep.title,
                     isFiller: ep.isFiller
                 }));
 
-                console.log('info is', info);
-                console.log('episodes is', episodes);
                 return {
-                    ...info,
+                    ...(typeof infoPayload === 'object' && infoPayload ? infoPayload : {}),
                     episodes
                 };
             };
@@ -75,11 +130,18 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         try {
             const fetchWatch = async () => {
-                const res = await proxyGet(`${JUSTANIME_BASE}/watch/${id}/episode/${ep}/hianime`, {
-                    headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
-                });
+                const res = await fetchJustAnimeWithFallback(`/watch/${id}/episode/${ep}/hianime`);
 
-                const data = res.data;
+                const data = (res?.data?.data ?? res?.data ?? {}) as any;
+                if (Array.isArray(data?.sources) && data.sources.length > 0) {
+                    return {
+                        headers: { Referer: 'https://justanime.to/' },
+                        sources: data.sources,
+                        subtitles: data.subtitles || [],
+                        intro: data.intro,
+                        outro: data.outro
+                    };
+                }
                 const sub = data.sub?.sources || { sources: [], tracks: [] };
                 const dub = data.dub?.sources || { sources: [], tracks: [] };
 
