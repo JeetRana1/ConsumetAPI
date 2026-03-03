@@ -105,6 +105,51 @@ const dedupeSubtitles = (tracks: Array<{ url: string; lang: string }>): Array<{ 
   return out;
 };
 
+const isDirectMediaUrl = (value: string): boolean =>
+  /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || '')) || /\/m3u8-proxy\?/i.test(String(value || ''));
+
+const parseResolution = (value: string): number => {
+  const text = String(value || '');
+  const byP = text.match(/(?:^|\D)(\d{3,4})p(?:\D|$)/i);
+  if (byP) return Number(byP[1]);
+  const byX = text.match(/(?:^|\D)(\d{3,4})x\d{3,4}(?:\D|$)/i);
+  if (byX) return Number(byX[1]);
+  if (/4k|2160/i.test(text)) return 2160;
+  return 0;
+};
+
+const sourceRank = (source: any, fastStart = true): number => {
+  const url = String(source?.url || '').toLowerCase();
+  const qualityText = String(source?.quality || '');
+  const resolution = parseResolution(qualityText || url);
+
+  let score = 0;
+  if (/\.m3u8(\?|$)/.test(url) || /m3u8-proxy/.test(url)) score += 3000;
+  else if (/\.mpd(\?|$)/.test(url)) score += 2000;
+  else if (/\.mp4(\?|$)/.test(url)) score += 1000;
+
+  if (fastStart) {
+    if (resolution > 0) score += Math.max(0, 1200 - resolution);
+  } else {
+    score += resolution;
+  }
+
+  if (/backup|alt|mirror/.test(String(source?.server || '').toLowerCase())) score -= 100;
+  return score;
+};
+
+const sortAndLimitSources = (rawSources: any[], fastStart = true): any[] => {
+  const deduped = rawSources.filter(
+    (item, idx, arr) => arr.findIndex((v) => String(v?.url || '') === String(item?.url || '')) === idx,
+  );
+
+  const direct = deduped.filter((s) => isDirectMediaUrl(String(s?.url || '')));
+  const nonDirect = deduped.filter((s) => !isDirectMediaUrl(String(s?.url || '')));
+
+  direct.sort((a, b) => sourceRank(b, fastStart) - sourceRank(a, fastStart));
+  return [...direct.slice(0, 8), ...nonDirect.slice(0, 2)];
+};
+
 const extractSubtitleTracksFromEmbed = (
   embedHtml: string,
   baseUrl: string,
@@ -760,6 +805,10 @@ const extractEmbedUrls = (html: string): string[] => {
     const server = (request.query as { server: StreamingServers }).server;
     const directOnlyRaw = String((request.query as { directOnly?: string }).directOnly || '').toLowerCase();
     const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
+    const fastStartRaw = String((request.query as { fastStart?: string }).fastStart || 'true')
+      .toLowerCase()
+      .trim();
+    const fastStart = fastStartRaw !== '0' && fastStartRaw !== 'false' && fastStartRaw !== 'no';
 
     if (typeof episodeId === 'undefined')
       return reply.status(400).send({ message: 'episodeId is required' });
@@ -805,6 +854,9 @@ const extractEmbedUrls = (html: string): string[] => {
               { requireDirectPlayable: directOnly },
             );
 
+      if (Array.isArray((res as any)?.sources)) {
+        (res as any).sources = sortAndLimitSources((res as any).sources, fastStart);
+      }
       reply.status(200).send(res);
     } catch (err: any) {
       if (!useWpMode && !directOnly) {
@@ -815,7 +867,12 @@ const extractEmbedUrls = (html: string): string[] => {
             undefined,
             server,
           );
-          if (fallback) return reply.status(200).send(fallback);
+          if (fallback) {
+            if (Array.isArray((fallback as any)?.sources)) {
+              (fallback as any).sources = sortAndLimitSources((fallback as any).sources, fastStart);
+            }
+            return reply.status(200).send(fallback);
+          }
         } catch {
           // Ignore fallback errors and return the original extraction error below.
         }

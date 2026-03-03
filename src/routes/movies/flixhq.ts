@@ -9,6 +9,52 @@ import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/str
 import { configureProvider } from '../../utils/provider';
 import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
 import { promoteEmbedSourcesToDirect } from '../../utils/embedToDirect';
+import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
+
+const isDirectMediaUrl = (value: string): boolean =>
+  /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || '')) || /\/m3u8-proxy\?/i.test(String(value || ''));
+
+const parseResolution = (value: string): number => {
+  const text = String(value || '');
+  const byP = text.match(/(?:^|\D)(\d{3,4})p(?:\D|$)/i);
+  if (byP) return Number(byP[1]);
+  const byX = text.match(/(?:^|\D)(\d{3,4})x\d{3,4}(?:\D|$)/i);
+  if (byX) return Number(byX[1]);
+  if (/4k|2160/i.test(text)) return 2160;
+  return 0;
+};
+
+const sourceRank = (source: any, fastStart = true): number => {
+  const url = String(source?.url || '').toLowerCase();
+  const qualityText = String(source?.quality || '');
+  const resolution = parseResolution(qualityText || url);
+
+  let score = 0;
+  if (/\.m3u8(\?|$)/.test(url) || /m3u8-proxy/.test(url)) score += 3000;
+  else if (/\.mpd(\?|$)/.test(url)) score += 2000;
+  else if (/\.mp4(\?|$)/.test(url)) score += 1000;
+
+  if (fastStart) {
+    if (resolution > 0) score += Math.max(0, 1200 - resolution);
+  } else {
+    score += resolution;
+  }
+
+  if (/backup|alt|mirror/.test(String(source?.server || '').toLowerCase())) score -= 100;
+  return score;
+};
+
+const sortAndLimitSources = (rawSources: any[], fastStart = true): any[] => {
+  const deduped = rawSources.filter(
+    (item, idx, arr) => arr.findIndex((v) => String(v?.url || '') === String(item?.url || '')) === idx,
+  );
+
+  const direct = deduped.filter((s) => isDirectMediaUrl(String(s?.url || '')));
+  const nonDirect = deduped.filter((s) => !isDirectMediaUrl(String(s?.url || '')));
+
+  direct.sort((a, b) => sourceRank(b, fastStart) - sourceRank(a, fastStart));
+  return [...direct.slice(0, 8), ...nonDirect.slice(0, 2)];
+};
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const flixhq = configureProvider(new MOVIES.FlixHQ());
@@ -141,6 +187,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const episodeId = (request.query as { episodeId: string }).episodeId;
     const mediaId = (request.query as { mediaId: string }).mediaId;
     const server = (request.query as { server: StreamingServers }).server;
+    const fastStartRaw = String((request.query as { fastStart?: string }).fastStart || 'true')
+      .toLowerCase()
+      .trim();
+    const fastStart = fastStartRaw !== '0' && fastStartRaw !== 'false' && fastStartRaw !== 'no';
 
     if (typeof episodeId === 'undefined')
       return reply.status(400).send({ message: 'episodeId is required' });
@@ -176,7 +226,48 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         res as any,
         server,
       );
-      reply.status(200).send(promoted);
+      if (Array.isArray((promoted as any)?.sources)) {
+        (promoted as any).sources = sortAndLimitSources((promoted as any).sources, fastStart);
+      }
+
+      const currentSources = Array.isArray((promoted as any)?.sources)
+        ? (promoted as any).sources
+        : [];
+      const hasDirect = currentSources.some((s: any) =>
+        isDirectMediaUrl(String(s?.url || '')),
+      );
+      if (hasDirect) return reply.status(200).send(promoted);
+
+      const embedCandidates = new Set<string>();
+      if (typeof (promoted as any)?.embedURL === 'string' && (promoted as any).embedURL.trim()) {
+        embedCandidates.add((promoted as any).embedURL.trim());
+      }
+      for (const source of currentSources) {
+        const url = String(source?.url || '').trim();
+        if (!url || isDirectMediaUrl(url)) continue;
+        if (/^https?:\/\//i.test(url)) embedCandidates.add(url);
+      }
+
+      const runtimeDirect: any[] = [];
+      for (const embedUrl of [...embedCandidates].slice(0, 3)) {
+        const extracted = await extractDirectSourcesWithPlaywright(
+          embedUrl,
+          String((promoted as any)?.headers?.Referer || episodeId),
+          15000,
+        );
+        for (const item of extracted) runtimeDirect.push(item);
+      }
+
+      if (runtimeDirect.length > 0) {
+        const deduped = sortAndLimitSources(runtimeDirect, fastStart);
+        return reply.status(200).send({
+          ...(promoted as any),
+          sources: deduped,
+          embedURL: (promoted as any)?.embedURL || [...embedCandidates][0],
+        });
+      }
+
+      return reply.status(200).send(promoted);
     } catch (err: any) {
       try {
         const fallback = await getMovieEmbedFallbackSource(
@@ -192,6 +283,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             fallback as any,
             server,
           );
+          if (Array.isArray((promotedFallback as any)?.sources)) {
+            (promotedFallback as any).sources = sortAndLimitSources(
+              (promotedFallback as any).sources,
+              fastStart,
+            );
+          }
           return reply.status(200).send(promotedFallback);
         }
       } catch {
