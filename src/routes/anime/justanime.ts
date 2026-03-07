@@ -12,14 +12,23 @@ const COMMON_HEADERS = { 'User-Agent': UA, Referer: 'https://justanime.to/', Ori
 const fetchJustAnime = async (path: string) =>
   proxyGet(`${JUSTANIME_BASE}${path}`, { headers: COMMON_HEADERS });
 
+const toApiProxyUrl = (url: string, referer = `${JUSTANIME_YUKI_BASE}/`) => {
+  const value = String(url || '').trim();
+  if (!value) return value;
+  return `/utils/proxy?url=${encodeURIComponent(value)}&referer=${encodeURIComponent(referer)}`;
+};
+
 const toYukiProxyUrl = (url: string) => {
-    const value = String(url || '').trim();
-    if (!value) return value;
-    if (/m3u8-proxy/i.test(value)) return value;
-    if (/\.m3u8(\?|$)/i.test(value)) {
-        return `${JUSTANIME_YUKI_BASE}/m3u8-proxy?url=${encodeURIComponent(value)}`;
-    }
-    return value;
+  const value = String(url || '').trim();
+  if (!value) return value;
+  if (/m3u8-proxy/i.test(value)) {
+    return toApiProxyUrl(value, `${JUSTANIME_YUKI_BASE}/`);
+  }
+  if (/\.m3u8(\?|$)/i.test(value)) {
+    const yukiUrl = `${JUSTANIME_YUKI_BASE}/m3u8-proxy?url=${encodeURIComponent(value)}`;
+    return toApiProxyUrl(yukiUrl, `${JUSTANIME_YUKI_BASE}/`);
+  }
+  return value;
 };
 
 const normalizeSourceEntry = (entry: any, quality: string, isSub: boolean) => {
