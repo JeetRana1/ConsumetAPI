@@ -4,7 +4,7 @@ import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 
-const JUSTANIME_BASE = 'https://backend.justanime.to/api';
+const JUSTANIME_BASE = 'https://core.justanime.to/api';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
