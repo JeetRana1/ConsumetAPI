@@ -156,27 +156,13 @@ const extractServerDataIds = (
   return category === SubOrSub.DUB ? collectForType('dub') : collectForType('sub');
 };
 
-const DEAD_EMBED_REGEX = /(file not found|we're sorry|can't find the file|copyright violation)/i;
-
-const isEmbedAlive = async (embedLink: string, referer: string) => {
-  try {
-    const res = await proxyGet(embedLink, {
-      headers: {
-        'User-Agent': UA,
-        Referer: referer,
-      },
-      timeout: EMBED_CHECK_TIMEOUT_MS,
-      validateStatus: (status) => status >= 200 && status < 500,
-    });
-
-    if (res.status >= 400) return false;
-    const body = typeof res.data === 'string' ? res.data : '';
-    if (body && DEAD_EMBED_REGEX.test(body)) return false;
-    return true;
-  } catch (_) {
-    return false;
-  }
-};
+const toDirectPlayableSources = (sources: any[]) =>
+  (Array.isArray(sources) ? sources : []).filter((s: any) => {
+    const u = String(s?.url || '').toLowerCase();
+    if (!u) return false;
+    if (Boolean(s?.isEmbed)) return false;
+    return Boolean(s?.isM3U8) || u.includes('.m3u8') || u.includes('m3u8-proxy') || u.includes('.mp4');
+  });
 
 const fetchHianimeViaAjaxFallback = async (
   baseUrl: string,
@@ -264,21 +250,10 @@ const fetchHianimeViaAjaxFallback = async (
       }
     }
 
-    // New HiAnime often returns iframe-only payloads. Keep it only if embed page is alive.
-    if (!crawlrSources.length) {
-      const alive = await isEmbedAlive(embedLink, referer);
-      if (alive) {
-        sources.push({
-          url: embedLink,
-          quality: 'auto',
-          isM3U8: false,
-          isEmbed: true,
-        });
-      }
-    }
+    // Do not keep iframe/embed fallbacks. HiAnime should return only direct playable sources.
   }
 
-  const dedupSources = [...new Map(sources.map((s) => [String(s.url), s])).values()];
+  const dedupSources = [...new Map(toDirectPlayableSources(sources).map((s) => [String(s.url), s])).values()];
   let dedupSubs = [...new Map(subtitles.map((s) => [String(s.url), s])).values()];
   if (!dedupSubs.length) {
     try {
@@ -290,8 +265,8 @@ const fetchHianimeViaAjaxFallback = async (
       // ignore subtitle browser fallback failures
     }
   }
-  if (!dedupSources.length && !dedupSubs.length) {
-    throw new Error('HiAnime fallback returned no sources and no subtitles');
+  if (!dedupSources.length) {
+    throw new Error('HiAnime fallback returned no direct playable sources');
   }
   return {
     sources: dedupSources,
@@ -364,7 +339,7 @@ const resolveDirectFromEmbedPayload = async (payload: any, referer?: string) => 
 
   if (!directSources.length) return payload;
 
-  const dedupDirect = [...new Map(directSources.map((s: any) => [String(s.url), s])).values()];
+  const dedupDirect = [...new Map(toDirectPlayableSources(directSources).map((s: any) => [String(s.url), s])).values()];
   return {
     ...payload,
     sources: dedupDirect,
@@ -424,64 +399,8 @@ const extractSubtitleRows = (payload: any): Array<{ lang: string; url: string; k
   return [...new Map(rows.map((row) => [String(row.url), row])).values()];
 };
 
-const fallbackViaAnimeKaiSubtitles = async (
-  animekai: any,
-  episodeId: string,
-  baseUrl: string,
-  category: SubOrSub,
-) => {
-  const searchName = getAnimeSearchNameFromEpisodeId(episodeId);
-  if (!searchName) return [];
-  const targetEpisode = await getEpisodeOrdinalFromServersHtml(baseUrl, episodeId);
-  if (!targetEpisode) return [];
-
-  const searchRes = await animekai.search(searchName, 1);
-  const results = Array.isArray(searchRes?.results) ? searchRes.results : [];
-  if (!results.length) return [];
-
-  const normQuery = String(searchName).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const picked = results
-    .map((row: any) => {
-      const title = String(row?.title || row?.name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-      let score = 0;
-      if (title === normQuery) score += 100;
-      else if (title.includes(normQuery) || normQuery.includes(title)) score += 70;
-      score -= Math.abs(title.length - normQuery.length) * 0.1;
-      return { row, score };
-    })
-    .sort((a: any, b: any) => b.score - a.score)[0]?.row;
-
-  if (!picked?.id) return [];
-
-  const info = await animekai.fetchAnimeInfo(String(picked.id));
-  const episodes = Array.isArray(info?.episodes) ? info.episodes : [];
-  if (!episodes.length) return [];
-
-  const ep =
-    episodes.find((e: any) => Number(e?.number || e?.episode || e?.episodeNum || 0) === targetEpisode) ||
-    episodes[Math.max(0, Math.min(episodes.length - 1, targetEpisode - 1))];
-  if (!ep?.id) return [];
-
-  const collectFor = async (subOrDub: SubOrSub) => {
-    try {
-      const watch = await animekai.fetchEpisodeSources(String(ep.id), undefined, subOrDub);
-      return extractSubtitleRows(watch);
-    } catch {
-      return [];
-    }
-  };
-
-  if (category === SubOrSub.BOTH) {
-    const [subRows, dubRows] = await Promise.all([collectFor(SubOrSub.SUB), collectFor(SubOrSub.DUB)]);
-    return [...new Map([...subRows, ...dubRows].map((row) => [String(row.url), row])).values()];
-  }
-
-  return await collectFor(category === SubOrSub.DUB ? SubOrSub.DUB : SubOrSub.SUB);
-};
-
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const hianime = configureProvider(new ANIME.Hianime());
-  const animekai = configureProvider(new ANIME.AnimeKai());
   const tryWithBaseUrlFallback = async <T>(
     worker: (baseUrl: string) => Promise<T>,
   ): Promise<T> => {
@@ -652,15 +571,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             );
           }
 
-          if (!Array.isArray(res?.subtitles) || !res.subtitles.length) {
-            try {
-              const anikaiSubs = await fallbackViaAnimeKaiSubtitles(animekai, episodeId, lastBaseUrl, SubOrSub.BOTH);
-              if (anikaiSubs.length) {
-                res = withMergedSubtitles(res, anikaiSubs);
-              }
-            } catch {
-              // ignore anikai subtitle fallback errors
-            }
+          res = {
+            ...(res || {}),
+            sources: toDirectPlayableSources(res?.sources),
+          };
+          if (!Array.isArray(res?.sources) || !res.sources.length) {
+            throw new Error('HiAnime returned no direct playable sources');
           }
 
           reply.status(200).send(res);
@@ -720,20 +636,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           );
         }
 
-        if (!Array.isArray(res?.subtitles) || !res.subtitles.length) {
-          try {
-            const anikaiSubs = await fallbackViaAnimeKaiSubtitles(
-              animekai,
-              episodeId,
-              lastBaseUrl,
-              category as SubOrSub,
-            );
-            if (anikaiSubs.length) {
-              res = withMergedSubtitles(res, anikaiSubs);
-            }
-          } catch {
-            // ignore anikai subtitle fallback errors
-          }
+        res = {
+          ...(res || {}),
+          sources: toDirectPlayableSources(res?.sources),
+        };
+        if (!Array.isArray(res?.sources) || !res.sources.length) {
+          throw new Error('HiAnime returned no direct playable sources');
         }
 
         reply.status(200).send(res);

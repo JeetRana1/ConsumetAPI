@@ -85,6 +85,7 @@ class SatoruProvider extends AnimeParser {
                     // Direct attempt gets slightly longer timeout; proxy attempts are short.
                     timeout: i === 0 ? this.requestTimeoutMs : this.proxyRequestTimeoutMs,
                     responseType: 'text',
+                    ...(i === 0 ? { proxy: false } : {}),
                     ...(proxyOptions as any),
                 });
                 if (typeof data === 'string') return data;
@@ -189,6 +190,56 @@ class SatoruProvider extends AnimeParser {
         });
 
         animeInfo.genres = $('.item-list a').map((i, el) => $(el).text().trim()).get();
+        (animeInfo as any).related = [];
+
+        const relatedMap = new Map<string, { id: string; title: string; url: string }>();
+        const normalizeFamilyTitle = (value: string) =>
+            String(value || '')
+                .toLowerCase()
+                .replace(/\bseason\s*\d+\b/g, ' ')
+                .replace(/\bs\d+\b/g, ' ')
+                .replace(/\bpart\s*\d+\b/g, ' ')
+                .replace(/\bmovie\b/g, ' ')
+                .replace(/\barc\b/g, ' ')
+                .replace(/[^a-z0-9]+/g, ' ')
+                .trim();
+        const currentTitleFamily = normalizeFamilyTitle(String(animeInfo.title || ''));
+        const currentTitleTokens = currentTitleFamily.split(' ').filter(Boolean);
+        $('a').each((_, el) => {
+            const anchor = $(el);
+            const href = String(anchor.attr('href') || '').trim();
+            const title = anchor.text().trim();
+            if (!href || !title) return;
+            if (!/\/watch\//i.test(href)) return;
+
+            const absoluteUrl = href.startsWith('http') ? href : `${this.baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
+            const slugPart = absoluteUrl.split('/watch/')[1]?.split('?')[0]?.replace(/\/$/, '') || '';
+            if (!slugPart) return;
+
+            // Restrict to the site's explicit "other seasons" section by keeping only
+            // close title variants of the current anime family.
+            const candidateTitleFamily = normalizeFamilyTitle(title);
+            const candidateTitleTokens = candidateTitleFamily.split(' ').filter(Boolean);
+            const sharedPrefix =
+                currentTitleTokens.length >= 2 &&
+                candidateTitleTokens.length >= 2 &&
+                currentTitleTokens[0] === candidateTitleTokens[0] &&
+                currentTitleTokens[1] === candidateTitleTokens[1];
+            const sharedTokenCount = candidateTitleTokens.filter((token) => currentTitleTokens.includes(token)).length;
+            const titleFamilyMatch =
+                currentTitleFamily.includes(candidateTitleFamily) ||
+                candidateTitleFamily.includes(currentTitleFamily) ||
+                sharedPrefix ||
+                sharedTokenCount >= Math.min(3, Math.max(1, currentTitleTokens.length - 1));
+            if (!titleFamilyMatch) return;
+
+            relatedMap.set(slugPart, {
+                id: slugPart,
+                title,
+                url: absoluteUrl,
+            });
+        });
+        (animeInfo as any).related = [...relatedMap.values()];
 
         if (movieId) {
             // Correct endpoint: /ajax/episode/list/{movieId} (path param, not query)
@@ -518,6 +569,609 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             .replace(/-\d+$/, '')
             .replace(/-/g, ' ')
             .trim();
+    const normalizeTitle = (value: string) =>
+        String(value || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    const titleWords = (value: string) => normalizeTitle(value).split(' ').filter(Boolean);
+    const uniqueStrings = (values: any[]) =>
+        [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+    const detectSeasonNumber = (...values: any[]): number | null => {
+        for (const rawValue of values) {
+            const value = normalizeTitle(String(rawValue || ''));
+            if (!value) continue;
+
+            const patterns = [
+                /\bseason\s+(\d{1,2})\b/i,
+                /\b(\d{1,2})(?:st|nd|rd|th)\s+season\b/i,
+                /\bpart\s+(\d{1,2})\b/i,
+                /\bcour\s+(\d{1,2})\b/i,
+            ];
+            for (const pattern of patterns) {
+                const match = value.match(pattern);
+                if (match) return Number(match[1]);
+            }
+
+            if (/\bfinal season\b/i.test(value)) return 99;
+
+            const romanSuffix = value.match(/\b(?:season|part|cour)\s+(i|ii|iii|iv|v|vi)\b/i);
+            if (romanSuffix) {
+                const roman = romanSuffix[1].toUpperCase();
+                const romanMap: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+                return romanMap[roman] ?? null;
+            }
+
+            const compactSeason = value.match(/\bs(\d{1,2})\b/i);
+            if (compactSeason) return Number(compactSeason[1]);
+        }
+        return null;
+    };
+    const detectSeasonPart = (...values: any[]): number | null => {
+        for (const rawValue of values) {
+            const value = normalizeTitle(String(rawValue || ''));
+            if (!value) continue;
+
+            const numericMatch =
+                value.match(/\bpart\s+(\d{1,2})\b/i) ||
+                value.match(/\b(\d{1,2})(?:st|nd|rd|th)\s+part\b/i);
+            if (numericMatch) return Number(numericMatch[1]);
+
+            const compactMatch = value.match(/\bs\d{1,2}\s*\(?part\s*(\d{1,2})\)?/i);
+            if (compactMatch) return Number(compactMatch[1]);
+        }
+        return null;
+    };
+    const collectTitleVariants = (payload: any, fallback?: string): string[] => {
+        const variants = uniqueStrings([
+            payload?.title,
+            payload?.name,
+            payload?.japaneseTitle,
+            ...(Array.isArray(payload?.synonyms) ? payload.synonyms : []),
+            ...(Array.isArray(payload?.otherName) ? payload.otherName : []),
+            ...(Array.isArray(payload?.otherNames) ? payload.otherNames : []),
+            fallback,
+        ]);
+        return variants;
+    };
+    const countSharedWords = (left: string, right: string) => {
+        const leftWords = titleWords(left);
+        const rightSet = new Set(titleWords(right));
+        return leftWords.filter((word) => rightSet.has(word)).length;
+    };
+    const scoreSatoruCandidate = (
+        candidateInfo: any,
+        candidateSearchRow: any,
+        hiInfo: any,
+        hiSlug: string,
+        hiEpisodeCount: number,
+    ) => {
+        const searchTitle = String(candidateSearchRow?.title || candidateSearchRow?.name || candidateInfo?.title || '');
+        const candidateVariants = collectTitleVariants(candidateInfo, searchTitle);
+        const hiVariants = collectTitleVariants(hiInfo, slugToTitle(hiSlug));
+        const hiSeason = detectSeasonNumber(hiSlug, ...hiVariants);
+        const candidateSeason = detectSeasonNumber(candidateInfo?.id, ...candidateVariants);
+
+        let score = 0;
+        for (const hiTitle of hiVariants) {
+            for (const candidateTitle of candidateVariants) {
+                const normalizedHiTitle = normalizeTitle(hiTitle);
+                const normalizedCandidateTitle = normalizeTitle(candidateTitle);
+                if (!normalizedHiTitle || !normalizedCandidateTitle) continue;
+                if (normalizedHiTitle === normalizedCandidateTitle) score += 120;
+                else if (
+                    normalizedHiTitle.includes(normalizedCandidateTitle) ||
+                    normalizedCandidateTitle.includes(normalizedHiTitle)
+                ) {
+                    score += 70;
+                }
+                score += countSharedWords(hiTitle, candidateTitle) * 8;
+            }
+        }
+
+        if (hiSeason !== null && candidateSeason !== null) {
+            if (hiSeason === candidateSeason) score += 90;
+            else score -= Math.min(120, Math.abs(hiSeason - candidateSeason) * 60);
+        } else if (hiSeason === null && candidateSeason === 1) {
+            score += 10;
+        }
+
+        const candidateEpisodeCount = Array.isArray(candidateInfo?.episodes) ? candidateInfo.episodes.length : 0;
+        if (hiEpisodeCount > 0 && candidateEpisodeCount > 0) {
+            const diff = Math.abs(candidateEpisodeCount - hiEpisodeCount);
+            score += Math.max(0, 50 - diff * 2);
+        }
+
+        const normalizedHiSlug = normalizeTitle(hiSlug.replace(/-/g, ' '));
+        const normalizedCandidateId = normalizeTitle(String(candidateInfo?.id || '').split(':')[0].replace(/-/g, ' '));
+        if (normalizedHiSlug && normalizedCandidateId) {
+            if (normalizedHiSlug === normalizedCandidateId) score += 140;
+            else if (normalizedCandidateId.includes(normalizedHiSlug) || normalizedHiSlug.includes(normalizedCandidateId)) score += 50;
+        }
+
+        return score;
+    };
+    const scoreRelatedSeasonEntry = (entry: any, hiInfo: any, hiSlug: string, hiEpisodeCount: number) => {
+        const hiVariants = collectTitleVariants(hiInfo, slugToTitle(hiSlug));
+        const entryTitle = String(entry?.title || entry?.id || '');
+        const hiSeason = detectSeasonNumber(hiSlug, ...hiVariants);
+        const hiPart = detectSeasonPart(hiSlug, ...hiVariants);
+        const entrySeason = detectSeasonNumber(entry?.id, entryTitle);
+        const entryPart = detectSeasonPart(entry?.id, entryTitle);
+
+        let score = 0;
+        for (const hiTitle of hiVariants) {
+            const normalizedHi = normalizeTitle(hiTitle);
+            const normalizedEntry = normalizeTitle(entryTitle);
+            if (!normalizedHi || !normalizedEntry) continue;
+            if (normalizedHi === normalizedEntry) score += 120;
+            else if (normalizedHi.includes(normalizedEntry) || normalizedEntry.includes(normalizedHi)) score += 70;
+            score += countSharedWords(hiTitle, entryTitle) * 8;
+        }
+
+        if (hiSeason !== null && entrySeason !== null) {
+            if (hiSeason === entrySeason) score += 220;
+            else score -= Math.min(220, Math.abs(hiSeason - entrySeason) * 90);
+        }
+        if (hiPart !== null && entryPart !== null) {
+            if (hiPart === entryPart) score += 140;
+            else score -= Math.min(180, Math.abs(hiPart - entryPart) * 90);
+        }
+
+        if (hiEpisodeCount > 0 && Number.isFinite(Number(entry?.episodeCount || 0))) {
+            const diff = Math.abs(Number(entry?.episodeCount || 0) - hiEpisodeCount);
+            score += Math.max(0, 40 - diff * 2);
+        }
+
+        return score;
+    };
+    const normalizeLooseTitle = (value: string) =>
+        String(value || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    const normalizeSeasonLabel = (value: string) =>
+        normalizeLooseTitle(String(value || '').replace(/\bseason\s*\d+\b/gi, ' '));
+    const getSeasonAliases = (title: string, season: number): string[] => {
+        const normalizedTitle = normalizeLooseTitle(title);
+        if (normalizedTitle.includes('demon slayer') || normalizedTitle.includes('kimetsu no yaiba')) {
+            if (season === 2) return ['entertainment district arc', 'mugen train arc'];
+            if (season === 3) return ['swordsmith village arc'];
+            if (season === 4) return ['hashira training arc'];
+        }
+        return [];
+    };
+    const getKnownSatoruIdsForTitleSeason = (title: string, season: number): string[] => {
+        const normalizedTitle = normalizeLooseTitle(title);
+        if (normalizedTitle.includes('demon slayer') || normalizedTitle.includes('kimetsu no yaiba')) {
+            if (season === 1) return ['demon-slayer-kimetsu-no-yaiba'];
+            if (season === 2) {
+                return [
+                    'demon-slayer-s2part-1-kimetsu-no-yaiba-entertainment-district-arc',
+                    'demon-slayer-s2part-2-kimetsu-no-yaiba-mugen-train-arc',
+                    'demon-slayer-s2part-2-kimetsu-no-yaiba-entertainment-district-arc',
+                    'demon-slayer-s2part-1-kimetsu-no-yaiba-mugen-train-arc',
+                ];
+            }
+            if (season === 3) {
+                return [
+                    'demon-slayer-s3-kimetsu-no-yaiba-swordsmith-village-arc',
+                    'demon-slayer-s3-kimetsu-no-yaiba',
+                ];
+            }
+            if (season === 4) {
+                return [
+                    'demon-slayer-s4-kimetsu-no-yaiba-hashira-training-arc',
+                    'demon-slayer-s4-kimetsu-no-yaiba',
+                ];
+            }
+        }
+        return [];
+    };
+    const getSeasonSubEntryOrder = (title: string, season: number, info: any): number => {
+        const haystack = normalizeLooseTitle(
+            [
+                info?.title,
+                info?.japaneseTitle,
+                ...(Array.isArray(info?.synonyms) ? info.synonyms : []),
+            ].join(' '),
+        );
+        const normalizedTitle = normalizeLooseTitle(title);
+        if (normalizedTitle.includes('demon slayer') || normalizedTitle.includes('kimetsu no yaiba')) {
+            if (season === 2) {
+                if (haystack.includes('mugen train')) return 0;
+                if (haystack.includes('entertainment district')) return 1;
+            }
+        }
+        const part = detectSeasonPart(info?.id, info?.title, info?.japaneseTitle);
+        if (part !== null) return part - 1;
+        return 999;
+    };
+    const scoreResolvedSatoruEntry = (
+        info: any,
+        {
+            title,
+            season,
+            seasonLabel,
+            preferredYear,
+        }: { title: string; season: number; seasonLabel: string; preferredYear?: number },
+    ) => {
+        const variants = collectTitleVariants(info, title);
+        const targetTitle = normalizeLooseTitle(title);
+        const targetSeasonLabel = normalizeSeasonLabel(seasonLabel);
+        const aliases = getSeasonAliases(title, season);
+        const candidateTitle = normalizeLooseTitle(String(info?.title || info?.name || ''));
+        const candidateSeason = detectSeasonNumber(info?.id, ...variants);
+        const candidatePart = detectSeasonPart(info?.id, ...variants);
+        const targetPart = detectSeasonPart(seasonLabel, title);
+        let score = 0;
+
+        if (candidateTitle === targetTitle) score += 240;
+        else if (candidateTitle.includes(targetTitle) || targetTitle.includes(candidateTitle)) score += 140;
+        score += countSharedWords(candidateTitle, targetTitle) * 18;
+
+        if (season > 1) {
+            if (candidateSeason === season) score += 320;
+            else if (candidateSeason !== null) score -= Math.abs(candidateSeason - season) * 180;
+            else score -= 80;
+        } else if (candidateSeason === 1 || candidateSeason === null) {
+            score += 40;
+        }
+
+        if (targetPart !== null && candidatePart !== null) {
+            if (candidatePart === targetPart) score += 220;
+            else score -= Math.abs(candidatePart - targetPart) * 180;
+        }
+
+        if (targetSeasonLabel) {
+            const candidateJoined = normalizeSeasonLabel(
+                [
+                    info?.title,
+                    info?.japaneseTitle,
+                    ...(Array.isArray(info?.synonyms) ? info.synonyms : []),
+                ].join(' '),
+            );
+            if (candidateJoined.includes(targetSeasonLabel)) score += 260;
+            score += countSharedWords(candidateJoined, targetSeasonLabel) * 28;
+        }
+        for (const alias of aliases) {
+            if (candidateTitle.includes(alias) || variants.some((variant) => normalizeLooseTitle(variant).includes(alias))) {
+                score += 260;
+            }
+        }
+
+        const yearValue = Number(String(info?.season || '').match(/\b(19|20)\d{2}\b/)?.[0] || 0);
+        if (preferredYear && yearValue) {
+            if (preferredYear === yearValue) score += 40;
+            else if (Math.abs(preferredYear - yearValue) === 1) score += 15;
+        }
+
+        return score;
+    };
+    const candidateMatchesRequestedSeason = (
+        info: any,
+        {
+            title,
+            season,
+            seasonLabel,
+        }: { title: string; season: number; seasonLabel: string },
+    ) => {
+        if (season <= 1) return true;
+        const variants = collectTitleVariants(info, info?.title);
+        const candidateSeason = detectSeasonNumber(info?.id, ...variants);
+        const aliases = getSeasonAliases(title, season);
+        const candidateHaystack = normalizeLooseTitle(
+            [info?.id, ...variants, info?.japaneseTitle].filter(Boolean).join(' '),
+        );
+        const normalizedSeasonLabel = normalizeSeasonLabel(seasonLabel);
+
+        if (candidateSeason === season) return true;
+        if (normalizedSeasonLabel && candidateHaystack.includes(normalizedSeasonLabel)) return true;
+        if (aliases.some((alias) => candidateHaystack.includes(alias))) return true;
+        return false;
+    };
+    const resolveSatoruByMetadata = async ({
+        title,
+        season,
+        episode,
+        seasonLabel,
+        preferredYear,
+    }: {
+        title: string;
+        season: number;
+        episode: number;
+        seasonLabel?: string;
+        preferredYear?: number;
+    }) => {
+        const searchTerms = uniqueStrings([
+            `${title} ${seasonLabel || ''}`.trim(),
+            season > 1 ? `${title} season ${season}` : '',
+            season > 1 ? `${title} s${season}` : '',
+            title,
+        ]).slice(0, 6);
+
+        const knownCandidateIds = getKnownSatoruIdsForTitleSeason(title, season);
+        const candidateIds = new Set<string>(knownCandidateIds);
+        const knownSettled = await Promise.allSettled(
+            knownCandidateIds.map(async (candidateId) => await satoru.fetchAnimeInfo(candidateId)),
+        );
+        const knownInfos = knownSettled
+            .filter((entry): entry is PromiseFulfilledResult<any> => entry.status === 'fulfilled')
+            .map((entry) => entry.value)
+            .filter((info) => Array.isArray(info?.episodes) && info.episodes.length);
+
+        if (knownInfos.length) {
+            const strictKnown = knownInfos.filter((info) =>
+                candidateMatchesRequestedSeason(info, { title, season, seasonLabel: seasonLabel || '' }),
+            );
+            const knownPool = strictKnown.length ? strictKnown : knownInfos;
+            const knownOrderMap = new Map<string, number>(
+                knownCandidateIds.map((id, index) => [String(id), index]),
+            );
+            const orderedKnown = knownPool
+                .map((info) => ({
+                    info,
+                    index: knownOrderMap.get(String(info?.id || '').split(':')[0]) ?? 999,
+                    len: Array.isArray(info?.episodes) ? info.episodes.length : 0,
+                }))
+                .sort((left, right) => left.index - right.index);
+
+            let remainingKnownEpisode = episode;
+            for (const candidate of orderedKnown) {
+                if (candidate.len <= 0) continue;
+                if (remainingKnownEpisode <= candidate.len) {
+                    const knownEpisodes = Array.isArray(candidate.info?.episodes) ? candidate.info.episodes : [];
+                    const exactKnownEpisode =
+                        knownEpisodes.find((ep: any) => toEpisodeNum(ep) === remainingKnownEpisode) ||
+                        knownEpisodes[Math.max(0, Math.min(knownEpisodes.length - 1, remainingKnownEpisode - 1))];
+                    if (exactKnownEpisode?.id) {
+                        return {
+                            anime: {
+                                id: candidate.info.id,
+                                title: candidate.info.title,
+                            },
+                            episode: {
+                                id: String(exactKnownEpisode.id),
+                                number: toEpisodeNum(exactKnownEpisode),
+                                title: String(exactKnownEpisode?.title || ''),
+                            },
+                        };
+                    }
+                }
+                remainingKnownEpisode -= candidate.len;
+            }
+        }
+
+        const searchSettled = await Promise.allSettled(searchTerms.map((term) => satoru.search(term, 1)));
+        for (const settled of searchSettled) {
+            if (settled.status !== 'fulfilled') continue;
+            const rows = Array.isArray(settled.value?.results) ? settled.value.results : [];
+            for (const row of rows.slice(0, 10)) {
+                if (row?.id) candidateIds.add(String(row.id));
+            }
+        }
+        if (!candidateIds.size) throw new Error('No Satoru candidates found');
+
+        const fetched = await Promise.allSettled(
+            [...candidateIds].map(async (candidateId) => await satoru.fetchAnimeInfo(candidateId)),
+        );
+        const baseInfos = fetched
+            .filter((entry): entry is PromiseFulfilledResult<any> => entry.status === 'fulfilled')
+            .map((entry) => entry.value)
+            .filter((info) => Array.isArray(info?.episodes) && info.episodes.length);
+        if (!baseInfos.length) throw new Error('No Satoru info candidates found');
+
+        const allInfos = new Map<string, any>();
+        for (const info of baseInfos) {
+            if (info?.id) allInfos.set(String(info.id), info);
+            const relatedRows = Array.isArray(info?.related) ? info.related : [];
+            const relatedSettled = await Promise.allSettled(
+                relatedRows.slice(0, 8).map(async (row: any) => await satoru.fetchAnimeInfo(String(row.id))),
+            );
+            for (const related of relatedSettled) {
+                if (related.status !== 'fulfilled') continue;
+                const relatedInfo = related.value;
+                if (relatedInfo?.id && Array.isArray(relatedInfo?.episodes) && relatedInfo.episodes.length) {
+                    allInfos.set(String(relatedInfo.id), relatedInfo);
+                }
+            }
+        }
+
+        const strictCandidates = [...allInfos.values()].filter((info) =>
+            candidateMatchesRequestedSeason(info, {
+                title,
+                season,
+                seasonLabel: seasonLabel || '',
+            }),
+        );
+        const candidatesToRank = strictCandidates.length ? strictCandidates : [...allInfos.values()];
+
+        const ranked = candidatesToRank
+            .map((info) => ({
+                info,
+                score: scoreResolvedSatoruEntry(info, { title, season, seasonLabel: seasonLabel || '', preferredYear }),
+            }))
+            .sort((left, right) => right.score - left.score);
+        let picked = ranked[0]?.info;
+        if (!picked) throw new Error('Failed to resolve exact Satoru season');
+
+        const sameSeasonCandidates = ranked
+            .map((row) => row.info)
+            .filter((info) => detectSeasonNumber(info?.id, info?.title, info?.japaneseTitle) === season);
+        const normalizedRequestedSeasonLabel = normalizeSeasonLabel(seasonLabel || '');
+        if (normalizedRequestedSeasonLabel && sameSeasonCandidates.length > 1) {
+            const explicitArcMatch = sameSeasonCandidates.find((info) => {
+                const haystack = normalizeSeasonLabel(
+                    [info?.id, info?.title, info?.japaneseTitle, ...(Array.isArray(info?.synonyms) ? info.synonyms : [])]
+                        .filter(Boolean)
+                        .join(' '),
+                );
+                if (normalizedRequestedSeasonLabel.includes('mugen train')) {
+                    return haystack.includes('mugen train');
+                }
+                if (normalizedRequestedSeasonLabel.includes('entertainment district')) {
+                    return haystack.includes('entertainment district');
+                }
+                if (normalizedRequestedSeasonLabel.includes('swordsmith village')) {
+                    return haystack.includes('swordsmith village');
+                }
+                if (normalizedRequestedSeasonLabel.includes('hashira training')) {
+                    return haystack.includes('hashira training');
+                }
+                return false;
+            });
+            if (explicitArcMatch) {
+                picked = explicitArcMatch;
+            }
+
+            const explicitLabelMatch = sameSeasonCandidates
+                .map((info) => ({
+                    info,
+                    score: scoreResolvedSatoruEntry(info, {
+                        title,
+                        season,
+                        seasonLabel: seasonLabel || '',
+                        preferredYear,
+                    }),
+                }))
+                .sort((left, right) => right.score - left.score)[0]?.info;
+            if (explicitLabelMatch) {
+                picked = explicitLabelMatch;
+            }
+        }
+        if (sameSeasonCandidates.length > 1) {
+            const orderedParts = sameSeasonCandidates
+                .map((info) => ({
+                    info,
+                    order: getSeasonSubEntryOrder(title, season, info),
+                    len: Array.isArray(info?.episodes) ? info.episodes.length : 0,
+                }))
+                .sort((left, right) => left.order - right.order || left.len - right.len);
+
+            const pickedLabelHaystack = normalizeSeasonLabel(
+                [picked?.id, picked?.title, picked?.japaneseTitle].filter(Boolean).join(' '),
+            );
+            const hasExplicitPickedLabel =
+                normalizedRequestedSeasonLabel &&
+                pickedLabelHaystack.includes(normalizedRequestedSeasonLabel);
+
+            if (!hasExplicitPickedLabel) {
+                let remainingEpisode = episode;
+                for (const part of orderedParts) {
+                    if (part.len <= 0) continue;
+                    if (remainingEpisode <= part.len) {
+                        picked = part.info;
+                        episode = remainingEpisode;
+                        break;
+                    }
+                    remainingEpisode -= part.len;
+                }
+            }
+        }
+
+        const episodes = Array.isArray(picked?.episodes) ? picked.episodes : [];
+        const targetEpisode =
+            episodes.find((ep: any) => toEpisodeNum(ep) === episode) ||
+            episodes[Math.max(0, Math.min(episodes.length - 1, episode - 1))];
+        if (!targetEpisode?.id) throw new Error('Failed to resolve Satoru episode');
+
+        return {
+            anime: {
+                id: picked.id,
+                title: picked.title,
+            },
+            episode: {
+                id: String(targetEpisode.id),
+                number: toEpisodeNum(targetEpisode),
+                title: String(targetEpisode?.title || ''),
+            },
+        };
+    };
+    const resolveSatoruSeriesByTitle = async ({
+        title,
+        preferredYear,
+    }: {
+        title: string;
+        preferredYear?: number;
+    }) => {
+        const knownIds = getKnownSatoruIdsForTitleSeason(title, 1);
+        const searchTerms = uniqueStrings([title, ...getSeasonAliases(title, 2), ...getSeasonAliases(title, 3), ...getSeasonAliases(title, 4)]);
+        const candidateIds = new Set<string>(knownIds);
+
+        const searchSettled = await Promise.allSettled(searchTerms.slice(0, 6).map((term) => satoru.search(term, 1)));
+        for (const settled of searchSettled) {
+            if (settled.status !== 'fulfilled') continue;
+            const rows = Array.isArray(settled.value?.results) ? settled.value.results : [];
+            for (const row of rows.slice(0, 10)) {
+                if (row?.id) candidateIds.add(String(row.id));
+            }
+        }
+
+        if (!candidateIds.size) throw new Error('No Satoru series candidates found');
+
+        const fetched = await Promise.allSettled(
+            [...candidateIds].map(async (candidateId) => await satoru.fetchAnimeInfo(candidateId)),
+        );
+        const baseInfos = fetched
+            .filter((entry): entry is PromiseFulfilledResult<any> => entry.status === 'fulfilled')
+            .map((entry) => entry.value)
+            .filter((info) => Array.isArray(info?.episodes) && info.episodes.length);
+        if (!baseInfos.length) throw new Error('No Satoru series infos found');
+
+        const titleNorm = normalizeLooseTitle(title);
+        const familyRoot = (value: string) => normalizeLooseTitle(value).split(' ').slice(0, 4).join(' ');
+        const selectedBase = baseInfos
+            .map((info) => ({
+                info,
+                score: scoreResolvedSatoruEntry(info, {
+                    title,
+                    season: 1,
+                    seasonLabel: '',
+                    preferredYear,
+                }),
+            }))
+            .sort((left, right) => right.score - left.score)[0]?.info;
+        if (!selectedBase) throw new Error('Failed to choose Satoru series base');
+
+        const allInfos = new Map<string, any>();
+        allInfos.set(String(selectedBase.id), selectedBase);
+        const relatedRows = Array.isArray(selectedBase?.related) ? selectedBase.related : [];
+        const relatedSettled = await Promise.allSettled(
+            relatedRows.map(async (row: any) => await satoru.fetchAnimeInfo(String(row.id))),
+        );
+        for (const related of relatedSettled) {
+            if (related.status !== 'fulfilled') continue;
+            const info = related.value;
+            if (!Array.isArray(info?.episodes) || !info.episodes.length) continue;
+            allInfos.set(String(info.id), info);
+        }
+
+        const ordered = [...allInfos.values()]
+            .filter((info) => {
+                const joined = normalizeLooseTitle([info?.title, info?.japaneseTitle, ...(Array.isArray(info?.synonyms) ? info.synonyms : [])].join(' '));
+                return joined.includes(titleNorm.split(' ').slice(0, 2).join(' ')) || familyRoot(joined) === familyRoot(titleNorm);
+            })
+            .map((info) => ({
+                id: String(info.id),
+                title: String(info.title || ''),
+                season: detectSeasonNumber(info?.id, info?.title, info?.japaneseTitle) || 1,
+                part: detectSeasonPart(info?.id, info?.title, info?.japaneseTitle) || 0,
+                episodeCount: Array.isArray(info?.episodes) ? info.episodes.length : 0,
+                episodes: (Array.isArray(info?.episodes) ? info.episodes : []).map((ep: any, idx: number) => ({
+                    id: String(ep?.id || ''),
+                    number: idx + 1,
+                    title: String(ep?.title || `Episode ${idx + 1}`),
+                })),
+            }))
+            .sort((left, right) => left.season - right.season || left.part - right.part);
+
+        return {
+            title: selectedBase.title,
+            entries: ordered,
+        };
+    };
 
     const resolveSatoruEpisodeIdFromHiAnimeId = async (hiEpisodeId: string): Promise<string | null> => {
         if (!isHiAnimeEpisodeId(hiEpisodeId)) return null;
@@ -530,10 +1184,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         let episodeNum = 0;
         let titleGuess = slugToTitle(hiSlug);
+        let hiInfo: any = null;
+        let hiEpisodeCount = 0;
         try {
-            const hInfo: any = await hianimeFallback.fetchAnimeInfo(hiSlug);
-            titleGuess = String(hInfo?.title || titleGuess).trim() || titleGuess;
-            const hEpisodes = Array.isArray(hInfo?.episodes) ? hInfo.episodes : [];
+            hiInfo = await hianimeFallback.fetchAnimeInfo(hiSlug);
+            titleGuess = String(hiInfo?.title || titleGuess).trim() || titleGuess;
+            const hEpisodes = Array.isArray(hiInfo?.episodes) ? hiInfo.episodes : [];
+            hiEpisodeCount = hEpisodes.length;
             const hCurrent = hEpisodes.find((ep: any) => String(ep?.id || '') === String(hiEpisodeId));
             episodeNum = toEpisodeNum(hCurrent);
         } catch {
@@ -548,15 +1205,76 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         let sInfo: any = null;
         const directCandidates = [hiSlug, hiSlug.replace(/-\d+$/, '')].filter(Boolean);
-        for (const candidate of directCandidates) {
-            try {
-                const info = await satoru.fetchAnimeInfo(candidate);
-                if (Array.isArray(info?.episodes) && info.episodes.length) {
-                    sInfo = info;
-                    break;
+        const candidateIds = new Set<string>(directCandidates);
+
+        try {
+            const searchTerms = uniqueStrings([titleGuess, ...(hiInfo ? collectTitleVariants(hiInfo) : [])]).slice(0, 4);
+            const searchSettled = await Promise.allSettled(searchTerms.map((term) => satoru.search(term, 1)));
+            for (const settled of searchSettled) {
+                if (settled.status !== 'fulfilled') continue;
+                const results = Array.isArray(settled.value?.results) ? settled.value.results : [];
+                for (const result of results.slice(0, 8)) {
+                    if (result?.id) candidateIds.add(String(result.id));
                 }
-            } catch {
-                // try next candidate
+            }
+        } catch {
+            // no-op
+        }
+
+        const candidateInfos = await Promise.allSettled(
+            [...candidateIds].map(async (candidateId) => ({
+                id: candidateId,
+                info: await satoru.fetchAnimeInfo(candidateId),
+            })),
+        );
+        const rankedCandidates = candidateInfos
+            .filter((settled): settled is PromiseFulfilledResult<{ id: string; info: any }> => settled.status === 'fulfilled')
+            .map(({ value }) => ({
+                id: value.id,
+                info: value.info,
+                score: scoreSatoruCandidate(value.info, { id: value.id, title: value.info?.title }, hiInfo, hiSlug, hiEpisodeCount),
+            }))
+            .filter((candidate) => Array.isArray(candidate.info?.episodes) && candidate.info.episodes.length);
+
+        if (rankedCandidates.length) {
+            rankedCandidates.sort((left, right) => right.score - left.score);
+            sInfo = rankedCandidates[0].info;
+        }
+
+        if (sInfo) {
+            const hiSeason = detectSeasonNumber(hiSlug, ...(hiInfo ? collectTitleVariants(hiInfo) : [titleGuess]));
+            const hiPart = detectSeasonPart(hiSlug, ...(hiInfo ? collectTitleVariants(hiInfo) : [titleGuess]));
+            const relatedRows = Array.isArray((sInfo as any)?.related) ? (sInfo as any).related : [];
+            if (relatedRows.length && (hiSeason !== null || hiPart !== null)) {
+                const enrichedRelated = await Promise.allSettled(
+                    relatedRows.map(async (row: any) => {
+                        const relatedInfo = await satoru.fetchAnimeInfo(String(row.id));
+                        return {
+                            row,
+                            info: relatedInfo,
+                            episodeCount: Array.isArray((relatedInfo as any)?.episodes) ? (relatedInfo as any).episodes.length : 0,
+                        };
+                    }),
+                );
+                const rankedRelated = enrichedRelated
+                    .filter(
+                        (settled): settled is PromiseFulfilledResult<{ row: any; info: any; episodeCount: number }> =>
+                            settled.status === 'fulfilled',
+                    )
+                    .map(({ value }) => ({
+                        ...value,
+                        score: scoreRelatedSeasonEntry(
+                            { ...value.row, episodeCount: value.episodeCount },
+                            hiInfo,
+                            hiSlug,
+                            hiEpisodeCount,
+                        ),
+                    }))
+                    .sort((left, right) => right.score - left.score);
+
+                if (rankedRelated.length && rankedRelated[0].score > 0) {
+                    sInfo = rankedRelated[0].info;
+                }
             }
         }
 
@@ -704,6 +1422,80 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             reply
                 .status(500)
                 .send({ message: (err as Error).message });
+        }
+    });
+
+    fastify.get('/resolve', async (request: FastifyRequest, reply: FastifyReply) => {
+        const query = request.query as {
+            title?: string;
+            season?: number | string;
+            episode?: number | string;
+            seasonTitle?: string;
+            year?: number | string;
+        };
+        const title = String(query?.title || '').trim();
+        const season = Number(query?.season || 1);
+        const episode = Number(query?.episode || 1);
+        const seasonTitle = String(query?.seasonTitle || '').trim();
+        const year = Number(query?.year || 0);
+
+        if (!title) return reply.status(400).send({ message: 'title is required' });
+        if (!Number.isFinite(season) || season <= 0) return reply.status(400).send({ message: 'season is invalid' });
+        if (!Number.isFinite(episode) || episode <= 0) return reply.status(400).send({ message: 'episode is invalid' });
+
+        try {
+            const cacheKey = `satoru:resolve:${title}:${season}:${episode}:${seasonTitle}:${year}`;
+            const resolved = redis
+                ? await cache.fetch(
+                    redis as Redis,
+                    cacheKey,
+                    async () =>
+                        await resolveSatoruByMetadata({
+                            title,
+                            season,
+                            episode,
+                            seasonLabel: seasonTitle,
+                            preferredYear: Number.isFinite(year) && year > 1900 ? year : undefined,
+                        }),
+                    REDIS_TTL,
+                )
+                : await resolveSatoruByMetadata({
+                    title,
+                    season,
+                    episode,
+                    seasonLabel: seasonTitle,
+                    preferredYear: Number.isFinite(year) && year > 1900 ? year : undefined,
+                });
+            return reply.status(200).send(resolved);
+        } catch (err) {
+            return reply.status(500).send({ message: (err as Error).message });
+        }
+    });
+    fastify.get('/series', async (request: FastifyRequest, reply: FastifyReply) => {
+        const query = request.query as { title?: string; year?: number | string };
+        const title = String(query?.title || '').trim();
+        const year = Number(query?.year || 0);
+        if (!title) return reply.status(400).send({ message: 'title is required' });
+        try {
+            const cacheKey = `satoru:series:${title}:${year}`;
+            const payload = redis
+                ? await cache.fetch(
+                    redis as Redis,
+                    cacheKey,
+                    async () =>
+                        await resolveSatoruSeriesByTitle({
+                            title,
+                            preferredYear: Number.isFinite(year) && year > 1900 ? year : undefined,
+                        }),
+                    REDIS_TTL,
+                )
+                : await resolveSatoruSeriesByTitle({
+                    title,
+                    preferredYear: Number.isFinite(year) && year > 1900 ? year : undefined,
+                });
+            return reply.status(200).send(payload);
+        } catch (err) {
+            return reply.status(500).send({ message: (err as Error).message });
         }
     });
 
