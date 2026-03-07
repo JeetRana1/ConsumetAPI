@@ -12,29 +12,29 @@ const COMMON_HEADERS = { 'User-Agent': UA, Referer: 'https://justanime.to/', Ori
 const fetchJustAnime = async (path: string) =>
   proxyGet(`${JUSTANIME_BASE}${path}`, { headers: COMMON_HEADERS });
 
-const toApiProxyUrl = (url: string, referer = `${JUSTANIME_YUKI_BASE}/`) => {
+const toApiProxyUrl = (url: string, apiOrigin: string, referer = `${JUSTANIME_YUKI_BASE}/`) => {
   const value = String(url || '').trim();
   if (!value) return value;
-  return `/utils/proxy?url=${encodeURIComponent(value)}&referer=${encodeURIComponent(referer)}`;
+  return `${apiOrigin}/utils/proxy?url=${encodeURIComponent(value)}&referer=${encodeURIComponent(referer)}`;
 };
 
-const toYukiProxyUrl = (url: string) => {
+const toYukiProxyUrl = (url: string, apiOrigin: string) => {
   const value = String(url || '').trim();
   if (!value) return value;
   if (/m3u8-proxy/i.test(value)) {
-    return toApiProxyUrl(value, `${JUSTANIME_YUKI_BASE}/`);
+    return toApiProxyUrl(value, apiOrigin, `${JUSTANIME_YUKI_BASE}/`);
   }
   if (/\.m3u8(\?|$)/i.test(value)) {
     const yukiUrl = `${JUSTANIME_YUKI_BASE}/m3u8-proxy?url=${encodeURIComponent(value)}`;
-    return toApiProxyUrl(yukiUrl, `${JUSTANIME_YUKI_BASE}/`);
+    return toApiProxyUrl(yukiUrl, apiOrigin, `${JUSTANIME_YUKI_BASE}/`);
   }
   return value;
 };
 
-const normalizeSourceEntry = (entry: any, quality: string, isSub: boolean) => {
+const normalizeSourceEntry = (entry: any, quality: string, isSub: boolean, apiOrigin: string) => {
     const file = String(entry?.file || entry?.url || '').trim();
     if (!file) return null;
-    const proxied = toYukiProxyUrl(file);
+    const proxied = toYukiProxyUrl(file, apiOrigin);
     return {
         url: proxied,
         backupUrl: proxied === file ? undefined : file,
@@ -42,6 +42,14 @@ const normalizeSourceEntry = (entry: any, quality: string, isSub: boolean) => {
         isM3U8: /\.m3u8(\?|$)/i.test(file) || /m3u8-proxy/i.test(proxied),
         isSub
     };
+};
+
+const getRequestOrigin = (request: FastifyRequest) => {
+    const protoHeader = String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+    const hostHeader = String(request.headers['x-forwarded-host'] || request.headers.host || '').split(',')[0].trim();
+    const protocol = protoHeader || request.protocol || 'https';
+    if (hostHeader) return `${protocol}://${hostHeader}`;
+    return 'https://streamverse-api.ddns.net';
 };
 
 const isDeadJustAnimeBackendError = (err: any) =>
@@ -369,6 +377,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     fastify.get('/watch/:episodeId', async (request: FastifyRequest, reply: FastifyReply) => {
         const episodeId = (request.params as { episodeId: string }).episodeId;
+        const apiOrigin = getRequestOrigin(request);
         // Format: anilistId$episode$number
         const parts = episodeId.split('$episode$');
         const id = parts[0];
@@ -387,7 +396,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     const data = (res?.data?.data ?? res?.data ?? {}) as any;
                     if (Array.isArray(data?.sources) && data.sources.length > 0) {
                         const sources = data.sources
-                            .map((s: any) => normalizeSourceEntry(s, s?.quality || 'Default', Boolean(s?.isSub)))
+                            .map((s: any) => normalizeSourceEntry(s, s?.quality || 'Default', Boolean(s?.isSub), apiOrigin))
                             .filter(Boolean);
                         return {
                             headers: { Referer: 'https://justanime.to/', Origin: 'https://justanime.to' },
@@ -401,8 +410,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     const dub = data.dub?.sources || { sources: [], tracks: [] };
 
                     const sources = [
-                        ...(sub.sources || []).map((s: any) => normalizeSourceEntry(s, 'Subbed', true)),
-                        ...(dub.sources || []).map((s: any) => normalizeSourceEntry(s, 'Dubbed', false))
+                        ...(sub.sources || []).map((s: any) => normalizeSourceEntry(s, 'Subbed', true, apiOrigin)),
+                        ...(dub.sources || []).map((s: any) => normalizeSourceEntry(s, 'Dubbed', false, apiOrigin))
                     ].filter(Boolean);
 
                     const subtitles = [
