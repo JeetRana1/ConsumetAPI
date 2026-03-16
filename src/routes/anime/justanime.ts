@@ -17,7 +17,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             reply.status(200).send(res.data);
         } catch (err: any) {
             console.error('JustAnime search error:', err.message);
-            reply.status(500).send({ message: 'Error searching JustAnime', error: err.message });
+            reply.status(200).send({ currentPage: 1, hasNextPage: false, results: [] });
         }
     });
 
@@ -62,7 +62,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             reply.status(200).send(res);
         } catch (err: any) {
             console.error('JustAnime info error:', err.message);
-            reply.status(500).send({ message: 'Error fetching info from JustAnime', error: err.message });
+            reply.status(200).send({ id, title: '', episodes: [] });
         }
     });
 
@@ -124,7 +124,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             reply.status(200).send(res);
         } catch (err: any) {
             console.error('JustAnime watch error:', err.message);
-            reply.status(500).send({ message: 'Error fetching sources from JustAnime', error: err.message });
+            reply.status(200).send({ sources: [], subtitles: [] });
         }
     });
 };
