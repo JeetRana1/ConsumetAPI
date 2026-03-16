@@ -172,3 +172,23 @@ export const proxyGet = async <T = any>(
 
   return axios.get<T>(url, config);
 };
+
+export const proxyPost = async <T = any>(
+  url: string,
+  data?: any,
+  config: import('axios').AxiosRequestConfig = {},
+): Promise<import('axios').AxiosResponse<T>> => {
+  const proxies = getProxyCandidatesSync();
+  const first = proxies[0];
+
+  if (first) {
+    try {
+      const proxyOptions = toAxiosProxyOptions(first);
+      return await axios.post<T>(url, data, { ...config, ...(proxyOptions as any) });
+    } catch {
+      // Proxy failed — fall through to direct request.
+    }
+  }
+
+  return axios.post<T>(url, data, config);
+};

@@ -516,8 +516,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     }
 
-    const res = await tmdb.fetchMediaInfo(id, type);
-    reply.status(200).send(res);
+    try {
+      const res = await tmdb.fetchMediaInfo(id, type);
+      reply.status(200).send(res);
+    } catch (err) {
+      reply.status(200).send({ id, title: '', episodes: [], message: 'Fallback due to TMDB failure' });
+    }
   });
 
   fastify.get('/trending', async (request: FastifyRequest, reply: FastifyReply) => {

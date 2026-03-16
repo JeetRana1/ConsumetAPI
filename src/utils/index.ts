@@ -380,14 +380,26 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         });
       }
 
-      const contentType = String(upstream.headers['content-type'] || '');
+      const contentType = String(upstream.headers['content-type'] || '').toLowerCase();
       const isM3u8 =
         looksLikeM3u8 ||
         contentType.includes('mpegurl') ||
-        contentType.includes('application/x-mpegurl');
+        contentType.includes('application/x-mpegurl') ||
+        contentType.includes('application/vnd.apple.mpegurl');
 
+      let raw = '';
       if (isM3u8) {
-        const raw = Buffer.from(upstream.data).toString('utf8');
+        if (upstream.data && typeof (upstream.data as any).pipe === 'function') {
+          raw = await new Promise<string>((resolve, reject) => {
+            let buf = '';
+            upstream.data.on('data', (chunk: Buffer) => buf += chunk.toString('utf8'));
+            upstream.data.on('end', () => resolve(buf));
+            upstream.data.on('error', reject);
+          });
+        } else {
+          raw = Buffer.from(upstream.data).toString('utf8');
+        }
+
         const base = target.toString();
 
         const normalizeManifestUri = (candidate: string) => {
