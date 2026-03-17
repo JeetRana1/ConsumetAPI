@@ -431,7 +431,16 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         };
 
         const isMasterManifest = raw.includes('#EXT-X-STREAM-INF');
-        const isNet20Manifest = /(\.|^)net20\.cc$/i.test(target.hostname || '');
+        // Skip variant reachability probing for CDNs with signed/anti-leech URLs.
+        // These CDNs require specific tokens/cookies that our server-side probe won't have,
+        // causing false 403s and all variants being incorrectly dropped → 502.
+        const isSkipProbeHost =
+          /(\.|^)net20\.cc$/i.test(target.hostname || '') ||
+          /(\.|^)netmagcdn\.com$/i.test(target.hostname || '') ||
+          /(\.|^)as-cdn\d*\.top$/i.test(target.hostname || '') ||
+          /(\.|^)nm-cdn\d*\.top$/i.test(target.hostname || '') ||
+          /(\.|^)animesalt\.ac$/i.test(target.hostname || '');
+        const isNet20Manifest = isSkipProbeHost;
         const lines = raw.split('\n');
 
         const reachabilityCache = new Map<string, boolean>();

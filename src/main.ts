@@ -41,7 +41,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
   await fastify.register(FastifyCors, {
     origin: '*',
-    methods: 'GET',
+    methods: ['GET', 'OPTIONS', 'HEAD'],
+    preflight: true,
+    strictPreflight: false,
   });
 
   fastify.addHook('preSerialization', async (_request, _reply, payload) => {
