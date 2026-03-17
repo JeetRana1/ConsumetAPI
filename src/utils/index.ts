@@ -341,7 +341,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const proxyCandidates = await getProxyCandidates();
       const chain = [undefined, ...proxyCandidates];
       const fetchWithChain = async (targetUrl: string, requestConfig: any) => {
-        let response: any = null;
         let lastErr: any = null;
         const host = (() => {
           try {
@@ -351,11 +350,26 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           }
         })();
         const forceDirectOnly =
-          /(^|\.)net20\.cc$/.test(host) || /(^|\.)nm-cdn\d+\.top$/.test(host);
+          /(^|\.)net20\.cc$/.test(host) || /(^|\.)nm-cdn\d+\.top$/.test(host) || host.includes('animesalt');
         const effectiveChain = forceDirectOnly ? [undefined] : chain;
 
-        for (const proxyUrl of effectiveChain) {
-          try {
+        // If direct only or just one option, do it simple
+        if (effectiveChain.length <= 1) {
+            try {
+                const proxyOptions = toAxiosProxyOptions(effectiveChain[0]);
+                const upstream = await axios.get(targetUrl, {
+                    proxy: false,
+                    ...requestConfig,
+                    ...proxyOptions,
+                } as any);
+                return upstream;
+            } catch (err: any) {
+                throw err;
+            }
+        }
+
+        // Parallel Race for multiple proxies: Try up to 3 at a time to find one that works fast
+        const attemptProxy = async (proxyUrl: string | undefined) => {
             const proxyOptions = toAxiosProxyOptions(proxyUrl);
             let refererForRequest = requestConfig.headers.Referer || '';
             let originForRequest = requestConfig.headers.Origin || '';
@@ -364,7 +378,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 /(^|\.)(as-cdn\d+|z\d+|animesalt|as2|as-api)\.(pro|ac|top|xyz|link|click|net|cc|org)$/i.test(target.hostname);
 
             if (isAnimesaltCdn) {
-                // Normalize stale .pro/.xyz referers and origins to .ac for AnimeSalt CDNs
                 if (refererForRequest.includes('animesalt.')) {
                     refererForRequest = refererForRequest.replace(/animesalt\.(pro|xyz|click)/gi, 'animesalt.ac');
                 } else if (!refererForRequest) {
@@ -377,23 +390,36 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 }
             }
 
-            const upstream = await axios.get(targetUrl, {
-              // Prevent implicit HTTP(S)_PROXY env usage on direct attempts.
-              proxy: false,
-              ...requestConfig,
-              headers: {
-                ...requestConfig.headers,
-                Referer: refererForRequest,
-                Origin: originForRequest,
-              },
-              ...proxyOptions,
+            return await axios.get(targetUrl, {
+                proxy: false,
+                ...requestConfig,
+                timeout: Math.min(requestConfig.timeout || 10000, 3500), // Cap per-proxy wait for fragments
+                headers: {
+                    ...requestConfig.headers,
+                    Referer: refererForRequest,
+                    Origin: originForRequest,
+                },
+                ...proxyOptions,
             } as any);
-            return upstream;
-          } catch (err: any) {
-            lastErr = err;
-            continue;
-          }
+        };
+
+        // Attempt direct first if not forced proxy
+        try {
+            return await attemptProxy(undefined);
+        } catch (e) {
+            lastErr = e;
         }
+
+        // Try remaining proxies in blocks of 2 to balance load vs speed
+        for (let i = 1; i < effectiveChain.length; i += 2) {
+            const batch = effectiveChain.slice(i, i + 2);
+            try {
+                return await Promise.any(batch.map(p => attemptProxy(p)));
+            } catch (aggregateErr) {
+                lastErr = aggregateErr;
+            }
+        }
+        
         throw lastErr || new Error('proxy failed');
       };
 
@@ -459,14 +485,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         // Skip variant reachability probing for CDNs with signed/anti-leech URLs.
         // These CDNs require specific tokens/cookies that our server-side probe won't have,
         // causing false 403s and all variants being incorrectly dropped → 502.
-        const isSkipProbeHost =
-          /(\.|^)net20\.cc$/i.test(target.hostname || '') ||
-          /(\.|^)netmagcdn\.com$/i.test(target.hostname || '') ||
-          /(\.|^)as-cdn\d*\.top$/i.test(target.hostname || '') ||
-          /(\.|^)nm-cdn\d*\.top$/i.test(target.hostname || '') ||
-          /(\.|^)animesalt\.(ac|pro|com)$/i.test(target.hostname || '') ||
-          /(\.|^)z\d+\.top$/i.test(target.hostname || '') ||
-          /(\.|^)cdn\d+\.stream$/i.test(target.hostname || '');
+        const isSkipProbeHost = true; // DISABLED PROBING: It is too expensive for multiple variants.
         const isNet20Manifest = isSkipProbeHost;
         const lines = raw.split('\n');
 
@@ -641,6 +660,125 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       source: 'none',
       episodes: {},
     });
+  });
+
+  // VTT proxy: fetch a subtitle URL, convert SRT/ASS → WebVTT, serve as text/vtt.
+  // iOS AVKit native fullscreen player cannot load data: URI text tracks — it needs a real HTTP URL.
+  fastify.get('/vtt', async (request: any, reply: any) => {
+    const url = String(request.query?.url || '').trim();
+    const referer = String(request.query?.referer || '').trim();
+    if (!url) return reply.status(400).send('url is required');
+
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      return reply.status(400).send('invalid url');
+    }
+    if (!['http:', 'https:'].includes(target.protocol)) {
+      return reply.status(400).send('invalid protocol');
+    }
+
+    const refererForRequest = referer || `${target.protocol}//${target.host}/`;
+    let originForRequest = refererForRequest;
+    try { originForRequest = `${new URL(refererForRequest).protocol}//${new URL(refererForRequest).host}`; } catch { /* ignore */ }
+
+    const srtToVtt = (text: string): string => {
+      const clean = text.replace(/\r+/g, '').replace(/^\uFEFF/, '');
+      return `WEBVTT\n\n${clean.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')}`;
+    };
+
+    const assTimeToVtt = (t: string): string => {
+      const m = String(t || '').trim().match(/^(\d+):(\d{1,2}):(\d{1,2})[.](\d{1,2})$/);
+      if (!m) return '';
+      return `${String(Number(m[1])).padStart(2,'0')}:${String(Number(m[2])).padStart(2,'0')}:${String(Number(m[3])).padStart(2,'0')}.${String(Math.round(Number(`0.${m[4] || '0'}`) * 1000)).padStart(3,'0')}`;
+    };
+
+    const assToVtt = (text: string): string => {
+      const lines = text.replace(/\r+/g, '').replace(/^\uFEFF/, '').split('\n');
+      const cues: string[] = [];
+      let idx = 1;
+      for (const line of lines) {
+        const m = line.match(/^Dialogue:\s*[^,]*,([^,]+),([^,]+),[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(.*)$/i);
+        if (!m) continue;
+        const s = assTimeToVtt(m[1]); const e = assTimeToVtt(m[2]);
+        if (!s || !e) continue;
+        const txt = String(m[3] || '').replace(/\{[^}]*\}/g, '').replace(/\\N/gi, '\n').replace(/\\n/g, '\n').trim();
+        if (!txt) continue;
+        cues.push(`${idx++}\n${s} --> ${e}\n${txt}`);
+      }
+      return cues.length ? `WEBVTT\n\n${cues.join('\n\n')}` : '';
+    };
+
+    try {
+      const proxyCandidates = await getProxyCandidates();
+      const chain = [undefined, ...proxyCandidates];
+      let raw = '';
+      let lastErr: any = null;
+      for (const proxyUrl of chain) {
+        try {
+          const { toAxiosProxyOptions: tap } = await import('./outboundProxy');
+          const proxyOpts = tap(proxyUrl);
+          const resp = await axios.get(url, {
+            proxy: false,
+            ...proxyOpts,
+            responseType: 'text',
+            timeout: 15000,
+            headers: {
+              Referer: refererForRequest,
+              Origin: originForRequest,
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            },
+            maxRedirects: 5,
+            validateStatus: (s: number) => s < 400,
+          } as any);
+          raw = String(resp.data || '');
+          break;
+        } catch (e: any) {
+          lastErr = e;
+        }
+      }
+
+      if (!raw) {
+        return reply.status(502).send(lastErr?.message || 'upstream fetch failed');
+      }
+
+      // Detect and convert format
+      const ln = raw.trim().toLowerCase();
+      if (ln.startsWith('<!doctype html') || ln.startsWith('<html')) {
+        return reply.status(502).send('upstream returned HTML error page');
+      }
+
+      let vtt = '';
+      const trimmed = raw.trim();
+      // AnimeSalt base64-encoded subtitles
+      if (!trimmed.includes('-->') && trimmed.length > 50 && /^[a-z0-9+/= \n\r\t]+$/i.test(trimmed)) {
+        try {
+          const decoded = Buffer.from(trimmed.replace(/\s/g, ''), 'base64').toString('utf8');
+          if (decoded.includes('-->')) raw = decoded;
+        } catch { /* ignore */ }
+      }
+
+      const hasCue = raw.includes('-->');
+      const hasSrt = /\d{1,2}:\d{2}:\d{2}[.,]\d{2,3}/.test(raw);
+      const isAss = /^\s*\[Script Info\]/im.test(raw) || /^\s*\[Events\]/im.test(raw);
+      const isSrt = /^\d{2}:\d{2}:\d{2},\d{3}$/.test(raw.split('\n').find(l => l.includes(',')) || '') || (hasCue && hasSrt && !raw.trim().toLowerCase().startsWith('webvtt'));
+      const isVtt = raw.trim().toLowerCase().startsWith('webvtt');
+
+      if (isAss) vtt = assToVtt(raw);
+      else if (isSrt) vtt = srtToVtt(raw);
+      else if (isVtt) vtt = raw.replace(/\r+/g, '').replace(/^\uFEFF/, '');
+      else if (hasCue) vtt = `WEBVTT\n\n${raw.replace(/\r+/g, '').replace(/^\uFEFF/, '')}`;
+      else vtt = raw;
+
+      reply
+        .header('Content-Type', 'text/vtt; charset=utf-8')
+        .header('Access-Control-Allow-Origin', '*')
+        .header('Cache-Control', 'public, max-age=3600')
+        .send(vtt);
+    } catch (err: any) {
+      return reply.status(502).send(err?.message || 'vtt proxy failed');
+    }
   });
 
   fastify.get('/', async (request: any, reply: any) => {

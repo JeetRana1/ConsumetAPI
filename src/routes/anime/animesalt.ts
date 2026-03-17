@@ -71,18 +71,27 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 const episodes: any[] = [];
                 $('article.episodes').each((_, el) => {
                     const epUrl = $(el).find('a.lnk-blk').attr('href');
-                    const epId = epUrl?.split('/episode/')[1]?.replace('/', '');
+                    const epId = epUrl?.split('/episode/')[1]?.replace(/\/$/, '');
                     const epTitle = $(el).find('.entry-title').text().trim();
-                    const epNum = $(el).find('.num-epi').text().trim();
+                    const epNumStr = $(el).find('.num-epi').text().trim();
+                    
+                    // Robust numeric extraction for episode numbers (e.g., "Season 1 Ep 25" -> 25)
+                    const numMatch = epNumStr.match(/(\d+)/);
+                    const epNumber = numMatch ? parseInt(numMatch[1]) : 0;
+
                     if (epId) {
                         episodes.push({
                             id: epId,
                             title: epTitle,
-                            number: parseInt(epNum) || 0,
+                            number: epNumber,
                             url: epUrl
                         });
                     }
                 });
+
+                // Sort episodes numerically (ascending) to guarantee ep 1 is always first in the list.
+                // This prevents "wrong video" issues when the site's layout varies.
+                episodes.sort((a, b) => a.number - b.number);
 
                 return {
                     id,
@@ -90,7 +99,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     description,
                     image: image?.startsWith('//') ? `https:${image}` : image,
                     genres,
-                    episodes // Already in ascending order (ep 1 first)
+                    episodes
                 };
             };
 
@@ -125,7 +134,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             if (iframe1) {
                 try {
                     const embedUrl = new URL(iframe1);
-                    const videoId = embedUrl.pathname.split('/').pop();
+                    // More robust videoId extraction (handles trailing slashes)
+                    const videoId = embedUrl.pathname.split('/').filter(p => !!p && p !== 'v').pop();
                     const origin = embedUrl.origin;
 
                     // Step 1 – load the player page to obtain session cookies

@@ -2,16 +2,28 @@ import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from '
 import { META, PROVIDERS_LIST, StreamingServers } from '@consumet/extensions';
 import { MOVIES } from '@consumet/extensions';
 import { load } from 'cheerio';
-import { tmdbApi } from '../../main';
+import { tmdbApi, redis, REDIS_TTL } from '../../main';
+import cache from '../../utils/cache';
+import { Redis } from 'ioredis';
 import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
+import axios from 'axios';
+
+const configureMeta = (meta: any) => {
+  if (meta && (meta as any).client?.defaults) {
+    // Already set globally in main.ts, but being explicit for meta routes
+    (meta as any).client.defaults.headers.common['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  }
+  return meta;
+};
 
 // Map of anime providers that have direct routes in this API
 const ANIME_PROVIDER_ROUTES: Record<string, string> = {
   satoru: '/anime/satoru',
   hianime: '/anime/hianime',
   justanime: '/anime/justanime',
+  animesalt: '/anime/animesalt',
 };
 
 const resolveMovieProvider = (provider?: string) => {
@@ -357,7 +369,23 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
   const buildDramacoolTmdbInfo = async (id: string, type: string) => {
     const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-    const baseInfo: any = await baseTmdb.fetchMediaInfo(id, type);
+    
+    const fetchBase = async () => {
+      const res = await baseTmdb.fetchMediaInfo(id, type);
+      if (res && typeof res === 'object') {
+        // Optimize for speed by removing heavy fields not used in current UI
+        delete (res as any).cast;
+        delete (res as any).characters;
+        delete (res as any).recommendations;
+        delete (res as any).similar;
+      }
+      return res;
+    };
+
+    const baseInfo: any = redis
+      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}`, fetchBase, REDIS_TTL)
+      : await fetchBase();
+
     const titleCandidates = [
       baseInfo?.title,
       baseInfo?.name,
@@ -478,19 +506,100 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
     const query = (request.params as { query: string }).query;
     const page = (request.query as { page: number }).page;
-    const tmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+    const tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
 
-    const res = await tmdb.search(query, page);
+    try {
+      const fetchSearch = async () => {
+        return await tmdb.search(query, page);
+      };
 
-    reply.status(200).send(res);
+      let res = redis
+        ? await cache.fetch(redis as Redis, `tmdb:search:${query}:${page || 1}`, fetchSearch, REDIS_TTL)
+        : await fetchSearch();
+
+      // If results are empty or error out, try direct rescue
+      if (!res || !Array.isArray(res.results) || res.results.length === 0) {
+        const rescued = await getDirectTmdbSearch(query, page);
+        if (rescued && rescued.results.length > 0) {
+          res = { ...rescued, message: 'Search results rescued via direct fetch' };
+        }
+      }
+
+      reply.status(200).send(res);
+    } catch (err) {
+      console.error('TMDB Search Error:', err);
+      // Catch-all rescue
+      const rescued = await getDirectTmdbSearch(query, page);
+      if (rescued) {
+        return reply.status(200).send({ ...rescued, message: 'Search results rescued after fetch failure' });
+      }
+      reply.status(200).send({ results: [], total_results: 0, message: 'Search failed, please try again or check TMDB key.' });
+    }
   });
+
+  const getDirectTmdbSearch = async (query: string, page: number = 1) => {
+    try {
+      if (!tmdbApi) return null;
+      const url = `https://api.themoviedb.org/3/search/multi?api_key=${tmdbApi}&query=${encodeURIComponent(query)}&page=${page}`;
+      const res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (res.data && Array.isArray(res.data.results)) {
+        return {
+          results: res.data.results.map((item: any) => ({
+            id: item.id.toString(),
+            title: item.title || item.name || 'Unknown',
+            image: item.poster_path ? `https://image.tmdb.org/t/p/original${item.poster_path}` : null,
+            type: item.media_type === 'tv' ? 'tv' : 'movie',
+            releaseDate: item.release_date || item.first_air_date,
+            rating: item.vote_average,
+          })),
+          total_results: res.data.total_results,
+          total_pages: res.data.total_pages,
+        };
+      }
+    } catch (err) {
+      console.error('Direct TMDB Search Error:', err);
+    }
+    return null;
+  };
+
+  const getDirectTmdbInfo = async (id: string, type: string) => {
+    try {
+      if (!tmdbApi) return null;
+      const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${tmdbApi}`;
+      const res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (res.data) {
+        return {
+          id: res.data.id.toString(),
+          title: res.data.title || res.data.name || 'Unknown',
+          description: res.data.overview,
+          image: `https://image.tmdb.org/t/p/original${res.data.poster_path}`,
+          cover: `https://image.tmdb.org/t/p/original${res.data.backdrop_path}`,
+          status: res.data.status,
+          releaseDate: res.data.release_date || res.data.first_air_date,
+          rating: res.data.vote_average,
+          genres: res.data.genres?.map((g: any) => g.name) || [],
+          totalEpisodes: res.data.number_of_episodes || (res.data.episodes ? res.data.episodes.length : 0),
+          seasons: res.data.seasons?.map((s: any) => ({
+             id: s.id.toString(),
+             name: s.name,
+             season: s.season_number,
+             image: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
+          })) || [],
+          // Minimal info to keep UI working
+        };
+      }
+    } catch (err) {
+      console.error('Direct TMDB Fetch Error:', err);
+    }
+    return null;
+  };
 
   fastify.get('/info', async (request: FastifyRequest, reply: FastifyReply) => {
     const id = (request.query as { id: string }).id;
     const type = (request.query as { type: string }).type;
     const provider = (request.query as { provider?: string }).provider;
     const providerLower = provider?.toLowerCase();
-    let tmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+    let tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
 
     if (!id) return reply.status(400).send({ message: "The 'id' query is required" });
     if (!type) return reply.status(400).send({ message: "The 'type' query is required" });
@@ -508,20 +617,49 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
       if (selectedProvider) {
-        tmdb = new META.TMDB(tmdbApi, selectedProvider);
+        tmdb = configureMeta(new META.TMDB(tmdbApi, selectedProvider));
       } else {
         const possibleProvider = PROVIDERS_LIST.MOVIES.find(
           (p) => p.name.toLowerCase() === provider.toLocaleLowerCase(),
         );
-        tmdb = new META.TMDB(tmdbApi, possibleProvider);
+        tmdb = configureMeta(new META.TMDB(tmdbApi, possibleProvider));
       }
     }
 
     try {
-      const res = await tmdb.fetchMediaInfo(id, type);
+      const fetchInfo = async () => {
+        const info = await tmdb.fetchMediaInfo(id, type);
+        if (info && typeof info === 'object') {
+          // Optimize for speed by removing heavy fields not used in current UI
+          delete (info as any).cast;
+          delete (info as any).characters;
+          delete (info as any).recommendations;
+          delete (info as any).similar;
+        }
+        return info;
+      };
+
+      let res = redis
+        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}`, fetchInfo, REDIS_TTL)
+        : await fetchInfo();
+
+      // If title is "Unknown" or missing, try to rescue it directly from TMDB
+      if (!res || !(res as any).title || (res as any).title === 'Unknown') {
+        const rescued = await getDirectTmdbInfo(id, type);
+        if (rescued) {
+          res = { ...(res || {}), ...rescued, message: 'Metadata partially rescued via direct fetch' };
+        }
+      }
+
       reply.status(200).send(res);
     } catch (err) {
-      reply.status(200).send({ id, title: '', episodes: [], message: 'Fallback due to TMDB failure' });
+      console.error('TMDB Info Error:', err);
+      // Catch-all rescue if the entire fetch fails
+      const rescued = await getDirectTmdbInfo(id, type);
+      if (rescued) {
+        return reply.status(200).send({ ...rescued, episodes: [], message: 'Metadata rescued after fetch failure' });
+      }
+      reply.status(200).send({ id, title: 'Unknown', episodes: [], message: 'TMDB metadata fetch failed' });
     }
   });
 
@@ -530,7 +668,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const type = (request.query as { type: string }).type;
     const provider = (request.query as { provider?: string }).provider;
     const providerLower = provider?.toLowerCase();
-    let tmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+    let tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
 
     if (!type) return reply.status(400).send({ message: "The 'type' query is required" });
 
@@ -547,20 +685,49 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
       if (selectedProvider) {
-        tmdb = new META.TMDB(tmdbApi, selectedProvider);
+        tmdb = configureMeta(new META.TMDB(tmdbApi, selectedProvider));
       } else {
         const possibleProvider = PROVIDERS_LIST.MOVIES.find(
           (p) => p.name.toLowerCase() === provider.toLocaleLowerCase(),
         );
-        tmdb = new META.TMDB(tmdbApi, possibleProvider);
+        tmdb = configureMeta(new META.TMDB(tmdbApi, possibleProvider));
       }
     }
 
     try {
-      const res = await tmdb.fetchMediaInfo(id, type);
+      const fetchInfo = async () => {
+        const info = await tmdb.fetchMediaInfo(id, type);
+        if (info && typeof info === 'object') {
+          // Optimize for speed by removing heavy fields not used in current UI
+          delete (info as any).cast;
+          delete (info as any).characters;
+          delete (info as any).recommendations;
+          delete (info as any).similar;
+        }
+        return info;
+      };
+
+      let res = redis
+        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}`, fetchInfo, REDIS_TTL)
+        : await fetchInfo();
+
+      // If title is "Unknown" or missing, try to rescue it directly from TMDB
+      if (!res || !(res as any).title || (res as any).title === 'Unknown') {
+        const rescued = await getDirectTmdbInfo(id, type);
+        if (rescued) {
+          res = { ...(res || {}), ...rescued, message: 'Metadata partially rescued via direct fetch' };
+        }
+      }
+
       reply.status(200).send(res);
     } catch (err) {
-      reply.status(200).send({ id, title: '', episodes: [], message: 'Fallback due to TMDB failure' });
+      console.error('TMDB Info ID Error:', err);
+      // Catch-all rescue
+      const rescued = await getDirectTmdbInfo(id, type);
+      if (rescued) {
+        return reply.status(200).send({ ...rescued, episodes: [], message: 'Metadata rescued after fetch failure' });
+      }
+      reply.status(200).send({ id, title: 'Unknown', episodes: [], message: 'TMDB metadata fetch failed' });
     }
   });
 
@@ -577,15 +744,60 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     const page = (request.query as { page?: number }).page || 1;
 
-    const tmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+    const tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
 
     try {
-      const res = await tmdb.fetchTrending(type, timePeriod, page);
+      let res = await tmdb.fetchTrending(type, timePeriod, page);
+      
+      // If results are empty or missing, try direct rescue
+      if (!res || !Array.isArray(res.results) || res.results.length === 0) {
+        const rescued = await getDirectTmdbTrending(type, timePeriod, page);
+        if (rescued && rescued.results.length > 0) {
+          res = { ...rescued, message: 'Trending rescued via direct fetch' };
+        }
+      }
+
+      if (res && Array.isArray(res.results)) {
+        res.results.forEach((item: any) => {
+          delete (item as any).cast;
+          delete (item as any).characters;
+        });
+      }
       reply.status(200).send(res);
     } catch (err) {
-      reply.status(500).send({ message: 'Failed to fetch trending media.' });
+      console.error('TMDB Trending Error:', err);
+      // Catch-all rescue
+      const rescued = await getDirectTmdbTrending(type, timePeriod, page);
+      if (rescued) {
+        return reply.status(200).send({ ...rescued, message: 'Trending rescued after fetch failure' });
+      }
+      reply.status(200).send({ results: [], message: 'Trending currently unavailable, please check TMDB key.' });
     }
   });
+
+  const getDirectTmdbTrending = async (type: string = 'all', timePeriod: string = 'day', page: number = 1) => {
+    try {
+      if (!tmdbApi) return null;
+      const url = `https://api.themoviedb.org/3/trending/${type}/${timePeriod}?api_key=${tmdbApi}&page=${page}`;
+      const res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (res.data && Array.isArray(res.data.results)) {
+        return {
+          results: res.data.results.map((item: any) => ({
+            id: item.id.toString(),
+            title: item.title || item.name || 'Unknown',
+            image: item.poster_path ? `https://image.tmdb.org/t/p/original${item.poster_path}` : null,
+            type: item.media_type || (type === 'all' ? 'movie' : type),
+            releaseDate: item.release_date || item.first_air_date,
+            rating: item.vote_average,
+          })),
+          page: res.data.page,
+        };
+      }
+    } catch (err) {
+      console.error('Direct TMDB Trending Error:', err);
+    }
+    return null;
+  };
 
   const watch = async (request: FastifyRequest, reply: FastifyReply) => {
     let episodeId = (request.params as { episodeId: string }).episodeId;
@@ -662,7 +874,20 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     if (type === 'movie' && !providerLower && id) {
       try {
         const discoveryTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-        const mediaInfo: any = await discoveryTmdb.fetchMediaInfo(id, type);
+        let mediaInfo: any;
+        try {
+          mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
+        } catch {
+          // Rescue directly if discovery fails
+          mediaInfo = await getDirectTmdbInfo(id, type);
+        }
+
+        // Final check for "Unknown" title after fetch
+        if (!mediaInfo || !mediaInfo.title || mediaInfo.title === 'Unknown') {
+          const rescued = await getDirectTmdbInfo(id, type);
+          if (rescued) mediaInfo = { ...(mediaInfo || {}), ...rescued };
+        }
+
         const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
         if (isAnimeLikeMovie(mediaInfo) && titleCandidates.length) {
           const animeFallback = await tryAnimeProvidersForMovie({
@@ -678,18 +903,18 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     // Movie/TV providers
     let movieProvider: any = configureProvider(new MOVIES.FlixHQ());
-    let tmdb = new META.TMDB(tmdbApi, movieProvider);
+    let tmdb = configureMeta(new META.TMDB(tmdbApi, movieProvider));
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
       if (selectedProvider) {
         movieProvider = selectedProvider as any;
-        tmdb = new META.TMDB(tmdbApi, selectedProvider);
+        tmdb = configureMeta(new META.TMDB(tmdbApi, selectedProvider));
       } else {
         const possibleProvider = PROVIDERS_LIST.MOVIES.find(
           (p) => p.name.toLowerCase() === provider.toLocaleLowerCase(),
         );
         movieProvider = (possibleProvider as any) || movieProvider;
-        tmdb = new META.TMDB(tmdbApi, possibleProvider);
+        tmdb = configureMeta(new META.TMDB(tmdbApi, possibleProvider));
       }
     }
     let sourceId = '';
@@ -729,8 +954,19 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     } catch (err: any) {
       if (type === 'movie' && id) {
         try {
-          const discoveryTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-          const mediaInfo: any = await discoveryTmdb.fetchMediaInfo(id, type);
+          const discoveryTmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
+          let mediaInfo: any;
+          try {
+             mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
+          } catch {
+             mediaInfo = await getDirectTmdbInfo(id, type);
+          }
+
+          if (!mediaInfo || !mediaInfo.title || mediaInfo.title === 'Unknown') {
+            const rescued = await getDirectTmdbInfo(id, type);
+            if (rescued) mediaInfo = { ...(mediaInfo || {}), ...rescued };
+          }
+
           const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
           if (titleCandidates.length) {
             const animeFallback = await tryAnimeProvidersForMovie({

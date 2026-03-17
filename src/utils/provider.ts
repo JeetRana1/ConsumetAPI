@@ -1,6 +1,9 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
 import { MegaCloud, RapidCloud, VidCloud, VideoStr } from '@consumet/extensions/dist/extractors';
 import { getProxyCandidatesSync } from './outboundProxy';
+import https from 'https';
+
+const globalHttpsAgent = new https.Agent({ family: 4, keepAlive: true });
 
 type ProviderWithClient = {
   name?: string;
@@ -62,6 +65,16 @@ const applyTimeoutConfig = (provider: ProviderWithClient) => {
     : (isProduction ? 12000 : 10000);
 
   defaults.timeout = timeoutMs;
+};
+
+const applyAgentConfig = (provider: ProviderWithClient) => {
+  const client = provider.client;
+  if (!client) return;
+
+  // @ts-ignore - injecting agent into axial defaults if possible
+  if (client.defaults) {
+    (client.defaults as any).httpsAgent = globalHttpsAgent;
+  }
 };
 
 const isFlixhqProvider = (provider: ProviderWithClient): boolean =>
@@ -337,6 +350,7 @@ export const configureProvider = <T>(provider: T): T => {
   applyBrowserHeaders(target);
   applyProxyConfig(target);
   applyTimeoutConfig(target);
+  applyAgentConfig(target);
   wrapFlixhqServerFetcher(target);
   wrapMovieSourceFetcher(target);
   return provider;
