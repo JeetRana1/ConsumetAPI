@@ -357,13 +357,38 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         for (const proxyUrl of effectiveChain) {
           try {
             const proxyOptions = toAxiosProxyOptions(proxyUrl);
-            response = await axios.get(targetUrl, {
+            let refererForRequest = requestConfig.headers.Referer || '';
+            let originForRequest = requestConfig.headers.Origin || '';
+
+            const isAnimesaltCdn = 
+                /(^|\.)(as-cdn\d+|z\d+|animesalt|as2|as-api)\.(pro|ac|top|xyz|link|click|net|cc|org)$/i.test(target.hostname);
+
+            if (isAnimesaltCdn) {
+                // Normalize stale .pro/.xyz referers and origins to .ac for AnimeSalt CDNs
+                if (refererForRequest.includes('animesalt.')) {
+                    refererForRequest = refererForRequest.replace(/animesalt\.(pro|xyz|click)/gi, 'animesalt.ac');
+                } else if (!refererForRequest) {
+                  refererForRequest = 'https://animesalt.ac/';
+                }
+                if (originForRequest.includes('animesalt.')) {
+                    originForRequest = originForRequest.replace(/animesalt\.(pro|xyz|click)/gi, 'animesalt.ac');
+                } else if (!originForRequest) {
+                  originForRequest = 'https://animesalt.ac';
+                }
+            }
+
+            const upstream = await axios.get(targetUrl, {
               // Prevent implicit HTTP(S)_PROXY env usage on direct attempts.
               proxy: false,
               ...requestConfig,
+              headers: {
+                ...requestConfig.headers,
+                Referer: refererForRequest,
+                Origin: originForRequest,
+              },
               ...proxyOptions,
             } as any);
-            return response;
+            return upstream;
           } catch (err: any) {
             lastErr = err;
             continue;
@@ -439,7 +464,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           /(\.|^)netmagcdn\.com$/i.test(target.hostname || '') ||
           /(\.|^)as-cdn\d*\.top$/i.test(target.hostname || '') ||
           /(\.|^)nm-cdn\d*\.top$/i.test(target.hostname || '') ||
-          /(\.|^)animesalt\.ac$/i.test(target.hostname || '');
+          /(\.|^)animesalt\.(ac|pro|com)$/i.test(target.hostname || '') ||
+          /(\.|^)z\d+\.top$/i.test(target.hostname || '') ||
+          /(\.|^)cdn\d+\.stream$/i.test(target.hostname || '');
         const isNet20Manifest = isSkipProbeHost;
         const lines = raw.split('\n');
 

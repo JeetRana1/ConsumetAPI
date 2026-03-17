@@ -485,6 +485,46 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     reply.status(200).send(res);
   });
 
+  fastify.get('/info', async (request: FastifyRequest, reply: FastifyReply) => {
+    const id = (request.query as { id: string }).id;
+    const type = (request.query as { type: string }).type;
+    const provider = (request.query as { provider?: string }).provider;
+    const providerLower = provider?.toLowerCase();
+    let tmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+
+    if (!id) return reply.status(400).send({ message: "The 'id' query is required" });
+    if (!type) return reply.status(400).send({ message: "The 'type' query is required" });
+
+    if (providerLower === 'dramacool') {
+      try {
+        const res = await buildDramacoolTmdbInfo(id, type);
+        return reply.status(200).send(res);
+      } catch (err: any) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply.status(500).send({ message });
+      }
+    }
+
+    if (typeof provider !== 'undefined') {
+      const selectedProvider = resolveMovieProvider(provider);
+      if (selectedProvider) {
+        tmdb = new META.TMDB(tmdbApi, selectedProvider);
+      } else {
+        const possibleProvider = PROVIDERS_LIST.MOVIES.find(
+          (p) => p.name.toLowerCase() === provider.toLocaleLowerCase(),
+        );
+        tmdb = new META.TMDB(tmdbApi, possibleProvider);
+      }
+    }
+
+    try {
+      const res = await tmdb.fetchMediaInfo(id, type);
+      reply.status(200).send(res);
+    } catch (err) {
+      reply.status(200).send({ id, title: '', episodes: [], message: 'Fallback due to TMDB failure' });
+    }
+  });
+
   fastify.get('/info/:id', async (request: FastifyRequest, reply: FastifyReply) => {
     const id = (request.params as { id: string }).id;
     const type = (request.query as { type: string }).type;
@@ -730,4 +770,3 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 };
 
 export default routes;
-
