@@ -1,7 +1,6 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { PROVIDERS_LIST } from '@consumet/extensions';
 
-import hianime from './hianime';
 import satoru from './satoru';
 import justanime from './justanime';
 import animesalt from './animesalt';
@@ -9,7 +8,6 @@ import animesalt from './animesalt';
 
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  await fastify.register(hianime, { prefix: '/hianime' });
   await fastify.register(satoru, { prefix: '/satoru' });
   await fastify.register(justanime, { prefix: '/justanime' });
   await fastify.register(animesalt, { prefix: '/animesalt' });

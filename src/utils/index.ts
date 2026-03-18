@@ -331,11 +331,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             }
           })(),
           'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
           ...(incomingRange ? { Range: incomingRange } : {}),
         },
         maxRedirects: 5,
-        validateStatus: () => true as const,
+        validateStatus: (status: number) => status < 400,
       };
 
       const proxyCandidates = await getProxyCandidates();
@@ -377,6 +377,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const isAnimesaltCdn = 
                 /(^|\.)(as-cdn\d+|z\d+|animesalt|as2|as-api)\.(pro|ac|top|xyz|link|click|net|cc|org)$/i.test(target.hostname);
 
+            const isHianimeCdn =
+                /(^|\.)(rainveil\d*|megacloud\d*|rapid-cloud\d*|rabbitstream\d*|vizcloud\d*|cloud9|bunnycdn|vidcloud)\.(xyz|tv|ru|net|gg|co|online|pro|ac|cc|bz|li|to)$/i.test(target.hostname);
+
             if (isAnimesaltCdn) {
                 if (refererForRequest.includes('animesalt.')) {
                     refererForRequest = refererForRequest.replace(/animesalt\.(pro|xyz|click)/gi, 'animesalt.ac');
@@ -387,6 +390,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     originForRequest = originForRequest.replace(/animesalt\.(pro|xyz|click)/gi, 'animesalt.ac');
                 } else if (!originForRequest) {
                   originForRequest = 'https://animesalt.ac';
+                }
+            } else if (isHianimeCdn) {
+                // Shared CDNs usually require a valid referer. If it's a JustAnime request, use justanime.to
+                const isJustAnime = /justanime\./i.test(refererForRequest) || /streamverse-api\./i.test(refererForRequest);
+                if (isJustAnime) {
+                    refererForRequest = 'https://justanime.to/';
+                    originForRequest = 'https://justanime.to';
                 }
             }
 
@@ -505,7 +515,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 Referer: probeReferer,
                 Origin: `${new URL(probeReferer).protocol}//${new URL(probeReferer).host}`,
                 'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
               },
               maxRedirects: 3,
               validateStatus: () => true as const,
@@ -727,7 +737,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             headers: {
               Referer: refererForRequest,
               Origin: originForRequest,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             },
             maxRedirects: 5,
             validateStatus: (s: number) => s < 400,

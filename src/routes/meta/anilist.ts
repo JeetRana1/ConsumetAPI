@@ -7,7 +7,7 @@ import { StreamingServers } from '@consumet/extensions/dist/models';
 
 import cache from '../../utils/cache';
 import { redis } from '../../main';
-import Hianime from '@consumet/extensions/dist/providers/anime/hianime';
+import AnimePahe from '@consumet/extensions/dist/providers/anime/animepahe';
 import { fetchWithServerFallback } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 import { getProxyCandidatesSync } from '../../utils/outboundProxy';
@@ -187,12 +187,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get(
     '/recent-episodes',
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const provider = (request.query as { provider: 'Hianime' }).provider;
+      const provider = (request.query as { provider: string }).provider;
       const page = (request.query as { page: number }).page;
       const perPage = (request.query as { perPage: number }).perPage;
 
       const anilist = generateAnilistMeta(provider);
-      const res = await anilist.fetchRecentEpisodes(provider, page, perPage);
+      const res = await anilist.fetchRecentEpisodes(provider as any, page, perPage);
       reply.status(200).send(res);
     }
   );
@@ -306,7 +306,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       try {
         const fetchSources = async (selectedServer?: StreamingServers) => {
-          return provider === 'zoro' || provider === 'hianime'
+          return provider === 'zoro'
             ? await anilist.fetchEpisodeSources(
               episodeId,
               selectedServer,
@@ -375,7 +375,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 const generateAnilistMeta = (provider: string | undefined = undefined): Anilist => {
   const proxies = getProxyCandidatesSync();
   const url = proxies.length > 0 ? (proxies.length === 1 ? proxies[0] : proxies) : [];
-  return new Anilist(configureProvider(new Hianime()), {
+  return new Anilist(configureProvider(new AnimePahe()), {
     url: url as string | string[],
   });
 };

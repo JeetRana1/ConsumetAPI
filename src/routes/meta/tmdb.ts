@@ -21,7 +21,6 @@ const configureMeta = (meta: any) => {
 // Map of anime providers that have direct routes in this API
 const ANIME_PROVIDER_ROUTES: Record<string, string> = {
   satoru: '/anime/satoru',
-  hianime: '/anime/hianime',
   justanime: '/anime/justanime',
   animesalt: '/anime/animesalt',
 };
@@ -182,7 +181,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     if (!titleCandidates.length) return null;
     const providersInOrder = [
       'satoru',
-      'hianime',
     ];
 
     for (const providerKey of providersInOrder) {
@@ -233,7 +231,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           for (const candidateEpisodeId of episodeIds) {
             const queryParts: string[] = [];
             if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
-            if (providerKey === 'hianime') queryParts.push('category=both');
             const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
             const watchRes = await fastify.inject({
               method: 'GET',
