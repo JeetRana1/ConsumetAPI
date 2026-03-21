@@ -8,6 +8,32 @@ import { Redis } from 'ioredis';
 import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
+import { promoteEmbedSourcesToDirect } from '../../utils/embedToDirect';
+import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
+
+const isDirectMediaUrl = (value: string): boolean =>
+  /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || '')) || /\/m3u8-proxy\?/i.test(String(value || ''));
+
+const sourceRank = (source: any): number => {
+  const url = String(source?.url || '').toLowerCase();
+  let score = 0;
+  if (/\.m3u8(\?|$)/.test(url) || /m3u8-proxy/.test(url)) score += 3000;
+  else if (/\.mpd(\?|$)/.test(url)) score += 2000;
+  else if (/\.mp4(\?|$)/.test(url)) score += 1000;
+  return score;
+};
+
+const sortAndDedupDirect = (rawSources: any[]): any[] => {
+  const direct = (Array.isArray(rawSources) ? rawSources : []).filter((s) =>
+    isDirectMediaUrl(String(s?.url || '')),
+  );
+  const deduped = direct.filter(
+    (item, idx, arr) =>
+      arr.findIndex((v) => String(v?.url || '') === String(item?.url || '')) === idx,
+  );
+  deduped.sort((a, b) => sourceRank(b) - sourceRank(a));
+  return deduped;
+};
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const sflix = configureProvider(new MOVIES.SFlix());
@@ -170,7 +196,50 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             MOVIE_SERVER_FALLBACKS,
           );
 
-      reply.status(200).send(res);
+      const promoted = await promoteEmbedSourcesToDirect(
+        sflix as any,
+        res as any,
+        server,
+      );
+
+      const currentSources = Array.isArray((promoted as any)?.sources)
+        ? (promoted as any).sources
+        : [];
+      let directSources = sortAndDedupDirect(currentSources);
+
+      if (directSources.length === 0) {
+        const embedCandidates = new Set<string>();
+        if (typeof (promoted as any)?.embedURL === 'string' && (promoted as any).embedURL.trim()) {
+          embedCandidates.add((promoted as any).embedURL.trim());
+        }
+        for (const sourceEntry of currentSources) {
+          const u = String(sourceEntry?.url || '').trim();
+          if (!u || isDirectMediaUrl(u)) continue;
+          if (/^https?:\/\//i.test(u)) embedCandidates.add(u);
+        }
+
+        for (const embedUrl of [...embedCandidates].slice(0, 3)) {
+          const extracted = await extractDirectSourcesWithPlaywright(
+            embedUrl,
+            String((promoted as any)?.headers?.Referer || episodeId),
+            15000,
+          );
+          if (extracted.length > 0) {
+            directSources = sortAndDedupDirect(extracted);
+            if (directSources.length > 0) break;
+          }
+        }
+      }
+
+      if (directSources.length === 0) {
+        throw new Error('No direct playable source found (embed-only sources were skipped).');
+      }
+
+      reply.status(200).send({
+        ...(promoted as any),
+        sources: directSources,
+        embedURL: undefined,
+      });
     } catch (err: any) {
       try {
         const fallback = await getMovieEmbedFallbackSource(
@@ -180,7 +249,21 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           server,
         );
 
-        if (fallback) return reply.status(200).send(fallback);
+        if (fallback) {
+          const promotedFallback = await promoteEmbedSourcesToDirect(
+            sflix as any,
+            fallback as any,
+            server,
+          );
+          const directFallback = sortAndDedupDirect((promotedFallback as any)?.sources || []);
+          if (directFallback.length > 0) {
+            return reply.status(200).send({
+              ...(promotedFallback as any),
+              sources: directFallback,
+              embedURL: undefined,
+            });
+          }
+        }
       } catch {
         // Ignore fallback errors and return the original extraction error below.
       }

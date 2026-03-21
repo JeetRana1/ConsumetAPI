@@ -25,7 +25,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     const title = $(el).find('h2').text().trim();
                     const url = $(el).find('a.lnk-blk').attr('href');
                     const image = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
-                    const id = url?.split('/series/')[1]?.replace('/', '');
+                    
+                    let id = '';
+                    if (url?.includes('/series/')) {
+                        id = url.split('/series/')[1].split('/')[0];
+                    } else if (url?.includes('/movies/')) {
+                        id = 'movie:' + url.split('/movies/')[1].split('/')[0];
+                    }
 
                     if (id) {
                         results.push({
@@ -55,7 +61,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const id = (request.query as { id: string }).id;
         try {
             const fetchInfo = async () => {
-                const res = await proxyGet(`${BASE_URL}/series/${id}/`, {
+                const isMovie = id.startsWith('movie:');
+                const slug = isMovie ? id.replace('movie:', '') : id;
+                const type = isMovie ? 'movies' : 'series';
+
+                const res = await proxyGet(`${BASE_URL}/${type}/${slug}/`, {
                     headers: { 'User-Agent': UA }
                 });
                 const $ = cheerio.load(res.data);
@@ -64,8 +74,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 const image = $('.poster img').attr('src') || $('.poster img').attr('data-src');
 
                 const genres: string[] = [];
-                $('.hentry.series .category a').each((_, el) => {
-                    genres.push($(el).text().trim());
+                $('.category a').each((_, el) => {
+                    const genre = $(el).text().trim();
+                    if (genre && !genres.includes(genre)) {
+                        genres.push(genre);
+                    }
                 });
 
                 const episodes: any[] = [];
@@ -88,6 +101,17 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                         });
                     }
                 });
+
+                // For movies: if no episodes found in the dedicated episodes list,
+                // treat the movie page itself as the single episode.
+                if (isMovie && episodes.length === 0) {
+                    episodes.push({
+                        id: id, // e.g. "movie:jujutsu-kaisen-0"
+                        title: title,
+                        number: 1,
+                        url: `${BASE_URL}/movies/${slug}/`
+                    });
+                }
 
                 // Sort episodes numerically (ascending) to guarantee ep 1 is always first in the list.
                 // This prevents "wrong video" issues when the site's layout varies.
@@ -117,12 +141,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     fastify.get('/watch/:episodeId', async (request: FastifyRequest, reply: FastifyReply) => {
         const episodeId = (request.params as { episodeId: string }).episodeId;
         try {
-            // AnimeSalt m3u8 URLs are signed (md5 + expires) — never cache.
-            // Return the raw signed URL; the player's proxiedStreamUrl() wraps it
-            // in /utils/proxy with the correct Referer, and the proxy rewrites all
-            // variant/segment URLs so HLS.js never touches the CDN directly.
+            const isMovie = episodeId.startsWith('movie:');
+            const slug = isMovie ? episodeId.replace('movie:', '') : episodeId;
+            const watchUrl = isMovie 
+                ? `${BASE_URL}/movies/${slug}/` 
+                : `${BASE_URL}/episode/${episodeId}/`;
 
-            const res = await proxyGet(`${BASE_URL}/episode/${episodeId}/`, {
+            const res = await proxyGet(watchUrl, {
                 headers: { 'User-Agent': UA }
             });
             const $ = cheerio.load(res.data);

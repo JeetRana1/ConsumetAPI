@@ -1,5 +1,13 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
-import { MegaCloud, RapidCloud, VidCloud, VideoStr } from '@consumet/extensions/dist/extractors';
+import {
+  MegaCloud,
+  MixDrop,
+  Mp4Upload,
+  RapidCloud,
+  StreamTape,
+  VidCloud,
+  VideoStr,
+} from '@consumet/extensions/dist/extractors';
 import axios from 'axios';
 
 type SourceEntry = {
@@ -33,9 +41,17 @@ const isEmbedLikeUrl = (value: string): boolean => {
   if (isDirectMediaUrl(lower)) return false;
   return (
     lower.includes('/embed') ||
+    /\/e\//.test(lower) ||
     lower.includes('/v3/e-') ||
     lower.includes('stream') ||
-    lower.includes('player')
+    lower.includes('player') ||
+    lower.includes('mixdrop') ||
+    lower.includes('mp4upload') ||
+    lower.includes('streamtape') ||
+    lower.includes('vizcloud') ||
+    lower.includes('vidcloud') ||
+    lower.includes('upcloud') ||
+    lower.includes('megacloud')
   );
 };
 
@@ -59,10 +75,37 @@ const getServerOrder = (preferred?: StreamingServers): StreamingServers[] => {
 };
 
 const hasUsableSources = (payload: unknown): boolean => {
+  if (Array.isArray(payload)) {
+    return payload.some((src) => typeof (src as any)?.url === 'string' && (src as any).url.length > 0);
+  }
   if (!payload || typeof payload !== 'object') return false;
   const record = payload as SourcePayload;
   if (!Array.isArray(record.sources)) return false;
   return record.sources.some((src) => typeof src?.url === 'string' && src.url.length > 0);
+};
+
+const normalizeExtractorResult = (result: unknown, embedUrl: string): SourcePayload | undefined => {
+  if (!result) return undefined;
+
+  if (Array.isArray(result)) {
+    return {
+      headers: { Referer: embedUrl },
+      sources: result as SourceEntry[],
+      embedURL: embedUrl,
+    };
+  }
+
+  if (typeof result === 'object') {
+    const record = result as SourcePayload;
+    if (Array.isArray(record.sources)) {
+      return {
+        headers: { Referer: embedUrl },
+        ...(record as object),
+      } as SourcePayload;
+    }
+  }
+
+  return undefined;
 };
 
 const tryExtractor = async (
@@ -72,28 +115,47 @@ const tryExtractor = async (
 ): Promise<SourcePayload | undefined> => {
   const serverOrder = getServerOrder(requestedServer);
   const url = new URL(embedUrl);
+  const host = String(url.hostname || '').toLowerCase();
 
   for (const server of serverOrder) {
-    const isVideoStr = String(url.hostname || '').toLowerCase().includes('videostr.');
+    const isVideoStr = host.includes('videostr.');
+    const isMixDrop = host.includes('mixdrop');
+    const isMp4Upload = host.includes('mp4upload');
+    const isStreamTape = host.includes('streamtape');
+    const isVizCloud = host.includes('vizcloud');
     const extractors =
-      isVideoStr
+      isMixDrop
+        ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
+        : isMp4Upload
+          ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
+          : isStreamTape
+            ? [StreamTape, MixDrop, Mp4Upload, VidCloud, MegaCloud, RapidCloud]
+            : isVizCloud
+              ? [VidCloud, MegaCloud, RapidCloud, VideoStr]
+              : isVideoStr
         ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
         : server === StreamingServers.MegaCloud
           ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
-          : [VidCloud, RapidCloud, MegaCloud, VideoStr];
+          : server === StreamingServers.VizCloud
+            ? [VidCloud, MegaCloud, RapidCloud, VideoStr]
+            : server === StreamingServers.MixDrop
+              ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
+              : server === StreamingServers.Mp4Upload
+                ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
+                : server === StreamingServers.StreamTape
+                  ? [StreamTape, MixDrop, Mp4Upload, VidCloud, MegaCloud, RapidCloud]
+                  : [VidCloud, RapidCloud, MegaCloud, VideoStr, MixDrop, Mp4Upload, StreamTape];
 
     for (const Extractor of extractors) {
       try {
-        const extracted = await new Extractor(
+        const raw = await new Extractor(
           provider.proxyConfig as any,
           provider.adapter as any,
         ).extract(url);
+        const extracted = normalizeExtractorResult(raw, embedUrl);
 
         if (hasUsableSources(extracted)) {
-          return {
-            headers: { Referer: embedUrl },
-            ...(extracted as object),
-          } as SourcePayload;
+          return extracted;
         }
       } catch {
         continue;
@@ -126,7 +188,7 @@ const extractDirectUrlsFromHtml = (html: string): string[] => {
 const extractFirstIframe = (html: string): string | undefined => {
   const iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
   const src = String(iframeMatch?.[1] || '').trim();
-  return /^https?:\/\//i.test(src) ? src : undefined;
+  return src || undefined;
 };
 
 const fetchHtml = async (
@@ -190,7 +252,11 @@ const tryHtmlScrapeDirect = async (
 
     const nextIframe = extractFirstIframe(html);
     if (!nextIframe) break;
-    current = nextIframe;
+    try {
+      current = new URL(nextIframe, current).toString();
+    } catch {
+      break;
+    }
   }
 
   return undefined;

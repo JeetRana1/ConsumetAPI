@@ -88,6 +88,11 @@ const DEFAULT_SERVER_FALLBACKS: StreamingServers[] = [
   StreamingServers.VidCloud,
   StreamingServers.UpCloud,
   StreamingServers.MegaCloud,
+  StreamingServers.VideoStr,
+  StreamingServers.VizCloud,
+  StreamingServers.MixDrop,
+  StreamingServers.Mp4Upload,
+  StreamingServers.StreamTape,
 ];
 
 const IS_PRODUCTION =
@@ -103,6 +108,11 @@ export const MOVIE_SERVER_FALLBACKS: StreamingServers[] = [
   StreamingServers.VidCloud,
   StreamingServers.UpCloud,
   StreamingServers.MegaCloud,
+  StreamingServers.VideoStr,
+  StreamingServers.VizCloud,
+  StreamingServers.MixDrop,
+  StreamingServers.Mp4Upload,
+  StreamingServers.StreamTape,
 ];
 
 export type ServerFallbackOptions = {
