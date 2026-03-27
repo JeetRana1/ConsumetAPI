@@ -1,13 +1,15 @@
 const DIRECT_MEDIA_REGEX =
   /(https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4|mpd)(?:\?[^\s"'<>]*)?)/gi;
 
-const HLS_PROXY_REGEX = /(https?:\/\/[^\s"'<>]+?\/m3u8-proxy\?[^\s"'<>]+)/gi;
+const HLS_PROXY_REGEX = /(https?:\/\/[^\s"'<>]+?\/m3u8-proxy\?[^\s"'<>]+|https?:\/\/[^\s"'<>]+?\/getm3u8\/[^\s"'<>]+)/gi;
 
 const isDirectMediaUrl = (value: string): boolean => {
   const normalized = String(value || '');
   if (/\.(m3u8|mp4|mpd)(\?|$)/i.test(normalized)) return true;
   if (/\/m3u8-proxy\?/i.test(normalized)) return true;
   if (/m3u8-proxy/i.test(normalized) && /[?&]url=/i.test(normalized)) return true;
+  if (/\/getm3u8\//i.test(normalized)) return true;
+  if (normalized.startsWith('blob:')) return true;
   return false;
 };
 
@@ -91,7 +93,7 @@ export const extractDirectSourcesWithPlaywright = async (
     // Trigger player/network activity in common embed pages.
     await page.evaluate(() => {
       const clickables = Array.from(
-        document.querySelectorAll('button, .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button'),
+        document.querySelectorAll('#adv, .adblock, .rek, button, .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'),
       ) as HTMLElement[];
       for (const el of clickables) {
         try {
@@ -106,7 +108,7 @@ export const extractDirectSourcesWithPlaywright = async (
         video.muted = true;
         video.play().catch(() => undefined);
       }
-    });
+    }).catch(() => undefined);
 
     await page.waitForTimeout(Math.min(7000, Math.max(2500, timeout - 2000)));
     await context.close();
@@ -127,7 +129,7 @@ export const extractDirectSourcesWithPlaywright = async (
     .map((url) => ({
       url,
       quality: 'auto',
-      isM3U8: /\.m3u8(\?|$)/i.test(url) || /\/m3u8-proxy\?/i.test(url),
+      isM3U8: /\.m3u8(\?|$)/i.test(url) || /\/m3u8-proxy\?/i.test(url) || /\/getm3u8\//i.test(url),
       isEmbed: false as const,
     }));
 };

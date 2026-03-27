@@ -3,7 +3,6 @@ require('dotenv').config();
 import Redis from 'ioredis';
 import Fastify from 'fastify';
 import FastifyCors from '@fastify/cors';
-import fs from 'fs';
 import axios from 'axios';
 import https from 'https';
 
@@ -115,15 +114,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     });
 
     fastify.get('/apidemo', async (_, reply) => {
-      try {
-        const stream = fs.readFileSync(__dirname + '/../demo/apidemo.html');
-        return reply.type('text/html').send(stream);
-      } catch (err) {
-        console.error(err);
-        return reply.status(500).send({
-          message: 'Could not load the demo page. Please try again later.',
-        });
-      }
+      return reply.type('application/json').send({
+        message: 'Demo access page is disabled in this deployment.',
+      });
     });
 
     // set interval to delete expired sessions every 1 hour
@@ -185,10 +178,42 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       });
     });
 
-    fastify.listen({ port: PORT, host: '0.0.0.0' }, (e, address) => {
-      if (e) throw e;
-      console.log(`server listening on ${address}`);
-    });
+    const shouldUsePortFallback = String(process.env.ALLOW_PORT_FALLBACK || 'false').toLowerCase() === 'true';
+
+    const startServer = async (initialPort: number, maxRetries = 5) => {
+      if (!shouldUsePortFallback) {
+        const address = await fastify.listen({ port: initialPort, host: '0.0.0.0' });
+        console.log(`server listening on ${address}`);
+        return;
+      }
+
+      for (let retry = 0; retry <= maxRetries; retry++) {
+        const candidatePort = initialPort + retry;
+
+        try {
+          const address = await fastify.listen({ port: candidatePort, host: '0.0.0.0' });
+
+          if (retry > 0) {
+            console.warn(
+              chalk.yellowBright(
+                `Port ${initialPort} is busy. Started on fallback port ${candidatePort} instead.`,
+              ),
+            );
+          }
+
+          console.log(`server listening on ${address}`);
+          return;
+        } catch (error: any) {
+          const isPortConflict = error?.code === 'EADDRINUSE';
+
+          if (!isPortConflict || retry === maxRetries) {
+            throw error;
+          }
+        }
+      }
+    };
+
+    await startServer(PORT);
   } catch (err: any) {
     fastify.log.error(err);
     process.exit(1);

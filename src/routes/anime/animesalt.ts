@@ -13,6 +13,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     // ─── Search ──────────────────────────────────────────────────────────────────
     fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
         const query = (request.params as { query: string }).query;
+        const requestedTypeRaw = String((request.query as { type?: string }).type || '').toLowerCase();
+        const requestedType = requestedTypeRaw === 'movie'
+            ? 'movie'
+            : requestedTypeRaw === 'tv' || requestedTypeRaw === 'series'
+                ? 'tv'
+                : '';
         try {
             const fetchSearch = async () => {
                 const res = await proxyGet(`${BASE_URL}/?s=${encodeURIComponent(query)}`, {
@@ -27,16 +33,21 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     const image = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
                     
                     let id = '';
+                    let mediaType: 'tv' | 'movie' | '' = '';
                     if (url?.includes('/series/')) {
                         id = url.split('/series/')[1].split('/')[0];
+                        mediaType = 'tv';
                     } else if (url?.includes('/movies/')) {
                         id = 'movie:' + url.split('/movies/')[1].split('/')[0];
+                        mediaType = 'movie';
                     }
 
-                    if (id) {
+                    if (id && mediaType) {
+                        if (requestedType && mediaType !== requestedType) return;
                         results.push({
                             id,
                             title,
+                            type: mediaType,
                             url,
                             image: image?.startsWith('//') ? `https:${image}` : image
                         });
@@ -46,8 +57,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 return results;
             };
 
+            const cacheType = requestedType || 'all';
             const results = redis
-                ? await cache.fetch(redis as Redis, `animesalt:search:${query}`, fetchSearch, REDIS_TTL)
+                ? await cache.fetch(redis as Redis, `animesalt:search:${query}:${cacheType}`, fetchSearch, REDIS_TTL)
                 : await fetchSearch();
 
             reply.status(200).send(results);

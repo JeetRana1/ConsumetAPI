@@ -283,15 +283,33 @@ export const promoteEmbedSourcesToDirect = async (
   const upstreamReferer = String(payload.headers?.Referer || payload.headers?.referer || '').trim();
 
   for (const candidate of candidates) {
-    const extracted =
-      (await tryExtractor(provider, candidate, preferredServer)) ||
-      (await tryHtmlScrapeDirect(provider, candidate, upstreamReferer));
+    let extracted = await tryExtractor(provider, candidate, preferredServer);
+    
+    if (!extracted || !hasDirectSources(extracted)) {
+      extracted = await tryHtmlScrapeDirect(provider, candidate, upstreamReferer);
+    }
+    
+    if (!extracted || !hasDirectSources(extracted)) {
+      try {
+        const { extractDirectSourcesWithPlaywright } = await import('./browserRuntimeExtractor');
+        const pwSources = await extractDirectSourcesWithPlaywright(candidate, upstreamReferer, 15000);
+        if (pwSources && pwSources.length > 0) {
+          extracted = {
+            headers: { Referer: candidate },
+            sources: pwSources,
+            embedURL: candidate,
+          };
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
 
     if (extracted && hasDirectSources(extracted)) {
       return {
         ...payload,
         ...extracted,
-        subtitles: Array.isArray(payload.subtitles) ? payload.subtitles : extracted.subtitles,
+        subtitles: Array.isArray(payload.subtitles) ? payload.subtitles : extracted?.subtitles,
         embedURL: payload.embedURL || candidate,
       };
     }
