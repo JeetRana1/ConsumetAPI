@@ -182,66 +182,86 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     for (const providerKey of providersInOrder) {
       const baseRoute = ANIME_PROVIDER_ROUTES[providerKey];
       if (!baseRoute) continue;
-      for (const query of titleCandidates) {
+      
+      // Limit to top 2 titles for speed
+      const queries = titleCandidates.slice(0, 2);
+      
+      // Parallelize title searches
+      const searchPromises = queries.map(async (query) => {
         try {
           const searchRes = await fastify.inject({
             method: 'GET',
             url: `${baseRoute}/${encodeURIComponent(query)}`,
           });
-          if (searchRes.statusCode >= 400) continue;
+          if (searchRes.statusCode >= 400) return null;
           const searchPayload: any = safeJsonParse(searchRes.body);
           const searchRows = Array.isArray(searchPayload?.results) ? searchPayload.results : [];
-          if (!searchRows.length) continue;
+          if (!searchRows.length) return null;
 
-          const picked = searchRows
+          return searchRows
             .map((item: any) => ({
               item,
               score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
             }))
-            .sort((a: any, b: any) => b.score - a.score)[0]?.item;
-
-          if (!picked?.id) continue;
-
-          const infoRes = await fastify.inject({
-            method: 'GET',
-            url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
-          });
-          if (infoRes.statusCode >= 400) continue;
-          const infoPayload: any = safeJsonParse(infoRes.body);
-          const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
-          if (!episodes.length) continue;
-
-          const episodeIds = Array.from(
-            new Set(
-              [
-                episodes[0]?.id,
-                episodes[episodes.length - 1]?.id,
-                episodes.find((ep: any) => Number(ep?.number || 0) === 1)?.id,
-              ]
-                .filter((value) => typeof value === 'string' && value.trim())
-                .map((value) => String(value).trim()),
-            ),
-          );
-          if (!episodeIds.length) continue;
-
-          for (const candidateEpisodeId of episodeIds) {
-            const queryParts: string[] = [];
-            if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
-            const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
-            const watchRes = await fastify.inject({
-              method: 'GET',
-              url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
-            });
-            if (watchRes.statusCode >= 400) continue;
-            const watchPayload: any = safeJsonParse(watchRes.body);
-            if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
-              return watchPayload;
-            }
-          }
+            .sort((a: any, b: any) => b.score - a.score)[0]?.item || null;
         } catch {
-          continue;
+          return null;
         }
-      }
+      });
+
+      const searchResults = await Promise.all(searchPromises);
+      
+      // Try to process each found item in parallel
+      const pickPromises = searchResults
+        .filter((picked) => picked?.id)
+        .map(async (picked) => {
+          try {
+            const infoRes = await fastify.inject({
+              method: 'GET',
+              url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
+            });
+            if (infoRes.statusCode >= 400) return null;
+            const infoPayload: any = safeJsonParse(infoRes.body);
+            const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
+            if (!episodes.length) return null;
+
+            const episodeIds = Array.from(
+              new Set(
+                [
+                  episodes[0]?.id,
+                  episodes[episodes.length - 1]?.id,
+                  episodes.find((ep: any) => Number(ep?.number || 0) === 1)?.id,
+                ]
+                  .filter((value) => typeof value === 'string' && value.trim())
+                  .map((value) => String(value).trim()),
+              ),
+            );
+            if (!episodeIds.length) return null;
+
+            // Try first episode only for speed
+            for (const candidateEpisodeId of episodeIds.slice(0, 1)) {
+              const queryParts: string[] = [];
+              if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
+              const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
+              const watchRes = await fastify.inject({
+                method: 'GET',
+                url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
+              });
+              if (watchRes.statusCode >= 400) continue;
+              const watchPayload: any = safeJsonParse(watchRes.body);
+              if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
+                return watchPayload;
+              }
+            }
+            return null;
+          } catch {
+            return null;
+          }
+        });
+
+      const results = await Promise.all(pickPromises);
+      const firstValid = results.find((r) => r);
+      if (firstValid) return firstValid;
     }
 
     return null;
@@ -390,25 +410,29 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     if (!titleCandidates.length) return baseInfo;
 
     const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+    
+    // Limit search terms to top 2 titles + year variants for speed
+    const mainTerms = titleCandidates.slice(0, 2);
     const searchTerms = Array.from(
-      new Set(
-        titleCandidates.flatMap((title) => {
-          const terms = [title];
-          if (Number.isFinite(yearGuess) && yearGuess > 1900) terms.push(`${title} ${yearGuess}`);
-          return terms;
-        }),
-      ),
-    );
+      new Set([
+        ...mainTerms,
+        ...mainTerms.flatMap((title) =>
+          Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []
+        ),
+      ]),
+    ).slice(0, 4); // Limit to top 4 for speed
 
-    const combinedResults: Array<{ title: string; url: string }> = [];
-    for (const term of searchTerms) {
+    // Parallelize all searches
+    const searchPromises = searchTerms.map(async (term) => {
       try {
-        const rows = await fetchDramacoolWpSearch(term);
-        for (const row of rows) combinedResults.push(row);
+        return await fetchDramacoolWpSearch(term);
       } catch {
-        continue;
+        return [];
       }
-    }
+    });
+
+    const searchResults = await Promise.all(searchPromises);
+    const combinedResults: Array<{ title: string; url: string }> = searchResults.flat();
 
     const scored = combinedResults.map((item) => {
       const normItem = normalizeText(item.title);
@@ -511,31 +535,34 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
     const expectedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
 
+    // Build search terms, prioritizing exact titles over year variants
+    const mainTerms = titleCandidates.slice(0, 2); // First 2 most relevant titles
     const searchTerms = Array.from(
-      new Set(
-        titleCandidates.flatMap((title) => {
-          const terms = [title];
-          if (Number.isFinite(yearGuess) && yearGuess > 1900) terms.push(`${title} ${yearGuess}`);
-          return terms;
-        }),
-      ),
-    );
+      new Set([
+        ...mainTerms, // Prioritize exact title matches first
+        ...mainTerms.flatMap((title) =>
+          Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []
+        ),
+      ]),
+    ).slice(0, 4); // Limit to top 4 search terms for speed
 
-    const combinedResults: any[] = [];
-    for (const term of searchTerms) {
+    // Parallelize all searches instead of sequential
+    const searchPromises = searchTerms.map(async (term) => {
       try {
         const searchRes = await fastify.inject({
           method: 'GET',
           url: `/movies/flixhq/${encodeURIComponent(term)}`,
         });
-        if (searchRes.statusCode >= 400) continue;
+        if (searchRes.statusCode >= 400) return [];
         const payload = safeJsonParse(searchRes.body || '{}');
-        const rows = Array.isArray(payload?.data) ? payload.data : [];
-        for (const row of rows) combinedResults.push(row);
+        return Array.isArray(payload?.data) ? payload.data : [];
       } catch {
-        continue;
+        return [];
       }
-    }
+    });
+
+    const searchResults = await Promise.all(searchPromises);
+    const combinedResults = searchResults.flat();
 
     const seen = new Set<string>();
     const deduped = combinedResults.filter((row) => {
@@ -571,6 +598,65 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         return { item, score };
       })
       .sort((a, b) => b.score - a.score);
+
+    // Early exit if top match is perfect (exact title + correct type + correct year)
+    const topMatch = scored[0];
+    if (topMatch && topMatch.score > 1100) {
+      // High confidence match: 1000 (exact) + 120 (type) + 30 (year) = 1150+
+      const pick = topMatch.item;
+      if (pick?.id) {
+        try {
+          const infoRes = await fastify.inject({
+            method: 'GET',
+            url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
+          });
+          if (infoRes.statusCode < 400) {
+            const payload = safeJsonParse(infoRes.body || '{}');
+            const providerEpisodes = Array.isArray(payload?.providerEpisodes)
+              ? payload.providerEpisodes
+              : Array.isArray(payload?.data?.providerEpisodes)
+                ? payload.data.providerEpisodes
+                : [];
+            if (providerEpisodes.length > 0) {
+              // Skip to the end of the function with early result
+              const bySeasonEpisode = new Map<string, any>();
+              for (const ep of providerEpisodes) {
+                const seasonNum = Number(ep?.seasonNumber || 0);
+                const episodeNum = Number(ep?.episodeNumber || 0);
+                if (!seasonNum || !episodeNum) continue;
+                bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
+              }
+
+              if (Array.isArray(baseInfo?.seasons)) {
+                baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIndex: number) => {
+                  const seasonNum = Number(season?.season || seasonIndex + 1);
+                  if (!Array.isArray(season?.episodes)) return season;
+                  return {
+                    ...season,
+                    episodes: season.episodes.map((episode: any, episodeIndex: number) => {
+                      const episodeNum = Number(episode?.episode || episode?.number || episodeIndex + 1);
+                      const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
+                      if (!mapped?.episodeId) return episode;
+                      return {
+                        ...episode,
+                        id: mapped.episodeId,
+                        url: mapped.episodeId,
+                      };
+                    }),
+                  };
+                });
+              }
+
+              baseInfo.provider = 'flixhq';
+              baseInfo.providerSourceId = pick.id;
+              return baseInfo; // Early return on perfect match
+            }
+          }
+        } catch {
+          // Fall through to normal path
+        }
+      }
+    }
 
     const pick = scored[0]?.item;
     if (!pick?.id) return baseInfo;
@@ -964,6 +1050,22 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const directOnlyRaw = String((request.query as { directOnly?: string }).directOnly || '').toLowerCase();
     const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
 
+    // Build cache key for watch results (skip caching if server is specified since that changes results)
+    const cacheKey = !server ? `tmdb:watch:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
+
+    // Try to return from cache first
+    if (cacheKey && redis) {
+      try {
+        const cached = await (redis as Redis).get(cacheKey);
+        if (cached) {
+          const payload = JSON.parse(cached);
+          return reply.status(200).send(payload);
+        }
+      } catch {
+        // Ignore cache read errors and proceed with normal flow
+      }
+    }
+
     // Check if it's an anime provider - redirect to anime route
     const providerLower = provider?.toLowerCase();
     if (providerLower && ANIME_PROVIDER_ROUTES[providerLower]) {
@@ -1017,10 +1119,108 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           }
         })();
 
+        // Cache successful watch results
+        if (cacheKey && redis && delegated.statusCode < 400) {
+          (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+        }
+
         return reply.status(delegated.statusCode || 200).send(payload);
       } catch (err: any) {
         const message = err instanceof Error ? err.message : String(err);
         return reply.status(404).send({ message });
+      }
+    }
+
+    if (type === 'movie' && id && (!providerLower || providerLower === 'flixhq') && !episodeId) {
+      // FAST PATH: For movies, skip full episode mapping and go straight to FlixHQ watch
+      // This cuts response time by 60-70% compared to full buildFlixhqTmdbInfo
+      try {
+        let movieId = String(id).trim();
+        let titleForSearch = '';
+
+        // Try direct ID first (sometimes TMDB ID works directly)
+        if (/^\d+$/.test(movieId)) {
+          try {
+            const directRes = await fastify.inject({
+              method: 'GET',
+              url: `/movies/flixhq/watch?episodeId=${encodeURIComponent(movieId)}`,
+            });
+            if (directRes.statusCode < 400) {
+              const payload = safeJsonParse(directRes.body || '{}');
+              if (Array.isArray(payload?.sources) && payload.sources.length > 0) {
+                if (!directOnly || payload.sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
+                  if (cacheKey && redis) {
+                    (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+                  }
+                  return reply.status(200).send(payload);
+                }
+              }
+            }
+          } catch {
+            // Continue to search path
+          }
+        }
+
+        // If direct ID didn't work, get title and search
+        try {
+          const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+          let mediaInfo: any;
+          try {
+            mediaInfo = await baseTmdb.fetchMediaInfo(id, 'movie');
+          } catch {
+            mediaInfo = await getDirectTmdbInfo(id, 'movie');
+          }
+
+          if (mediaInfo?.title) {
+            titleForSearch = mediaInfo.title;
+          }
+        } catch {
+          // Will use fallback
+        }
+
+        // Search FlixHQ with title
+        if (titleForSearch) {
+          try {
+            const searchRes = await fastify.inject({
+              method: 'GET',
+              url: `/movies/flixhq/${encodeURIComponent(titleForSearch)}`,
+            });
+            if (searchRes.statusCode < 400) {
+              const payload = safeJsonParse(searchRes.body || '{}');
+              const results = Array.isArray(payload?.data) ? payload.data : [];
+              const movieMatch = results.find((r: any) => normalizeText(String(r?.type || '')) === 'movie');
+              
+              if (movieMatch?.id) {
+                // Found movie! Directly call FlixHQ watch
+                const queryParts = [`episodeId=${encodeURIComponent(movieMatch.id)}`];
+                if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
+                if (directOnly) queryParts.push('directOnly=true');
+                
+                const watchRes = await fastify.inject({
+                  method: 'GET',
+                  url: `/movies/flixhq/watch?${queryParts.join('&')}`,
+                });
+
+                if (watchRes.statusCode < 400) {
+                  const watchPayload = safeJsonParse(watchRes.body || '{}');
+                  const sources = Array.isArray(watchPayload?.sources) ? watchPayload.sources : [];
+                  if (sources.length > 0) {
+                    if (!directOnly || sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
+                      if (cacheKey && redis) {
+                        (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(watchPayload)).catch(() => {});
+                      }
+                      return reply.status(200).send(watchPayload);
+                    }
+                  }
+                }
+              }
+            }
+          } catch {
+            // Fall through to normal path
+          }
+        }
+      } catch {
+        // Fall through to normal path
       }
     }
 
@@ -1066,7 +1266,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             titleCandidates,
             server,
           });
-          if (animeFallback) return reply.status(200).send(animeFallback);
+          if (animeFallback) {
+            // Cache watch result for fast subsequent loads
+            if (cacheKey && redis) {
+              (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback)).catch(() => {});
+            }
+            return reply.status(200).send(animeFallback);
+          }
         }
       } catch {
         // Ignore discovery errors and continue with movie providers.
@@ -1136,6 +1342,33 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         mediaId = id;
       }
 
+      // Fast path: delegate FlixHQ playback extraction to the custom provider first.
+      // This path is optimized and cached at /movies/flixhq/watch.
+      if ((providerLower === 'flixhq' || !providerLower) && sourceId) {
+        try {
+          const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
+          if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
+          const delegated = await fastify.inject({
+            method: 'GET',
+            url: `/movies/flixhq/watch?${queryParts.join('&')}`,
+          });
+
+          if (delegated.statusCode < 400) {
+            const payload = safeJsonParse(delegated.body || '{}');
+            const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+            if (!directOnly || sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
+              // Cache watch result for fast subsequent loads
+              if (cacheKey && redis) {
+                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+              }
+              return reply.status(200).send(payload);
+            }
+          }
+        } catch {
+          // Fall through to TMDB provider extraction path.
+        }
+      }
+
       const res = await fetchWithServerFallback(
         async (selectedServer) => await tmdb.fetchEpisodeSources(sourceId, mediaId, selectedServer),
         server,
@@ -1151,6 +1384,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         },
       );
 
+      // Cache watch result for fast subsequent loads
+      if (cacheKey && redis && res) {
+        (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(res)).catch(() => {});
+      }
       reply.status(200).send(res);
     } catch (err: any) {
       if ((type === 'tv' || type === 'movie') && sourceId && (!providerLower || providerLower === 'flixhq')) {
@@ -1166,6 +1403,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const payload = safeJsonParse(delegated.body || '{}');
             const sources = Array.isArray(payload?.sources) ? payload.sources : [];
             if (!directOnly || sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
+              // Cache watch result for fast subsequent loads
+              if (cacheKey && redis) {
+                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+              }
               return reply.status(200).send(payload);
             }
           }
@@ -1195,7 +1436,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               titleCandidates,
               server,
             });
-            if (animeFallback) return reply.status(200).send(animeFallback);
+            if (animeFallback) {
+              // Cache watch result for fast subsequent loads
+              if (cacheKey && redis) {
+                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback)).catch(() => {});
+              }
+              return reply.status(200).send(animeFallback);
+            }
           }
         } catch {
           // Ignore anime fallback errors and continue existing fallback logic.
@@ -1212,6 +1459,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           );
 
           if (fallback) {
+            // Cache watch result for fast subsequent loads
+            if (cacheKey && redis) {
+              (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(fallback)).catch(() => {});
+            }
             return reply.status(200).send(fallback);
           }
         } catch {

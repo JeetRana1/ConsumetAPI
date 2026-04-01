@@ -160,14 +160,16 @@ export class FlixHQProvider {
         });
         if (!seasonsRes || !seasonsRes.success) throw new Error('Failed to fetch seasons');
         const seasons = parser.parseSeasons(cheerio.load(seasonsRes.text));
-        for (const { seasonId, seasonNumber } of seasons) {
-          const epRes = await fetcher(this.buildAjaxUrl(seasonId!, 'tv'), false, 'flixhq', {
-            headers: { 'X-Requested-With': 'XMLHttpRequest', Referer: `${this.baseUrl}/${mediaPath}` },
-          });
-          if (!epRes || !epRes.success) throw new Error('Failed to fetch episodes');
-          const epList = parser.parseEpisodes(cheerio.load(epRes.text), seasonNumber, mediaId);
-          episodes.push(...epList);
-        }
+        const seasonEpisodeLists = await Promise.all(
+          seasons.map(async ({ seasonId, seasonNumber }) => {
+            const epRes = await fetcher(this.buildAjaxUrl(seasonId!, 'tv'), false, 'flixhq', {
+              headers: { 'X-Requested-With': 'XMLHttpRequest', Referer: `${this.baseUrl}/${mediaPath}` },
+            });
+            if (!epRes || !epRes.success) return [] as any[];
+            return parser.parseEpisodes(cheerio.load(epRes.text), seasonNumber, mediaId);
+          }),
+        );
+        episodes = seasonEpisodeLists.flat();
 
         // Fallback for updated FlixHQ markup where season list may already contain
         // first-season episode entries but per-season endpoint returns empty.
