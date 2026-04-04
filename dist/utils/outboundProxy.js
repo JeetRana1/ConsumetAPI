@@ -1,0 +1,165 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.proxyPost = exports.proxyGet = exports.toAxiosProxyOptions = exports.getProxyCandidates = exports.getProxyCandidatesSync = void 0;
+const axios_1 = __importDefault(require("axios"));
+const socks_proxy_agent_1 = require("socks-proxy-agent");
+const splitList = (raw) => {
+    if (!raw.trim())
+        return [];
+    if (raw.trim().startsWith('[')) {
+        try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                return parsed.map((v) => String(v || '').trim()).filter(Boolean);
+            }
+        }
+        catch {
+            return [];
+        }
+    }
+    return raw
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
+};
+const FALLBACK_PROXY_LIST_URL = 'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt';
+let remoteProxyCache = {
+    proxies: [],
+    expiresAt: 0,
+};
+const normalizeHostPortProxy = (line) => {
+    const raw = String(line || '').trim();
+    if (!raw)
+        return null;
+    if (raw.includes('://'))
+        return raw;
+    if (!/^[^:\s]+:\d+$/.test(raw))
+        return null;
+    return `http://${raw}`;
+};
+const parseRemoteProxyBody = (body) => {
+    return String(body || '')
+        .split(/\r?\n/)
+        .map((line) => normalizeHostPortProxy(line))
+        .filter((v) => Boolean(v));
+};
+const getRemoteProxyList = async () => {
+    const now = Date.now();
+    if (remoteProxyCache.expiresAt > now && remoteProxyCache.proxies.length > 0) {
+        return remoteProxyCache.proxies;
+    }
+    try {
+        const url = String(process.env.PUBLIC_PROXY_LIST_URL || FALLBACK_PROXY_LIST_URL).trim();
+        const ttlMs = Math.max(60000, Number(process.env.PUBLIC_PROXY_CACHE_TTL_MS || 300000));
+        const timeoutMs = Math.max(2000, Number(process.env.PUBLIC_PROXY_FETCH_TIMEOUT_MS || 7000));
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok)
+            throw new Error(`public proxy list http ${res.status}`);
+        const text = await res.text();
+        const parsed = parseRemoteProxyBody(text);
+        // Avoid extremely large pools on serverless cold starts.
+        const max = Math.max(20, Number(process.env.PUBLIC_PROXY_MAX || 200));
+        const bounded = parsed.slice(0, max);
+        remoteProxyCache = {
+            proxies: bounded,
+            expiresAt: now + ttlMs,
+        };
+        return bounded;
+    }
+    catch {
+        return remoteProxyCache.proxies;
+    }
+};
+const getProxyCandidatesSync = () => {
+    const envA = splitList(String(process.env.OUTBOUND_PROXIES || ''));
+    const envB = splitList(String(process.env.PROXY || ''));
+    const merged = [...envA, ...envB].filter(Boolean);
+    if (String(process.env.ENABLE_TOR_PROXY || '').toLowerCase() === 'true') {
+        const torUrl = String(process.env.TOR_PROXY_URL || 'socks5h://127.0.0.1:9050').trim();
+        if (torUrl)
+            merged.push(torUrl);
+    }
+    return merged.filter((v, i) => merged.indexOf(v) === i);
+};
+exports.getProxyCandidatesSync = getProxyCandidatesSync;
+const getProxyCandidates = async () => {
+    const merged = [...(0, exports.getProxyCandidatesSync)()];
+    if (String(process.env.ENABLE_PUBLIC_PROXY_LIST || '').toLowerCase() === 'true') {
+        const publicPool = await getRemoteProxyList();
+        merged.push(...publicPool);
+    }
+    return merged.filter((v, i) => merged.indexOf(v) === i);
+};
+exports.getProxyCandidates = getProxyCandidates;
+const toAxiosProxyOptions = (proxyUrl) => {
+    const raw = String(proxyUrl || '').trim();
+    if (!raw)
+        return {};
+    const parsed = new URL(raw);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol.startsWith('socks')) {
+        const agent = new socks_proxy_agent_1.SocksProxyAgent(parsed.toString());
+        return {
+            proxy: false,
+            httpAgent: agent,
+            httpsAgent: agent,
+        };
+    }
+    const port = parsed.port && Number(parsed.port) > 0
+        ? Number(parsed.port)
+        : parsed.protocol === 'https:'
+            ? 443
+            : 80;
+    const username = decodeURIComponent(parsed.username || '');
+    const password = decodeURIComponent(parsed.password || '');
+    return {
+        proxy: {
+            protocol: parsed.protocol.replace(':', ''),
+            host: parsed.hostname,
+            port,
+            ...(username ? { auth: { username, password } } : {}),
+        },
+    };
+};
+exports.toAxiosProxyOptions = toAxiosProxyOptions;
+/**
+ * Drop-in replacement for `axios.get` that automatically routes through
+ * the first configured proxy (from the OUTBOUND_PROXIES env var).
+ * Falls back to a direct connection if no proxy is configured or if the proxy fails.
+ */
+const proxyGet = async (url, config = {}) => {
+    const proxies = (0, exports.getProxyCandidatesSync)();
+    const first = proxies[0];
+    if (first) {
+        try {
+            const proxyOptions = (0, exports.toAxiosProxyOptions)(first);
+            return await axios_1.default.get(url, { ...config, ...proxyOptions });
+        }
+        catch {
+            // Proxy failed — fall through to direct request.
+        }
+    }
+    return axios_1.default.get(url, config);
+};
+exports.proxyGet = proxyGet;
+const proxyPost = async (url, data, config = {}) => {
+    const proxies = (0, exports.getProxyCandidatesSync)();
+    const first = proxies[0];
+    if (first) {
+        try {
+            const proxyOptions = (0, exports.toAxiosProxyOptions)(first);
+            return await axios_1.default.post(url, data, { ...config, ...proxyOptions });
+        }
+        catch {
+            // Proxy failed — fall through to direct request.
+        }
+    }
+    return axios_1.default.post(url, data, config);
+};
+exports.proxyPost = proxyPost;

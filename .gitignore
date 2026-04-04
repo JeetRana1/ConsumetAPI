@@ -5,7 +5,7 @@ src/scripts
 .vscode
 yarn.lock
 test.ts
-dist
+# dist
 package-lock.json
 yarn.lock
 .chrome-debug-9222
