@@ -1199,14 +1199,38 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     };
 
     const id = (request.query as { id: string }).id;
-    const type = sanitizeType((request.query as { type: string }).type);
+    let type = sanitizeType((request.query as { type: string }).type);
     const provider = (request.query as { provider?: string }).provider;
     const providerLower = provider?.toLowerCase();
     let tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
 
     if (!id) return reply.status(400).send({ message: "The 'id' query is required" });
+
+    // --- Smart Type Guessing Logic ---
     if (!type || (type !== 'movie' && type !== 'tv')) {
-      return reply.status(400).send({ message: "The 'type' query is required and must be 'movie' or 'tv'" });
+      console.log(`[SmartGuess] type missing for id ${id}, attempting resolution...`);
+      try {
+        // Try to fetch as TV first (37854 is a TV show in user's logs)
+        const tvQuery = `https://api.themoviedb.org/3/tv/${id}?api_key=${tmdbApi}`;
+        const tvRes = await axios.get(tvQuery).catch(() => null);
+        if (tvRes?.data) {
+          type = 'tv';
+          console.log(`[SmartGuess] Resolved id ${id} as 'tv'`);
+        } else {
+          const movieQuery = `https://api.themoviedb.org/3/movie/${id}?api_key=${tmdbApi}`;
+          const movieRes = await axios.get(movieQuery).catch(() => null);
+          if (movieRes?.data) {
+            type = 'movie';
+            console.log(`[SmartGuess] Resolved id ${id} as 'movie'`);
+          }
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+
+    if (!type) {
+      return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
     }
 
     if (providerLower === 'dramacool') {
@@ -1287,13 +1311,35 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     };
 
     const id = (request.params as { id: string }).id;
-    const type = sanitizeType((request.query as { type: string }).type);
+    let type = sanitizeType((request.query as { type: string }).type);
     const provider = (request.query as { provider?: string }).provider;
     const providerLower = provider?.toLowerCase();
     let tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
 
+    // --- Smart Type Guessing Logic ---
     if (!type || (type !== 'movie' && type !== 'tv')) {
-      return reply.status(400).send({ message: "The 'type' query is required and must be 'movie' or 'tv'" });
+      console.log(`[SmartGuess] type missing for id ${id}, attempting resolution...`);
+      try {
+        const tvQuery = `https://api.themoviedb.org/3/tv/${id}?api_key=${tmdbApi}`;
+        const tvRes = await axios.get(tvQuery).catch(() => null);
+        if (tvRes?.data) {
+          type = 'tv';
+          console.log(`[SmartGuess] Resolved id ${id} as 'tv'`);
+        } else {
+          const movieQuery = `https://api.themoviedb.org/3/movie/${id}?api_key=${tmdbApi}`;
+          const movieRes = await axios.get(movieQuery).catch(() => null);
+          if (movieRes?.data) {
+            type = 'movie';
+            console.log(`[SmartGuess] Resolved id ${id} as 'movie'`);
+          }
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+
+    if (!type) {
+      return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
     }
 
     if (providerLower === 'dramacool') {
