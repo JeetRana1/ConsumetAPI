@@ -9,6 +9,7 @@ import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/str
 import { configureProvider } from '../../utils/provider';
 import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
 import axios from 'axios';
+import { google } from 'googleapis';
 
 const configureMeta = (meta: any) => {
   if (meta && (meta as any).client?.defaults) {
@@ -16,6 +17,300 @@ const configureMeta = (meta: any) => {
     (meta as any).client.defaults.headers.common['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
   }
   return meta;
+};
+
+const parseIso8601DurationToSeconds = (duration?: string): number => {
+  if (!duration || typeof duration !== 'string') return 0;
+  const match = duration.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i);
+  if (!match) return 0;
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  const seconds = Number(match[3] || 0);
+  return hours * 3600 + minutes * 60 + seconds;
+};
+
+const trailerScore = (params: {
+  title: string;
+  channelTitle?: string;
+  durationSeconds: number;
+  releaseYear?: string;
+}): number => {
+  const title = String(params.title || '').toLowerCase();
+  const channelTitle = String(params.channelTitle || '').toLowerCase();
+  const year = String(params.releaseYear || '').trim();
+
+  let score = 0;
+
+  if (title.includes('official trailer')) score += 140;
+  else if (title.includes('trailer')) score += 100;
+
+  if (title.includes('official')) score += 25;
+
+  if (year && title.includes(year)) score += 12;
+
+  if (
+    title.includes('teaser') ||
+    title.includes('clip') ||
+    title.includes('behind the scenes') ||
+    title.includes('featurette') ||
+    title.includes('interview') ||
+    title.includes('tv spot') ||
+    title.includes('short') ||
+    title.includes('promo') ||
+    title.includes('reaction')
+  ) {
+    score -= 180;
+  }
+
+  if (channelTitle.includes('trailers')) score += 20;
+
+  if (params.durationSeconds > 0) {
+    if (params.durationSeconds < 45) score -= 220;
+    else if (params.durationSeconds < 75) score -= 100;
+    else if (params.durationSeconds >= 75 && params.durationSeconds <= 260) score += 30;
+    else if (params.durationSeconds > 900) score -= 50;
+  }
+
+  return score;
+};
+
+const fetchTmdbOfficialTrailer = async (id: string, type: string): Promise<string | null> => {
+  if (!tmdbApi) return null;
+
+  try {
+    const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+    const url = `https://api.themoviedb.org/3/${tmdbType}/${id}/videos?api_key=${tmdbApi}&language=en-US`;
+    const response = await axios.get(url);
+    const results = Array.isArray(response?.data?.results) ? response.data.results : [];
+
+    const ranked = results
+      .filter((row: any) => String(row?.site || '').toLowerCase() === 'youtube' && row?.key)
+      .map((row: any) => {
+        const trailerType = String(row?.type || '').toLowerCase();
+        const trailerName = String(row?.name || '').toLowerCase();
+        let score = 0;
+
+        if (trailerType === 'trailer') score += 140;
+        else score -= 80;
+
+        if (row?.official === true) score += 60;
+        if (trailerName.includes('official')) score += 25;
+
+        if (
+          trailerType.includes('teaser') ||
+          trailerType.includes('clip') ||
+          trailerType.includes('behind the scenes') ||
+          trailerType.includes('featurette') ||
+          trailerName.includes('teaser') ||
+          trailerName.includes('clip') ||
+          trailerName.includes('behind the scenes') ||
+          trailerName.includes('featurette') ||
+          trailerName.includes('tv spot')
+        ) {
+          score -= 220;
+        }
+
+        return {
+          key: String(row.key),
+          score,
+          publishedAt: Date.parse(String(row?.published_at || row?.publishedAt || '')) || 0,
+        };
+      })
+      .sort((a: any, b: any) => b.score - a.score || b.publishedAt - a.publishedAt);
+
+    const best = ranked[0];
+    if (!best || best.score <= 0) return null;
+    return `https://www.youtube.com/watch?v=${best.key}`;
+  } catch (error) {
+    console.error('Error fetching TMDB official trailer:', error);
+    return null;
+  }
+};
+
+const extractYouTubeVideoId = (value: string): string | null => {
+  if (!value) return null;
+
+  const raw = String(value).trim();
+  if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) return raw;
+
+  try {
+    const url = new URL(raw);
+    if (url.hostname.includes('youtu.be')) {
+      const id = url.pathname.split('/').filter(Boolean)[0] || '';
+      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
+    }
+
+    if (url.hostname.includes('youtube.com')) {
+      const fromV = url.searchParams.get('v') || '';
+      if (/^[a-zA-Z0-9_-]{11}$/.test(fromV)) return fromV;
+
+      const parts = url.pathname.split('/').filter(Boolean);
+      const idx = parts.findIndex((p) => p === 'embed' || p === 'shorts');
+      if (idx >= 0 && parts[idx + 1] && /^[a-zA-Z0-9_-]{11}$/.test(parts[idx + 1])) {
+        return parts[idx + 1];
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  const fallback = raw.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})/i);
+  return fallback ? fallback[1] : null;
+};
+
+const getYouTubeWatchUrl = (value: string): string | null => {
+  const id = extractYouTubeVideoId(value);
+  return id ? `https://www.youtube.com/watch?v=${id}` : null;
+};
+
+const hasForbiddenTrailerText = (value: string): boolean => {
+  const text = String(value || '').toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('teaser') ||
+    text.includes('clip') ||
+    text.includes('behind the scenes') ||
+    text.includes('featurette') ||
+    text.includes('tv spot') ||
+    text.includes('promo') ||
+    text.includes('interview') ||
+    text.includes('short')
+  );
+};
+
+const chooseOfficialTrailerFromExisting = async (payload: any): Promise<string | null> => {
+  const candidates: Array<{ url: string; score: number }> = [];
+
+  const pushCandidate = (rawUrl: any, name?: any, type?: any, official?: any) => {
+    const url = getYouTubeWatchUrl(String(rawUrl || ''));
+    if (!url) return;
+
+    const lowerName = String(name || '').toLowerCase();
+    const lowerType = String(type || '').toLowerCase();
+    let score = 0;
+
+    if (lowerType === 'trailer') score += 120;
+    if (lowerName.includes('official trailer')) score += 100;
+    else if (lowerName.includes('trailer')) score += 60;
+    if (official === true || lowerName.includes('official')) score += 25;
+
+    if (hasForbiddenTrailerText(lowerName) || hasForbiddenTrailerText(lowerType)) {
+      score -= 250;
+    }
+
+    if (url.includes('/shorts/')) score -= 400;
+
+    candidates.push({ url, score });
+  };
+
+  if (typeof payload === 'string') {
+    pushCandidate(payload);
+  } else if (Array.isArray(payload)) {
+    for (const row of payload.slice(0, 12)) {
+      if (typeof row === 'string') pushCandidate(row);
+      else if (row && typeof row === 'object') pushCandidate(row.url || row.link || row.id || row.key, row.name || row.title, row.type, row.official);
+    }
+  } else if (payload && typeof payload === 'object') {
+    pushCandidate(payload.url || payload.link || payload.id || payload.key, payload.name || payload.title, payload.type, payload.official);
+  }
+
+  const ranked = candidates.sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+  if (!best || best.score < 0) return null;
+  return best.url;
+};
+
+const attachBestTrailer = async (info: any, id: string, type: string) => {
+  if (!info || typeof info !== 'object') return;
+
+  const tmdbTrailer = await fetchTmdbOfficialTrailer(id, type);
+  if (tmdbTrailer) {
+    info.trailer = tmdbTrailer;
+    return;
+  }
+
+  const existingTrailer = await chooseOfficialTrailerFromExisting(info.trailer);
+  if (existingTrailer) {
+    info.trailer = existingTrailer;
+    return;
+  }
+
+  delete info.trailer;
+
+  const title = info.title || info.name;
+  const year = info.releaseDate || info.firstAirDate;
+  const yearStr = year ? new Date(year).getFullYear().toString() : undefined;
+  const youtubeTrailer = await fetchYouTubeTrailer(title, yearStr);
+  if (youtubeTrailer) {
+    info.trailer = youtubeTrailer;
+  }
+};
+
+const fetchYouTubeTrailer = async (title: string, year?: string): Promise<string | null> => {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const youtube = google.youtube({
+      version: 'v3',
+      auth: apiKey,
+    });
+
+    const query = `${title} ${year ? year : ''} trailer`.trim();
+    const response = await youtube.search.list({
+      part: ['snippet'],
+      q: query,
+      type: ['video'],
+      maxResults: 8,
+      order: 'relevance',
+    });
+
+    const items = response.data.items;
+    if (items && items.length > 0) {
+      const candidates = items
+        .map((item) => ({
+          id: item.id?.videoId,
+          title: item.snippet?.title || '',
+          channelTitle: item.snippet?.channelTitle || '',
+        }))
+        .filter((item) => item.id);
+
+      if (!candidates.length) return null;
+
+      const videoDetails = await youtube.videos.list({
+        part: ['contentDetails'],
+        id: candidates.map((candidate) => candidate.id as string),
+      });
+
+      const durationById = new Map<string, number>();
+      for (const detail of videoDetails.data.items || []) {
+        const detailId = detail.id || '';
+        const duration = parseIso8601DurationToSeconds(detail.contentDetails?.duration || '');
+        if (detailId) durationById.set(detailId, duration);
+      }
+
+      const ranked = candidates
+        .map((candidate) => {
+          const id = candidate.id as string;
+          const score = trailerScore({
+            title: candidate.title,
+            channelTitle: candidate.channelTitle,
+            durationSeconds: durationById.get(id) || 0,
+            releaseYear: year,
+          });
+          return { ...candidate, score };
+        })
+        .sort((a, b) => b.score - a.score);
+
+      const best = ranked[0];
+      if (best && best.score > -40) {
+        return `https://www.youtube.com/watch?v=${best.id}`;
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching YouTube trailer:', error);
+  }
+  return null;
 };
 
 // Map of anime providers that have direct routes in this API
@@ -399,6 +694,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}`, fetchBase, REDIS_TTL)
       : await fetchBase();
 
+    await attachBestTrailer(baseInfo, id, type);
+
     const titleCandidates = [
       baseInfo?.title,
       baseInfo?.name,
@@ -526,14 +823,46 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     };
 
     const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:flixhq-mapped`, fetchBase, REDIS_TTL)
+      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:flixhq-mapped:v2`, fetchBase, REDIS_TTL)
       : await fetchBase();
+
+    await attachBestTrailer(baseInfo, id, type);
 
     const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
     if (!titleCandidates.length) return baseInfo;
 
     const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
     const expectedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+    const resolveAniListId = async () => {
+      const queries = titleCandidates.slice(0, 2);
+      for (const query of queries) {
+        try {
+          const anilistRes = await fastify.inject({
+            method: 'GET',
+            url: `/meta/anilist/${encodeURIComponent(query)}`,
+          });
+          if (anilistRes.statusCode >= 400) continue;
+          const anilistPayload = safeJsonParse(anilistRes.body || '{}');
+          const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
+          if (!anilistRows.length) continue;
+
+          const picked = anilistRows
+            .map((item: any) => ({
+              item,
+              score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
+            }))
+            .sort((a: any, b: any) => b.score - a.score)[0]?.item;
+          const pickedId = String(picked?.id || '').trim();
+          if (pickedId) return pickedId;
+        } catch {
+          continue;
+        }
+      }
+      return null;
+    };
+
+    const animeId = await resolveAniListId();
+    if (animeId) baseInfo.anilistId = animeId;
 
     // Build search terms, prioritizing exact titles over year variants
     const mainTerms = titleCandidates.slice(0, 2); // First 2 most relevant titles
@@ -660,6 +989,56 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     const pick = scored[0]?.item;
     if (!pick?.id) return baseInfo;
+
+    // For movies, validate the pick by checking release year
+    if (expectedType === 'movie') {
+      try {
+        const infoRes = await fastify.inject({
+          method: 'GET',
+          url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
+        });
+        if (infoRes.statusCode < 400) {
+          const payload = safeJsonParse(infoRes.body || '{}');
+          const movieInfo = payload?.data || payload;
+          const releaseDateStr = String(movieInfo?.releaseDate || '');
+          const flixReleaseYear = releaseDateStr ? Number(releaseDateStr.slice(0, 4)) : 0;
+          const tmdbReleaseYear = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+          
+          // If years match or are close, accept it
+          const yearDiff = Math.abs(flixReleaseYear - tmdbReleaseYear);
+          if (flixReleaseYear && tmdbReleaseYear && yearDiff <= 1) {
+            baseInfo.provider = 'flixhq';
+            baseInfo.providerSourceId = pick.id;
+            return baseInfo;
+          } else if (!tmdbReleaseYear || yearDiff > 1) {
+            // If year doesn't match, try the next best match
+            const nextPick = scored[1]?.item;
+            if (nextPick?.id) {
+              const nextInfoRes = await fastify.inject({
+                method: 'GET',
+                url: `/movies/flixhq/info?id=${encodeURIComponent(String(nextPick.id))}`,
+              });
+              if (nextInfoRes.statusCode < 400) {
+                const nextPayload = safeJsonParse(nextInfoRes.body || '{}');
+                const nextMovieInfo = nextPayload?.data || nextPayload;
+                const nextReleaseDateStr = String(nextMovieInfo?.releaseDate || '');
+                const nextFlixReleaseYear = nextReleaseDateStr ? Number(nextReleaseDateStr.slice(0, 4)) : 0;
+                const nextYearDiff = Math.abs(nextFlixReleaseYear - tmdbReleaseYear);
+                if (nextFlixReleaseYear && (!tmdbReleaseYear || nextYearDiff <= 1)) {
+                  baseInfo.provider = 'flixhq';
+                  baseInfo.providerSourceId = nextPick.id;
+                  return baseInfo;
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // Fall through
+      }
+      // If validation failed, return without mapping
+      return baseInfo;
+    }
 
     try {
       const infoRes = await fastify.inject({
@@ -864,12 +1243,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           delete (info as any).characters;
           delete (info as any).recommendations;
           delete (info as any).similar;
+
+          await attachBestTrailer(info, id, type);
         }
         return info;
       };
 
       let res = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}`, fetchInfo, REDIS_TTL)
+        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v2`, fetchInfo, REDIS_TTL)
         : await fetchInfo();
 
       // If title is "Unknown" or missing, try to rescue it directly from TMDB
@@ -942,12 +1323,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           delete (info as any).characters;
           delete (info as any).recommendations;
           delete (info as any).similar;
+
+          await attachBestTrailer(info, id, type);
         }
         return info;
       };
 
       let res = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}`, fetchInfo, REDIS_TTL)
+        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v2`, fetchInfo, REDIS_TTL)
         : await fetchInfo();
 
       // If title is "Unknown" or missing, try to rescue it directly from TMDB

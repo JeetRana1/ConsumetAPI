@@ -4,6 +4,7 @@ import { proxyGet, proxyPost } from '../../utils/outboundProxy';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import Anilist from '@consumet/extensions/dist/providers/meta/anilist';
 
 
 const BASE_URL = 'https://animesalt.ac';
@@ -54,6 +55,26 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     }
                 });
 
+                // Add AniList IDs in parallel
+                const anilistPromises = results.map(async (result) => {
+                    try {
+                        const anilistId = redis ? await cache.fetch(
+                            redis,
+                            `anilist:title:${result.title}`,
+                            async () => {
+                                const anilist = new Anilist();
+                                const searchRes = await anilist.search(result.title, 1, 1);
+                                return searchRes.results[0]?.id || null;
+                            },
+                            REDIS_TTL
+                        ) : null;
+                        if (anilistId) result.anilistId = anilistId;
+                    } catch (e) {
+                        console.error('Failed to get AniList ID for', result.title, (e as Error).message);
+                    }
+                });
+                await Promise.all(anilistPromises);
+
                 return results;
             };
 
@@ -94,25 +115,170 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 });
 
                 const episodes: any[] = [];
+                const seasonsMap = new Map<number, any>();
+                const seasonTabCounts = new Map<number, number>();
+                const parseSeasonEpisode = (value: string) => {
+                    const match = String(value || '').match(/(?:^|\D)(\d+)\s*x\s*(\d+)(?:\D|$)/i);
+                    if (!match) return { season: 1, episode: 0 };
+                    return {
+                        season: Number(match[1]) || 1,
+                        episode: Number(match[2]) || 0,
+                    };
+                };
+
+                // AnimeSalt renders season tabs like "Season 2 • 1-23 (23)".
+                // Parse these counts so we can expose all seasons even when the page only
+                // renders one season's episode cards server-side.
+                $('a[href="javascript:void(0)"]').each((_, el) => {
+                    const label = $(el).text().replace(/\s+/g, ' ').trim();
+                    const m = label.match(/Season\s*(\d+)\s*[•\-–]?\s*(?:\d+\s*[-–]\s*)?(\d+)\s*\((\d+)\)/i);
+                    if (!m) return;
+                    const seasonNo = Number(m[1]);
+                    const rangeEnd = Number(m[2]);
+                    const totalInParens = Number(m[3]);
+                    const total = Number.isFinite(totalInParens) && totalInParens > 0
+                        ? totalInParens
+                        : rangeEnd;
+                    if (Number.isFinite(seasonNo) && seasonNo > 0 && Number.isFinite(total) && total > 0) {
+                        seasonTabCounts.set(seasonNo, total);
+                    }
+                });
                 $('article.episodes').each((_, el) => {
                     const epUrl = $(el).find('a.lnk-blk').attr('href');
                     const epId = epUrl?.split('/episode/')[1]?.replace(/\/$/, '');
                     const epTitle = $(el).find('.entry-title').text().trim();
                     const epNumStr = $(el).find('.num-epi').text().trim();
+                    const parsedFromId = parseSeasonEpisode(epId || '');
+                    const parsedFromTitle = parseSeasonEpisode(epTitle || '');
                     
                     // Robust numeric extraction for episode numbers (e.g., "Season 1 Ep 25" -> 25)
                     const numMatch = epNumStr.match(/(\d+)/);
                     const epNumber = numMatch ? parseInt(numMatch[1]) : 0;
+                    const seasonNumber = parsedFromId.season || parsedFromTitle.season || 1;
+                    const episodeNumber = parsedFromId.episode || epNumber || parsedFromTitle.episode || 0;
 
                     if (epId) {
-                        episodes.push({
+                        const episodeEntry = {
                             id: epId,
                             title: epTitle,
-                            number: epNumber,
-                            url: epUrl
-                        });
+                            number: episodeNumber,
+                            season: seasonNumber,
+                            seasonNo: seasonNumber,
+                            seasonNumber,
+                            url: epUrl,
+                        };
+
+                        episodes.push(episodeEntry);
+
+                        if (!seasonsMap.has(seasonNumber)) {
+                            seasonsMap.set(seasonNumber, {
+                                season: seasonNumber,
+                                seasonNo: seasonNumber,
+                                seasonNumber,
+                                name: `Season ${seasonNumber}`,
+                                episodes: [],
+                            });
+                        }
+                        seasonsMap.get(seasonNumber).episodes.push(episodeEntry);
                     }
                 });
+
+                // If AnimeSalt only rendered one season in server HTML, synthesize missing
+                // season episodes from tab counts using deterministic IDs (slug-SxE).
+                // This ensures clients can list/select every season/episode.
+                if (!isMovie && seasonTabCounts.size > 0) {
+                    for (const [seasonNo, count] of seasonTabCounts.entries()) {
+                        if (!seasonsMap.has(seasonNo)) {
+                            seasonsMap.set(seasonNo, {
+                                season: seasonNo,
+                                seasonNo,
+                                seasonNumber: seasonNo,
+                                name: `Season ${seasonNo}`,
+                                episodes: [],
+                            });
+                        }
+
+                        const bucket = seasonsMap.get(seasonNo);
+                        const existingIds = new Set(
+                            (Array.isArray(bucket?.episodes) ? bucket.episodes : [])
+                                .map((ep: any) => String(ep?.id || '').trim().toLowerCase())
+                                .filter(Boolean),
+                        );
+
+                        for (let epNo = 1; epNo <= count; epNo += 1) {
+                            const syntheticId = `${slug}-${seasonNo}x${epNo}`.toLowerCase();
+                            if (existingIds.has(syntheticId)) continue;
+                            const entry = {
+                                id: `${slug}-${seasonNo}x${epNo}`,
+                                title: `Episode ${epNo}`,
+                                number: epNo,
+                                season: seasonNo,
+                                seasonNo,
+                                seasonNumber: seasonNo,
+                                url: `${BASE_URL}/episode/${slug}-${seasonNo}x${epNo}/`,
+                            };
+                            episodes.push(entry);
+                            bucket.episodes.push(entry);
+                        }
+                    }
+                }
+
+                // Best-effort title hydration for placeholder entries.
+                // AnimeSalt often renders only one season server-side; when we synthesize
+                // missing seasons, we can still fetch each episode page to extract real titles.
+                const parseEpisodePageTitle = (html: string, fallbackTitle: string) => {
+                    const $$ = cheerio.load(html || '');
+                    const candidates = [
+                        $$('meta[property="og:title"]').attr('content') || '',
+                        $$('meta[name="twitter:title"]').attr('content') || '',
+                        $$('.entry-title').first().text().trim() || '',
+                        $$('h1').first().text().trim() || '',
+                        $$('h2').first().text().trim() || '',
+                    ]
+                        .map((v) => String(v || '').replace(/\s+/g, ' ').trim())
+                        .filter(Boolean);
+
+                    for (const raw of candidates) {
+                        let cleaned = raw
+                            .replace(/\s*[-|]\s*Anime\s*Salt\s*$/i, '')
+                            .replace(/\s*\|\s*Anime\s*Salt\s*$/i, '')
+                            .replace(/\s+/g, ' ')
+                            .trim();
+                        if (!cleaned) continue;
+                        if (/^episode\s*\d+$/i.test(cleaned)) continue;
+                        if (/^watching:/i.test(cleaned)) continue;
+                        return cleaned;
+                    }
+                    return fallbackTitle;
+                };
+
+                const needsHydration = episodes
+                    .filter((ep) => {
+                        const title = String(ep?.title || '').trim();
+                        return !title || /^episode\s*\d+$/i.test(title);
+                    })
+                    .filter((ep) => String(ep?.url || '').startsWith(BASE_URL))
+                    // Hard cap to avoid overloading upstream in one request.
+                    .slice(0, 160);
+
+                if (needsHydration.length > 0) {
+                    const concurrency = 8;
+                    const workers = Array.from({ length: Math.min(concurrency, needsHydration.length) }, () => (async () => {
+                        while (needsHydration.length > 0) {
+                            const ep = needsHydration.shift();
+                            if (!ep?.url) continue;
+                            try {
+                                const epRes = await proxyGet(ep.url, {
+                                    headers: { 'User-Agent': UA, 'Referer': `${BASE_URL}/series/${slug}/` }
+                                });
+                                ep.title = parseEpisodePageTitle(String(epRes?.data || ''), String(ep.title || '').trim() || `Episode ${ep.number || 0}`);
+                            } catch (_e) {
+                                // Keep fallback title if per-episode fetch fails.
+                            }
+                        }
+                    })());
+                    await Promise.allSettled(workers);
+                }
 
                 // For movies: if no episodes found in the dedicated episodes list,
                 // treat the movie page itself as the single episode.
@@ -125,9 +291,38 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     });
                 }
 
-                // Sort episodes numerically (ascending) to guarantee ep 1 is always first in the list.
-                // This prevents "wrong video" issues when the site's layout varies.
-                episodes.sort((a, b) => a.number - b.number);
+                // Sort episodes by season, then episode, to preserve AnimeSalt's season mapping.
+                episodes.sort((a, b) => {
+                    const seasonDiff = Number(a.season || a.seasonNo || a.seasonNumber || 0) - Number(b.season || b.seasonNo || b.seasonNumber || 0);
+                    if (seasonDiff !== 0) return seasonDiff;
+                    return Number(a.number || 0) - Number(b.number || 0);
+                });
+
+                const seasons = Array.from(seasonsMap.values())
+                    .map((season) => ({
+                        ...season,
+                        episodes: Array.isArray(season.episodes)
+                            ? season.episodes.sort((a: any, b: any) => Number(a.number || 0) - Number(b.number || 0))
+                            : [],
+                    }))
+                    .sort((a, b) => Number(a.season || a.seasonNo || 0) - Number(b.season || b.seasonNo || 0));
+
+                // Add AniList ID
+                let anilistId = null;
+                try {
+                    anilistId = redis ? await cache.fetch(
+                        redis,
+                        `anilist:title:${title}`,
+                        async () => {
+                            const anilist = new Anilist();
+                            const searchRes = await anilist.search(title, 1, 1);
+                            return searchRes.results[0]?.id || null;
+                        },
+                        REDIS_TTL
+                    ) : null;
+                } catch (e) {
+                    console.error('Failed to get AniList ID for', title, (e as Error).message);
+                }
 
                 return {
                     id,
@@ -135,12 +330,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     description,
                     image: image?.startsWith('//') ? `https:${image}` : image,
                     genres,
-                    episodes
+                    seasons,
+                    episodes,
+                    anilistId
                 };
             };
 
             const info = redis
-                ? await cache.fetch(redis as Redis, `animesalt:info:${id}`, fetchInfo, REDIS_TTL)
+                ? await cache.fetch(redis as Redis, `animesalt:info:${id}:v4`, fetchInfo, REDIS_TTL)
                 : await fetchInfo();
 
             reply.status(200).send(info);

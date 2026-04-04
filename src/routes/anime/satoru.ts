@@ -8,6 +8,7 @@ import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { configureProvider } from '../../utils/provider';
 import { execFile } from 'child_process';
+import Anilist from '@consumet/extensions/dist/providers/meta/anilist';
 import { promisify } from 'util';
 import { getProxyCandidates, toAxiosProxyOptions } from '../../utils/outboundProxy';
 
@@ -144,6 +145,26 @@ class SatoruProvider extends AnimeParser {
             });
         });
 
+        // Add AniList IDs in parallel
+        const anilistPromises = results.map(async (result) => {
+            try {
+                const anilistId = redis ? await cache.fetch(
+                    redis,
+                    `anilist:title:${result.title}`,
+                    async () => {
+                        const anilist = new Anilist();
+                        const searchRes = await anilist.search(String(result.title), 1, 1);
+                        return searchRes.results[0]?.id || null;
+                    },
+                    REDIS_TTL
+                ) : null;
+                if (anilistId) (result as any).anilistId = anilistId;
+            } catch (e) {
+                console.error('Failed to get AniList ID for', result.title, (e as Error).message);
+            }
+        });
+        await Promise.all(anilistPromises);
+
         return {
             currentPage: page,
             hasNextPage: $('.pagination .active').next().length > 0,
@@ -265,6 +286,23 @@ class SatoruProvider extends AnimeParser {
             } catch {
                 // episode list parse failed, continue with empty list
             }
+        }
+
+        // Add AniList ID
+        try {
+            const anilistId = redis ? await cache.fetch(
+                redis,
+                `anilist:title:${animeInfo.title}`,
+                async () => {
+                    const anilist = new Anilist();
+                    const searchRes = await anilist.search(String(animeInfo.title), 1, 1);
+                    return searchRes.results[0]?.id || null;
+                },
+                REDIS_TTL
+            ) : null;
+            if (anilistId) (animeInfo as any).anilistId = anilistId;
+        } catch (e) {
+            console.error('Failed to get AniList ID for', animeInfo.title, (e as Error).message);
         }
 
         return animeInfo;

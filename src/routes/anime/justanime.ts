@@ -3,6 +3,20 @@ import { proxyGet } from '../../utils/outboundProxy';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
+import Anilist from '@consumet/extensions/dist/providers/meta/anilist';
+
+const anilist = new Anilist();
+
+const resolveAniListIdByTitle = async (title: string): Promise<string | null> => {
+    const query = String(title || '').trim();
+    if (!query) return null;
+    try {
+        const searchRes = await anilist.search(query, 1, 1);
+        return String(searchRes?.results?.[0]?.id || '').trim() || null;
+    } catch {
+        return null;
+    }
+};
 
 const JUSTANIME_BASE = 'https://core.justanime.to/api';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -14,7 +28,54 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const res = await proxyGet(`${JUSTANIME_BASE}/search/suggestions?query=${encodeURIComponent(query)}`, {
                 headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
             });
-            reply.status(200).send(res.data);
+            const payload: any = res.data;
+
+            const rows: any[] = Array.isArray(payload)
+                ? payload
+                : Array.isArray(payload?.results)
+                    ? payload.results
+                    : Array.isArray(payload?.data?.results)
+                        ? payload.data.results
+                        : Array.isArray(payload?.data)
+                            ? payload.data
+                            : [];
+
+            const enrichedRows = await Promise.all(
+                rows.map(async (row: any) => {
+                    const title = String(row?.title || row?.name || row?.romaji || row?.english || '').trim();
+                    if (!title) return row;
+                    const anilistId = redis
+                        ? await cache.fetch(
+                            redis as Redis,
+                            `justanime:anilist:title:${title}`,
+                            async () => await resolveAniListIdByTitle(title),
+                            REDIS_TTL,
+                        )
+                        : await resolveAniListIdByTitle(title);
+                    return anilistId ? { ...row, anilistId } : row;
+                }),
+            );
+
+            if (Array.isArray(payload)) {
+                return reply.status(200).send(enrichedRows);
+            }
+            if (Array.isArray(payload?.results)) {
+                return reply.status(200).send({ ...payload, results: enrichedRows });
+            }
+            if (Array.isArray(payload?.data?.results)) {
+                return reply.status(200).send({
+                    ...payload,
+                    data: {
+                        ...payload.data,
+                        results: enrichedRows,
+                    },
+                });
+            }
+            if (Array.isArray(payload?.data)) {
+                return reply.status(200).send({ ...payload, data: enrichedRows });
+            }
+
+            reply.status(200).send(payload);
         } catch (err: any) {
             console.error('JustAnime search error:', err.message);
             reply.status(200).send({ currentPage: 1, hasNextPage: false, results: [] });
@@ -42,11 +103,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                     isFiller: ep.isFiller
                 }));
 
+                const anilistId = await resolveAniListIdByTitle(info?.title || id);
+
                 console.log('info is', info);
                 console.log('episodes is', episodes);
                 return {
                     ...info,
-                    episodes
+                    episodes,
+                    anilistId
                 };
             };
 
