@@ -74,7 +74,7 @@ const trailerScore = (params: {
   return score;
 };
 
-const fetchTmdbOfficialTrailer = async (id: string, type: string): Promise<string | null> => {
+const fetchTmdbOfficialTrailer = async (id: string, type?: string): Promise<string | null> => {
   if (!tmdbApi) return null;
 
   try {
@@ -220,7 +220,7 @@ const chooseOfficialTrailerFromExisting = async (payload: any): Promise<string |
   return best.url;
 };
 
-const attachBestTrailer = async (info: any, id: string, type: string) => {
+const attachBestTrailer = async (info: any, id: string, type?: string) => {
   if (!info || typeof info !== 'object') return;
 
   const tmdbTrailer = await fetchTmdbOfficialTrailer(id, type);
