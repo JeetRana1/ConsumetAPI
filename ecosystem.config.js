@@ -3,7 +3,7 @@ module.exports = {
     name: 'consumet-api',
     script: 'dist/main.js',
     cwd: process.env.HOME + '/ConsumetAPI',
-    interpreter: process.env.HOME + '/.bun/bin/bun',
+    interpreter: 'node',
     cron_restart: '0 0 * * *',
     env: {
       PORT: 3000,
