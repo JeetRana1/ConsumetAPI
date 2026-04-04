@@ -46,10 +46,10 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 (async () => {
     const PORT = Number(process.env.PORT) || 3000;
     await fastify.register(cors_1.default, {
-        origin: '*',
-        methods: ['GET', 'OPTIONS', 'HEAD'],
-        preflight: true,
-        strictPreflight: false,
+        origin: true, // Transparently reflect the request origin
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        credentials: true,
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     });
     fastify.addHook('preSerialization', async (_request, _reply, payload) => {
         return (0, streamable_1.normalizeStreamLinks)(payload);
