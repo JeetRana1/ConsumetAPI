@@ -1127,15 +1127,21 @@ const routes = async (fastify, options) => {
         return null;
     };
     fastify.get('/info', async (request, reply) => {
+        const sanitizeType = (t) => {
+            if (!t || t === 'undefined' || t === 'null')
+                return undefined;
+            return String(t).toLowerCase();
+        };
         const id = request.query.id;
-        const type = request.query.type;
+        const type = sanitizeType(request.query.type);
         const provider = request.query.provider;
         const providerLower = provider?.toLowerCase();
         let tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ())));
         if (!id)
             return reply.status(400).send({ message: "The 'id' query is required" });
-        if (!type)
-            return reply.status(400).send({ message: "The 'type' query is required" });
+        if (!type || (type !== 'movie' && type !== 'tv')) {
+            return reply.status(400).send({ message: "The 'type' query is required and must be 'movie' or 'tv'" });
+        }
         if (providerLower === 'dramacool') {
             try {
                 const res = await buildDramacoolTmdbInfo(id, type);
@@ -1202,13 +1208,19 @@ const routes = async (fastify, options) => {
         }
     });
     fastify.get('/info/:id', async (request, reply) => {
+        const sanitizeType = (t) => {
+            if (!t || t === 'undefined' || t === 'null')
+                return undefined;
+            return String(t).toLowerCase();
+        };
         const id = request.params.id;
-        const type = request.query.type;
+        const type = sanitizeType(request.query.type);
         const provider = request.query.provider;
         const providerLower = provider?.toLowerCase();
         let tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ())));
-        if (!type)
-            return reply.status(400).send({ message: "The 'type' query is required" });
+        if (!type || (type !== 'movie' && type !== 'tv')) {
+            return reply.status(400).send({ message: "The 'type' query is required and must be 'movie' or 'tv'" });
+        }
         if (providerLower === 'dramacool') {
             try {
                 const res = await buildDramacoolTmdbInfo(id, type);
@@ -1276,7 +1288,12 @@ const routes = async (fastify, options) => {
     });
     fastify.get('/trending', async (request, reply) => {
         const validTimePeriods = new Set(['day', 'week']);
-        const type = request.query.type || 'all';
+        const sanitizeType = (t) => {
+            if (!t || t === 'undefined' || t === 'null')
+                return 'all';
+            return String(t).toLowerCase();
+        };
+        const type = sanitizeType(request.query.type);
         let timePeriod = request.query.timePeriod || 'day';
         // make day as default time period
         if (!validTimePeriods.has(timePeriod))
@@ -1336,12 +1353,17 @@ const routes = async (fastify, options) => {
         return null;
     };
     const watch = async (request, reply) => {
+        const sanitizeType = (t) => {
+            if (!t || t === 'undefined' || t === 'null')
+                return undefined;
+            return String(t).toLowerCase();
+        };
         let episodeId = request.params.episodeId;
         if (!episodeId) {
             episodeId = request.query.episodeId;
         }
         const id = request.query.id;
-        const type = request.query.type;
+        const type = sanitizeType(request.query.type);
         const provider = request.query.provider;
         const server = request.query.server;
         const directOnlyRaw = String(request.query.directOnly || '').toLowerCase();
