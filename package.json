@@ -5,7 +5,7 @@
     "scripts": {
         "start": "ts-node src/main.ts",
         "dev": "nodemon src/main.ts",
-        "build": "tsc",
+        "build": "esbuild src/main.ts --bundle --platform=node --target=node18 --outfile=dist/main.js",
         "lint": "prettier --write \"src/**/*.ts\""
     },
     "engines": {
@@ -41,6 +41,7 @@
         "ws": "^8.8.1"
     },
     "devDependencies": {
+        "esbuild": "^0.20.0",
         "nodemon": "3.0.1",
         "prettier": "^3.0.0",
         "typescript": "5.3.3"
