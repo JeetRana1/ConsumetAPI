@@ -6,7 +6,7 @@ module.exports = {
     interpreter: process.env.HOME + '/.bun/bin/bun',
     cron_restart: '0 0 * * *',
     env: {
-      PORT: 8000,
+      PORT: 3000,
       NODE_ENV: 'production'
     },
     autorestart: true,
