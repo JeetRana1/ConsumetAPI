@@ -1,5 +1,7 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { proxyGet } from '../../utils/outboundProxy';
+import { toAxiosProxyOptions } from '../../utils/outboundProxy';
+import axios from 'axios';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
@@ -21,11 +23,31 @@ const resolveAniListIdByTitle = async (title: string): Promise<string | null> =>
 const JUSTANIME_BASE = 'https://core.justanime.to/api';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
+/**
+ * Proxy-aware GET for JustAnime.
+ * Priority: JUSTANIME_PROXY env var -> global OUTBOUND_PROXIES/PROXY -> direct.
+ * Set JUSTANIME_PROXY=http://host:port in your .env to route JustAnime traffic
+ * through a proxy when running locally.
+ */
+const jaGet = async (url: string, config: import('axios').AxiosRequestConfig = {}) => {
+    const jaProxy = String(process.env.JUSTANIME_PROXY || '').trim();
+    if (jaProxy) {
+        try {
+            const proxyOpts = toAxiosProxyOptions(jaProxy);
+            return await axios.get(url, { ...config, ...(proxyOpts as any) });
+        } catch {
+            // fall through to global proxy / direct
+        }
+    }
+    return proxyGet(url, config);
+};
+
+
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
         const query = (request.params as { query: string }).query;
         try {
-            const res = await proxyGet(`${JUSTANIME_BASE}/search/suggestions?query=${encodeURIComponent(query)}`, {
+            const res = await jaGet(`${JUSTANIME_BASE}/search/suggestions?query=${encodeURIComponent(query)}`, {
                 headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
             });
             const payload: any = res.data;
@@ -42,7 +64,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
             const enrichedRows = await Promise.all(
                 rows.map(async (row: any) => {
-                    const title = String(row?.title || row?.name || row?.romaji || row?.english || '').trim();
+                    // row.title may be a nested object {english, romaji, native}
+                    const titleObj = row?.title;
+                    const title = typeof titleObj === 'string'
+                        ? titleObj.trim()
+                        : String(titleObj?.english || titleObj?.romaji || titleObj?.native || row?.name || '').trim();
                     if (!title) return row;
                     const anilistId = redis
                         ? await cache.fetch(
@@ -87,10 +113,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         try {
             const fetchInfo = async () => {
                 const [infoRes, epRes] = await Promise.all([
-                    proxyGet(`${JUSTANIME_BASE}/anime/${id}`, {
+                    jaGet(`${JUSTANIME_BASE}/anime/${id}`, {
                         headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
                     }),
-                    proxyGet(`${JUSTANIME_BASE}/anime/${id}/episodes`, {
+                    jaGet(`${JUSTANIME_BASE}/anime/${id}/episodes`, {
                         headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
                     })
                 ]);
@@ -139,7 +165,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         try {
             const fetchWatch = async () => {
-                const res = await proxyGet(`${JUSTANIME_BASE}/watch/${id}/episode/${ep}/hianime`, {
+                const res = await jaGet(`${JUSTANIME_BASE}/watch/${id}/episode/${ep}/hianime`, {
                     headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
                 });
 
