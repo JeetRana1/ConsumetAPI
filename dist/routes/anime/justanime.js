@@ -4,6 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const outboundProxy_1 = require("../../utils/outboundProxy");
+const outboundProxy_2 = require("../../utils/outboundProxy");
+const axios_1 = __importDefault(require("axios"));
 const cache_1 = __importDefault(require("../../utils/cache"));
 const main_1 = require("../../main");
 const anilist_1 = __importDefault(require("@consumet/extensions/dist/providers/meta/anilist"));
@@ -22,11 +24,30 @@ const resolveAniListIdByTitle = async (title) => {
 };
 const JUSTANIME_BASE = 'https://core.justanime.to/api';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+/**
+ * Proxy-aware GET for JustAnime.
+ * Priority: JUSTANIME_PROXY env var -> global OUTBOUND_PROXIES/PROXY -> direct.
+ * Set JUSTANIME_PROXY=http://host:port in your .env to route JustAnime traffic
+ * through a proxy when running locally.
+ */
+const jaGet = async (url, config = {}) => {
+    const jaProxy = String(process.env.JUSTANIME_PROXY || '').trim();
+    if (jaProxy) {
+        try {
+            const proxyOpts = (0, outboundProxy_2.toAxiosProxyOptions)(jaProxy);
+            return await axios_1.default.get(url, { ...config, ...proxyOpts });
+        }
+        catch {
+            // fall through to global proxy / direct
+        }
+    }
+    return (0, outboundProxy_1.proxyGet)(url, config);
+};
 const routes = async (fastify, options) => {
     fastify.get('/:query', async (request, reply) => {
         const query = request.params.query;
         try {
-            const res = await (0, outboundProxy_1.proxyGet)(`${JUSTANIME_BASE}/search/suggestions?query=${encodeURIComponent(query)}`, {
+            const res = await jaGet(`${JUSTANIME_BASE}/search/suggestions?query=${encodeURIComponent(query)}`, {
                 headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
             });
             const payload = res.data;
@@ -40,7 +61,11 @@ const routes = async (fastify, options) => {
                             ? payload.data
                             : [];
             const enrichedRows = await Promise.all(rows.map(async (row) => {
-                const title = String(row?.title || row?.name || row?.romaji || row?.english || '').trim();
+                // row.title may be a nested object {english, romaji, native}
+                const titleObj = row?.title;
+                const title = typeof titleObj === 'string'
+                    ? titleObj.trim()
+                    : String(titleObj?.english || titleObj?.romaji || titleObj?.native || row?.name || '').trim();
                 if (!title)
                     return row;
                 const anilistId = main_1.redis
@@ -78,10 +103,10 @@ const routes = async (fastify, options) => {
         try {
             const fetchInfo = async () => {
                 const [infoRes, epRes] = await Promise.all([
-                    (0, outboundProxy_1.proxyGet)(`${JUSTANIME_BASE}/anime/${id}`, {
+                    jaGet(`${JUSTANIME_BASE}/anime/${id}`, {
                         headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
                     }),
-                    (0, outboundProxy_1.proxyGet)(`${JUSTANIME_BASE}/anime/${id}/episodes`, {
+                    jaGet(`${JUSTANIME_BASE}/anime/${id}/episodes`, {
                         headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
                     })
                 ]);
@@ -119,7 +144,7 @@ const routes = async (fastify, options) => {
         const ep = parts[1] || '1';
         try {
             const fetchWatch = async () => {
-                const res = await (0, outboundProxy_1.proxyGet)(`${JUSTANIME_BASE}/watch/${id}/episode/${ep}/hianime`, {
+                const res = await jaGet(`${JUSTANIME_BASE}/watch/${id}/episode/${ep}/hianime`, {
                     headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
                 });
                 const data = res.data;
