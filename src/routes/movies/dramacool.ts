@@ -448,6 +448,72 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       normalizeText($('.description').first().text()) ||
       undefined;
 
+    // Extract release date from various possible locations
+    let releaseDate: string | undefined;
+    const dateSelectors = [
+      '.drama-info .year',
+      '.drama-details .year',
+      '.info .year',
+      '.release-date',
+      '.date',
+      '.air-date',
+      '.premiere-date',
+      '[class*="release"]',
+      '[class*="date"]',
+      '[class*="year"]',
+      '.drama-info span',
+      '.drama-details span',
+      '.info span',
+      'meta[name="date"]',
+      'meta[property="article:published_time"]',
+    ];
+
+    for (const selector of dateSelectors) {
+      const dateText = normalizeText($(selector).first().text() || $(selector).attr('content') || '');
+      if (dateText) {
+        // Try to extract year from text like "2023" or "2023-2024" or "January 15, 2023"
+        const yearMatch = dateText.match(/\b(20\d{2})\b/);
+        if (yearMatch) {
+          releaseDate = yearMatch[1];
+          break;
+        }
+      }
+    }
+
+    // Extract rating from various possible locations
+    let rating: number | undefined;
+    const ratingSelectors = [
+      '.rating',
+      '.score',
+      '.imdb-rating',
+      '.user-rating',
+      '.star-rating',
+      '[class*="rating"]',
+      '[class*="score"]',
+      '.drama-info .rating',
+      '.drama-details .rating',
+      '.info .rating',
+      '.rating-value',
+      '.score-value',
+      'span[class*="rating"]',
+      'div[class*="rating"]',
+    ];
+
+    for (const selector of ratingSelectors) {
+      const ratingText = normalizeText($(selector).first().text());
+      if (ratingText) {
+        // Try to extract rating like "8.5" or "8.5/10" or "8.5 out of 10"
+        const ratingMatch = ratingText.match(/(\d+(?:\.\d+)?)/);
+        if (ratingMatch) {
+          const parsedRating = parseFloat(ratingMatch[1]);
+          if (parsedRating >= 0 && parsedRating <= 10) {
+            rating = parsedRating;
+            break;
+          }
+        }
+      }
+    }
+
     const dramaSlug = extractSlugFromUrl(url);
     const episodes = await fetchEpisodesFromSitemaps(base, dramaSlug);
 
@@ -458,6 +524,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       image,
       description,
       type: 'TV Series',
+      releaseDate,
+      rating,
       episodes,
     };
   };
@@ -514,12 +582,35 @@ const extractEmbedUrls = (html: string): string[] => {
     const $ = load(pageHtml);
 
     const embedCandidates = new Set<string>();
-    const iframeUrl = $('#video-frame').attr('src') || $('iframe').first().attr('src');
-    if (iframeUrl) embedCandidates.add(toAbsoluteUrl(base, iframeUrl));
-
+    
+    // Try multiple selectors for video iframe/embed
+    const iframeSelectors = [
+      '#video-frame',
+      '#player-frame',
+      '#embed-frame',
+      '.video-frame iframe',
+      '.player iframe',
+      '.embed iframe',
+      'iframe[src*="embed"]',
+      'iframe[src*="player"]',
+      'iframe[src*="video"]',
+    ];
+    
+    for (const selector of iframeSelectors) {
+      const iframe = $(selector).first();
+      if (iframe.length) {
+        const src = iframe.attr('src') || iframe.attr('data-src');
+        if (src) {
+          embedCandidates.add(toAbsoluteUrl(base, src));
+          break; // Use the first one found
+        }
+      }
+    }
+    
+    // Also check for data-src attributes
     $('[data-src]').each((_, el) => {
       const dataSrc = $(el).attr('data-src');
-      if (dataSrc && /^https?:\/\//i.test(dataSrc)) {
+      if (dataSrc && /^https?:\/\//i.test(dataSrc) && (dataSrc.includes('embed') || dataSrc.includes('player') || dataSrc.includes('video'))) {
         embedCandidates.add(dataSrc);
       }
     });
@@ -694,6 +785,16 @@ const extractEmbedUrls = (html: string): string[] => {
     };
   };
 
+  const extractDramaUrl = (episodeUrl: string): string => {
+    // Convert episode URL like https://dramacool.com/drama-name-episode-1.html
+    // to drama URL like https://dramacool.com/drama-name.html
+    const url = new URL(episodeUrl);
+    const slug = extractSlugFromUrl(episodeUrl);
+    // Remove episode suffix (e.g., -episode-1, -episode-2, etc.)
+    const dramaSlug = slug.replace(/-episode-\d+$/i, '');
+    return `${url.origin}/${dramaSlug}.html`;
+  };
+
   const fetchWpRecentEpisodes = async () => {
     await ensureCompatibleBase();
     const base = resolvedBase || primaryBase;
@@ -706,16 +807,16 @@ const extractEmbedUrls = (html: string): string[] => {
     $('div.tab-recent-episode a[href$=".html"]').each((_, el) => {
       const href = $(el).attr('href');
       if (!href) return;
-      const url = toAbsoluteUrl(base, href);
-      if (seen.has(url)) return;
-      seen.add(url);
+      const episodeUrl = toAbsoluteUrl(base, href);
+      const dramaUrl = extractDramaUrl(episodeUrl);
+      if (seen.has(dramaUrl)) return;
+      seen.add(dramaUrl);
 
-      const title = normalizeText($(el).attr('title') || $(el).text() || extractSlugFromUrl(url));
+      const title = normalizeText($(el).attr('title') || $(el).text() || extractSlugFromUrl(dramaUrl));
       results.push({
-        id: url,
+        id: dramaUrl,
         title,
-        url,
-        episodeNumber: parseEpisodeNumber(title),
+        url: dramaUrl,
       });
     });
 

@@ -23,9 +23,9 @@ class SatoruProvider extends models_1.AnimeParser {
         this.logo = 'https://satoru.one/satoru-full-logo.png';
         this.classPath = 'ANIME.Satoru';
         this.requestTimeoutMs = Number(process.env.SATORU_FETCH_TIMEOUT_MS || '') ||
-            (process.env.NODE_ENV === 'production' ? 10000 : 8000);
+            (process.env.NODE_ENV === 'production' ? 5000 : 4000);
         this.proxyRequestTimeoutMs = Number(process.env.SATORU_PROXY_TIMEOUT_MS || '') ||
-            (process.env.NODE_ENV === 'production' ? 4000 : 4000);
+            (process.env.NODE_ENV === 'production' ? 2000 : 2000);
         this.maxProxyAttempts = Number(process.env.SATORU_PROXY_MAX_ATTEMPTS || '') ||
             (process.env.NODE_ENV === 'production' ? 2 : 2);
         this.preferWindowsCurl = process.platform === 'win32' && !['1', 'true', 'yes'].includes(String(process.env.SATORU_DISABLE_CURL || '').toLowerCase());

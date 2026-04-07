@@ -19,6 +19,7 @@ const routes = async (fastify, options) => {
             intro: `Welcome to the custom FlixHQ provider`,
             routes: [
                 '/:query',
+                '/search',
                 '/info',
                 '/watch',
                 '/home',
@@ -46,6 +47,22 @@ const routes = async (fastify, options) => {
     fastify.get('/:query', async (request, reply) => {
         const query = decodeURIComponent(request.params.query);
         const page = request.query.page || 1;
+        try {
+            let res = main_1.redis
+                ? await cache_1.default.fetch(main_1.redis, `flixhq:search:${query}:${page}`, async () => await flixhqProvider_1.FlixHQProvider.search(query, page), main_1.REDIS_TTL)
+                : await flixhqProvider_1.FlixHQProvider.search(query, page);
+            reply.status(200).send(res);
+        }
+        catch (error) {
+            reply.status(500).send({ error: error.message });
+        }
+    });
+    fastify.post('/search', async (request, reply) => {
+        const { query } = request.body;
+        const page = 1; // Default to page 1 for POST
+        if (!query) {
+            return reply.status(400).send({ error: 'Query is required' });
+        }
         try {
             let res = main_1.redis
                 ? await cache_1.default.fetch(main_1.redis, `flixhq:search:${query}:${page}`, async () => await flixhqProvider_1.FlixHQProvider.search(query, page), main_1.REDIS_TTL)

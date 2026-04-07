@@ -46,7 +46,8 @@ const routes = async (fastify, options) => {
         try {
             const fetchSearch = async () => {
                 const res = await (0, outboundProxy_1.proxyGet)(`${BASE_URL}/?s=${encodeURIComponent(query)}`, {
-                    headers: { 'User-Agent': UA }
+                    headers: { 'User-Agent': UA },
+                    timeout: 3000
                 });
                 const $ = cheerio.load(res.data);
                 const results = [];
@@ -113,7 +114,8 @@ const routes = async (fastify, options) => {
                 const slug = isMovie ? id.replace('movie:', '') : id;
                 const type = isMovie ? 'movies' : 'series';
                 const res = await (0, outboundProxy_1.proxyGet)(`${BASE_URL}/${type}/${slug}/`, {
-                    headers: { 'User-Agent': UA }
+                    headers: { 'User-Agent': UA },
+                    timeout: 3000
                 });
                 const $ = cheerio.load(res.data);
                 const title = $('h1').first().text().trim();
@@ -274,7 +276,8 @@ const routes = async (fastify, options) => {
                                 continue;
                             try {
                                 const epRes = await (0, outboundProxy_1.proxyGet)(ep.url, {
-                                    headers: { 'User-Agent': UA, 'Referer': `${BASE_URL}/series/${slug}/` }
+                                    headers: { 'User-Agent': UA, 'Referer': `${BASE_URL}/series/${slug}/` },
+                                    timeout: 3000
                                 });
                                 ep.title = parseEpisodePageTitle(String(epRes?.data || ''), String(ep.title || '').trim() || `Episode ${ep.number || 0}`);
                             }
@@ -352,7 +355,8 @@ const routes = async (fastify, options) => {
                 ? `${BASE_URL}/movies/${slug}/`
                 : `${BASE_URL}/episode/${episodeId}/`;
             const res = await (0, outboundProxy_1.proxyGet)(watchUrl, {
-                headers: { 'User-Agent': UA }
+                headers: { 'User-Agent': UA },
+                timeout: 3000
             });
             const $ = cheerio.load(res.data);
             const sources = [];
@@ -367,7 +371,8 @@ const routes = async (fastify, options) => {
                     const origin = embedUrl.origin;
                     // Step 1 – load the player page to obtain session cookies
                     const pageRes = await (0, outboundProxy_1.proxyGet)(iframe1, {
-                        headers: { 'User-Agent': UA, 'Referer': BASE_URL }
+                        headers: { 'User-Agent': UA, 'Referer': BASE_URL },
+                        timeout: 3000
                     });
                     const cookies = pageRes.headers['set-cookie']
                         ?.map((c) => c.split(';')[0])

@@ -461,14 +461,37 @@ const buildDramaSlugVariants = (dramaSlug: string): string[] => {
   return [...set];
 };
 
-const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  const tryAnimeProvidersForMovie = async ({
-    titleCandidates,
-    server,
-  }: {
-    titleCandidates: string[];
-    server?: StreamingServers;
-  }) => {
+const convertTmdbImagesToUrls = (data: any) => {
+  if (!data || typeof data !== 'object') return data;
+
+  const convertPath = (path: string) => {
+    if (!path || typeof path !== 'string') return null;
+    if (path.startsWith('http')) return path;
+    return `https://image.tmdb.org/t/p/w500${path}`;
+  };
+
+  if (data.poster_path) data.image = convertPath(data.poster_path);
+  if (data.backdrop_path) data.cover = convertPath(data.backdrop_path);
+  if (data.profile_path) data.image = convertPath(data.profile_path);
+
+  if (Array.isArray(data.seasons)) {
+    data.seasons = data.seasons.map((season: any) => {
+      if (season.poster_path) season.image = convertPath(season.poster_path);
+      return season;
+    });
+  }
+
+  if (Array.isArray(data.episodes)) {
+    data.episodes = data.episodes.map((episode: any) => {
+      if (episode.still_path) episode.image = convertPath(episode.still_path);
+      return episode;
+    });
+  }
+
+  return data;
+};
+  const tryAnimeProvidersForMovie = async (request: any, options: { titleCandidates: string[]; server?: StreamingServers; }) => {
+    const { titleCandidates, server } = options;
     if (!titleCandidates.length) return null;
     const providersInOrder = [
       'satoru',
@@ -484,7 +507,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       // Parallelize title searches
       const searchPromises = queries.map(async (query) => {
         try {
-          const searchRes = await fastify.inject({
+          const searchRes = await request.server.inject({
             method: 'GET',
             url: `${baseRoute}/${encodeURIComponent(query)}`,
           });
@@ -511,7 +534,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         .filter((picked) => picked?.id)
         .map(async (picked) => {
           try {
-            const infoRes = await fastify.inject({
+            const infoRes = await request.server.inject({
               method: 'GET',
               url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
             });
@@ -538,7 +561,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               const queryParts: string[] = [];
               if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
               const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
-              const watchRes = await fastify.inject({
+              const watchRes = await request.server.inject({
                 method: 'GET',
                 url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
               });
@@ -674,7 +697,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }))
       .sort((a, b) => (a.episode || 0) - (b.episode || 0));
   };
-  const buildDramacoolTmdbInfo = async (id: string, type: string) => {
+  const buildDramacoolTmdbInfo = async (request: any, id: string, type: string) => {
     const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
     
     const fetchBase = async () => {
@@ -748,7 +771,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     }
     if (!dcEpisodes.length) {
       try {
-        const delegated = await fastify.inject({
+        const delegated = await request.server.inject({
           method: 'GET',
           url: `/movies/dramacool/info?id=${encodeURIComponent(pick.url)}`,
         });
@@ -797,11 +820,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     baseInfo.id = dramaSlug;
     baseInfo.url = pick.url;
+    convertTmdbImagesToUrls(baseInfo);
     return baseInfo;
   };
 
 
-  const buildJustanimeTmdbInfo = async (id: string, type: string) => {
+  const buildJustanimeTmdbInfo = async (request: any, id: string, type: string) => {
     const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
     const fetchBase = async () => {
       const res = await baseTmdb.fetchMediaInfo(id, type);
@@ -825,77 +849,99 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
     
-    // Search JustAnime with primary titles
-    const term = titleCandidates[0];
-    try {
-      const searchRes = await fastify.inject({
-        method: 'GET',
-        url: `/anime/justanime/${encodeURIComponent(term)}`,
-      });
-      
-      if (searchRes.statusCode < 400) {
-        const payload = safeJsonParse(searchRes.body || '{}');
-        // JustAnime returns {data:[...]} which the anime route re-emits as {data:[...enriched]}
-        const results: any[] = Array.isArray(payload?.results)
-          ? payload.results
-          : Array.isArray(payload?.data)
-          ? payload.data
-          : [];
+    // Search JustAnime with multiple title candidates and year variants
+    let pick: any = null;
+    const searchTerms = [];
+    
+    // Add title candidates
+    searchTerms.push(...titleCandidates.slice(0, 2));
+    
+    // Add simplified versions (remove special characters, colons, etc.)
+    titleCandidates.slice(0, 2).forEach(title => {
+      const simplified = title.replace(/[^\w\s]/g, '').trim();
+      if (simplified !== title) searchTerms.push(simplified);
+    });
+    
+    // Add year variants for better matching
+    if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+      searchTerms.push(...titleCandidates.slice(0, 2).map(title => `${title} ${yearGuess}`));
+    }
+    
+    for (const term of searchTerms.slice(0, 6)) { // Try up to 6 search terms
+      try {
+        const searchRes = await request.server.inject({
+          method: 'GET',
+          url: `/anime/justanime/${encodeURIComponent(term)}`,
+        });
         
-        const scored = results.map((item: any) => {
-          // JustAnime title is a nested object: {english, romaji}
-          const titleObj = item?.title;
-          const itemTitle = typeof titleObj === 'string'
-            ? titleObj
-            : String(titleObj?.english || titleObj?.romaji || titleObj?.native || item?.name || '');
-          let score = titleMatchScore(itemTitle, titleCandidates);
+        if (searchRes.statusCode < 400) {
+          const payload = safeJsonParse(searchRes.body || '{}');
+          const results: any[] = Array.isArray(payload?.results)
+            ? payload.results
+            : Array.isArray(payload?.data)
+            ? payload.data
+            : [];
           
-          if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-            const itemYear = Number(String(item?.year || item?.released || '').slice(0, 4));
-            if (itemYear === yearGuess) score += 50;
-            else if (Math.abs(itemYear - yearGuess) <= 1) score += 20;
-          }
-          
-          return { item, score };
-        }).sort((a: any, b: any) => b.score - a.score);
-
-        const pick = scored[0]?.item;
-        if (pick) {
-          const providerId = String(pick.id || pick.anilistId || '');
-          const anilistId = pick.anilistId ? String(pick.anilistId) : null;
-          
-          if (providerId) {
-            // Map episodes to JustAnime format: providerId$episode$number
-            if (Array.isArray(baseInfo.seasons)) {
-              baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIdx: number) => {
-                if (!Array.isArray(season.episodes)) return season;
-                return {
-                  ...season,
-                  episodes: season.episodes.map((ep: any) => ({
-                    ...ep,
-                    id: `${providerId}$episode$${ep.episode || ep.number}`,
-                  })),
-                };
-              });
-            } else if (Array.isArray(baseInfo.episodes)) {
-               baseInfo.episodes = baseInfo.episodes.map((ep: any) => ({
-                  ...ep,
-                  id: `${providerId}$episode$${ep.episode || ep.number}`,
-               }));
+          const scored = results.map((item: any) => {
+            // JustAnime title is a nested object: {english, romaji}
+            const titleObj = item?.title;
+            const itemTitle = typeof titleObj === 'string'
+              ? titleObj
+              : String(titleObj?.english || titleObj?.romaji || titleObj?.native || item?.name || '');
+            let score = titleMatchScore(itemTitle, titleCandidates);
+            
+            if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+              const itemYear = Number(String(item?.year || item?.released || '').slice(0, 4));
+              if (itemYear === yearGuess) score += 50;
+              else if (Math.abs(itemYear - yearGuess) <= 1) score += 20;
             }
-            if (anilistId) baseInfo.anilistId = anilistId;
-            baseInfo.id = providerId;
+            
+            return { item, score };
+          }).sort((a: any, b: any) => b.score - a.score);
+
+          const candidate = scored[0]?.item;
+          if (candidate && (!pick || (scored[0]?.score || 0) > (pick.score || 0))) {
+            pick = { ...candidate, score: scored[0]?.score || 0 };
           }
         }
+      } catch {
+        continue; // Try next term
       }
-    } catch {
-      // ignore mapping errors
+    }
+    
+    if (pick) {
+      const providerId = String(pick.id || pick.anilistId || '');
+      const anilistId = pick.anilistId ? String(pick.anilistId) : null;
+      
+      if (providerId) {
+        // Map episodes to JustAnime format: providerId$episode$number
+        if (Array.isArray(baseInfo.seasons)) {
+          baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIdx: number) => {
+            if (!Array.isArray(season.episodes)) return season;
+            return {
+              ...season,
+              episodes: season.episodes.map((ep: any) => ({
+                ...ep,
+                id: `${providerId}$episode$${ep.episode || ep.number}`,
+              })),
+            };
+          });
+        } else if (Array.isArray(baseInfo.episodes)) {
+           baseInfo.episodes = baseInfo.episodes.map((ep: any) => ({
+              ...ep,
+              id: `${providerId}$episode$${ep.episode || ep.number}`,
+           }));
+        }
+        if (anilistId) baseInfo.anilistId = anilistId;
+        baseInfo.id = providerId;
+      }
     }
 
+    convertTmdbImagesToUrls(baseInfo);
     return baseInfo;
   };
 
-  const buildAnimesaltTmdbInfo = async (id: string, type: string) => {
+  const buildAnimesaltTmdbInfo = async (request: any, id: string, type: string) => {
     const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
     const fetchBase = async () => {
       const res = await baseTmdb.fetchMediaInfo(id, type);
@@ -922,7 +968,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     // Search AnimeSalt with primary titles
     const term = titleCandidates[0];
     try {
-      const searchRes = await fastify.inject({
+      const searchRes = await request.server.inject({
         method: 'GET',
         url: `/anime/animesalt/${encodeURIComponent(term)}`,
       });
@@ -972,10 +1018,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       // ignore mapping errors
     }
 
+    convertTmdbImagesToUrls(baseInfo);
     return baseInfo;
   };
 
-  const buildFlixhqTmdbInfo = async (id: string, type: string) => {
+  const buildFlixhqTmdbInfo = async (request: any, id: string, type: string) => {
     const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
 
     const fetchBase = async () => {
@@ -1004,7 +1051,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const queries = titleCandidates.slice(0, 2);
       for (const query of queries) {
         try {
-          const anilistRes = await fastify.inject({
+          const anilistRes = await request.server.inject({
             method: 'GET',
             url: `/meta/anilist/${encodeURIComponent(query)}`,
           });
@@ -1045,7 +1092,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     // Parallelize all searches instead of sequential
     const searchPromises = searchTerms.map(async (term) => {
       try {
-        const searchRes = await fastify.inject({
+        const searchRes = await request.server.inject({
           method: 'GET',
           url: `/movies/flixhq/${encodeURIComponent(term)}`,
         });
@@ -1102,7 +1149,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const pick = topMatch.item;
       if (pick?.id) {
         try {
-          const infoRes = await fastify.inject({
+          const infoRes = await request.server.inject({
             method: 'GET',
             url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
           });
@@ -1154,61 +1201,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     }
 
-    const pick = scored[0]?.item;
+    let pick = scored[0]?.item;
     if (!pick?.id) return baseInfo;
 
-    // For movies, validate the pick by checking release year
-    if (expectedType === 'movie') {
-      try {
-        const infoRes = await fastify.inject({
-          method: 'GET',
-          url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
-        });
-        if (infoRes.statusCode < 400) {
-          const payload = safeJsonParse(infoRes.body || '{}');
-          const movieInfo = payload?.data || payload;
-          const releaseDateStr = String(movieInfo?.releaseDate || '');
-          const flixReleaseYear = releaseDateStr ? Number(releaseDateStr.slice(0, 4)) : 0;
-          const tmdbReleaseYear = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-          
-          // If years match or are close, accept it
-          const yearDiff = Math.abs(flixReleaseYear - tmdbReleaseYear);
-          if (flixReleaseYear && tmdbReleaseYear && yearDiff <= 1) {
-            baseInfo.provider = 'flixhq';
-            baseInfo.providerSourceId = pick.id;
-            return baseInfo;
-          } else if (!tmdbReleaseYear || yearDiff > 1) {
-            // If year doesn't match, try the next best match
-            const nextPick = scored[1]?.item;
-            if (nextPick?.id) {
-              const nextInfoRes = await fastify.inject({
-                method: 'GET',
-                url: `/movies/flixhq/info?id=${encodeURIComponent(String(nextPick.id))}`,
-              });
-              if (nextInfoRes.statusCode < 400) {
-                const nextPayload = safeJsonParse(nextInfoRes.body || '{}');
-                const nextMovieInfo = nextPayload?.data || nextPayload;
-                const nextReleaseDateStr = String(nextMovieInfo?.releaseDate || '');
-                const nextFlixReleaseYear = nextReleaseDateStr ? Number(nextReleaseDateStr.slice(0, 4)) : 0;
-                const nextYearDiff = Math.abs(nextFlixReleaseYear - tmdbReleaseYear);
-                if (nextFlixReleaseYear && (!tmdbReleaseYear || nextYearDiff <= 1)) {
-                  baseInfo.provider = 'flixhq';
-                  baseInfo.providerSourceId = nextPick.id;
-                  return baseInfo;
-                }
-              }
-            }
-          }
-        }
-      } catch {
-        // Fall through
-      }
-      // If validation failed, return without mapping
-      return baseInfo;
-    }
-
     try {
-      const infoRes = await fastify.inject({
+      const infoRes = await request.server.inject({
         method: 'GET',
         url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
       });
@@ -1253,12 +1250,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       baseInfo.provider = 'flixhq';
       baseInfo.providerSourceId = pick.id;
+      convertTmdbImagesToUrls(baseInfo);
       return baseInfo;
     } catch {
       return baseInfo;
     }
   };
 
+  const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
       intro:
@@ -1402,7 +1401,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     if (providerLower === 'dramacool') {
       try {
-        const res = await buildDramacoolTmdbInfo(id, type);
+        const res = await buildDramacoolTmdbInfo(request, id, type);
         return reply.status(200).send(res);
       } catch (err: any) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1412,7 +1411,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     if (providerLower === 'justanime') {
       try {
-        const res = await buildJustanimeTmdbInfo(id, type);
+        const res = await buildJustanimeTmdbInfo(request, id, type);
         return reply.status(200).send(res);
       } catch (err: any) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1422,7 +1421,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     if (providerLower === 'animesalt') {
       try {
-        const res = await buildAnimesaltTmdbInfo(id, type);
+        const res = await buildAnimesaltTmdbInfo(request, id, type);
         return reply.status(200).send(res);
       } catch (err: any) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1432,7 +1431,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     if (providerLower === 'flixhq') {
       try {
-        const res = await buildFlixhqTmdbInfo(id, type);
+        const res = await buildFlixhqTmdbInfo(request, id, type);
         return reply.status(200).send(res);
       } catch (err: any) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1463,6 +1462,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           delete (info as any).similar;
 
           await attachBestTrailer(info, id, type);
+          convertTmdbImagesToUrls(info);
         }
         return info;
       };
@@ -1531,7 +1531,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     if (providerLower === 'dramacool') {
       try {
-        const res = await buildDramacoolTmdbInfo(id, type);
+        const res = await buildDramacoolTmdbInfo(request, id, type);
         return reply.status(200).send(res);
       } catch (err: any) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1541,7 +1541,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     if (providerLower === 'flixhq') {
       try {
-        const res = await buildFlixhqTmdbInfo(id, type);
+        const res = await buildFlixhqTmdbInfo(request, id, type);
         return reply.status(200).send(res);
       } catch (err: any) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1572,6 +1572,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           delete (info as any).similar;
 
           await attachBestTrailer(info, id, type);
+          convertTmdbImagesToUrls(info);
         }
         return info;
       };
@@ -1715,8 +1716,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       if ((providerLower === 'justanime' || providerLower === 'animesalt') && (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))) {
          try {
            const info: any = providerLower === 'justanime' 
-             ? await buildJustanimeTmdbInfo(id, type || 'tv')
-             : await buildAnimesaltTmdbInfo(id, type || 'tv');
+             ? await buildJustanimeTmdbInfo(request, id, type || 'tv')
+             : await buildAnimesaltTmdbInfo(request, id, type || 'tv');
            
            const requestedSeason = Number((request.query as { season?: number }).season || 1);
            const requestedEpisode = Number((request.query as { episode?: number }).episode || 1);
@@ -1758,7 +1759,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       try {
         let dramacoolEpisodeId = episodeId;
         if (!dramacoolEpisodeId && id && type) {
-          const info: any = await buildDramacoolTmdbInfo(id, type);
+          const info: any = await buildDramacoolTmdbInfo(request, id, type);
           const requestedSeason = Number((request.query as { season?: number }).season || 1);
           const requestedEpisode = Number((request.query as { episode?: number }).episode || 1);
           const seasonMatch = Array.isArray(info?.seasons)
@@ -1779,7 +1780,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const queryParts = [`episodeId=${encodeURIComponent(dramacoolEpisodeId)}`];
         if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
         if (directOnly) queryParts.push('directOnly=true');
-        const delegated = await fastify.inject({
+        const delegated = await request.server.inject({
           method: 'GET',
           url: `/movies/dramacool/watch?${queryParts.join('&')}`,
         });
@@ -1815,7 +1816,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         // Try direct ID first (sometimes TMDB ID works directly)
         if (/^\d+$/.test(movieId)) {
           try {
-            const directRes = await fastify.inject({
+            const directRes = await request.server.inject({
               method: 'GET',
               url: `/movies/flixhq/watch?episodeId=${encodeURIComponent(movieId)}`,
             });
@@ -1855,14 +1856,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         // Search FlixHQ with title
         if (titleForSearch) {
           try {
-            const searchRes = await fastify.inject({
+            const searchRes = await request.server.inject({
               method: 'GET',
               url: `/movies/flixhq/${encodeURIComponent(titleForSearch)}`,
             });
             if (searchRes.statusCode < 400) {
               const payload = safeJsonParse(searchRes.body || '{}');
               const results = Array.isArray(payload?.data) ? payload.data : [];
-              const movieMatch = results.find((r: any) => normalizeText(String(r?.type || '')) === 'movie');
+              const movieMatch = results.find((item: any) => normalizeText(String(item?.type || '')) === 'movie');
               
               if (movieMatch?.id) {
                 // Found movie! Directly call FlixHQ watch
@@ -1870,7 +1871,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
                 if (directOnly) queryParts.push('directOnly=true');
                 
-                const watchRes = await fastify.inject({
+                const watchRes = await request.server.inject({
                   method: 'GET',
                   url: `/movies/flixhq/watch?${queryParts.join('&')}`,
                 });
@@ -1900,7 +1901,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     if (!episodeId && type === 'tv' && id && (!providerLower || providerLower === 'flixhq')) {
       try {
-        const info: any = await buildFlixhqTmdbInfo(id, type);
+        const info: any = await buildFlixhqTmdbInfo(request, id, type);
         const requestedSeason = Number((request.query as { season?: number }).season || 1);
         const requestedEpisode = Number((request.query as { episode?: number }).episode || 1);
         const seasonMatch = Array.isArray(info?.seasons)
@@ -1936,7 +1937,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
         if (isAnimeLikeMovie(mediaInfo) && titleCandidates.length) {
-          const animeFallback = await tryAnimeProvidersForMovie({
+          const animeFallback = await tryAnimeProvidersForMovie(request, {
             titleCandidates,
             server,
           });
@@ -1954,7 +1955,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     }
 
     // Movie/TV providers
-    let movieProvider: any = configureProvider(new MOVIES.FlixHQ());
+    let movieProvider = configureProvider(new MOVIES.FlixHQ());
     let tmdb = configureMeta(new META.TMDB(tmdbApi, movieProvider));
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
@@ -1999,7 +2000,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         // FlixHQ often requires provider-specific numeric IDs (not TMDB ids) for watch extraction.
         if (!sourceId && providerLower === 'flixhq') {
           try {
-            const flixInfo: any = await buildFlixhqTmdbInfo(id, type);
+            const flixInfo: any = await buildFlixhqTmdbInfo(request, id, type);
             const infoEpisodeId = String(flixInfo?.episodeId || '').trim();
             const providerSourceId = String(flixInfo?.providerSourceId || '').trim();
             sourceId = infoEpisodeId || providerSourceId || sourceId;
@@ -2022,7 +2023,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         try {
           const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
           if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
-          const delegated = await fastify.inject({
+          const delegated = await request.server.inject({
             method: 'GET',
             url: `/movies/flixhq/watch?${queryParts.join('&')}`,
           });
@@ -2068,7 +2069,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         try {
           const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
           if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
-          const delegated = await fastify.inject({
+          const delegated = await request.server.inject({
             method: 'GET',
             url: `/movies/flixhq/watch?${queryParts.join('&')}`,
           });
@@ -2106,7 +2107,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
           const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
           if (titleCandidates.length) {
-            const animeFallback = await tryAnimeProvidersForMovie({
+            const animeFallback = await tryAnimeProvidersForMovie(request, {
               titleCandidates,
               server,
             });
@@ -2126,7 +2127,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       if (type === 'movie' && sourceId) {
         try {
           const fallback = await getMovieEmbedFallbackSource(
-            movieProvider,
+            movieProvider as any,
             sourceId,
             mediaId,
             server,

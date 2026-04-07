@@ -4,35 +4,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const extensions_1 = require("@consumet/extensions");
-const axios_1 = __importDefault(require("axios"));
 const provider_1 = require("../../utils/provider");
 const cache_1 = __importDefault(require("../../utils/cache"));
 const main_1 = require("../../main");
 const routes = async (fastify, options) => {
     const mangadex = (0, provider_1.configureProvider)(new extensions_1.MANGA.MangaDex());
     const fetchChapterPagesWithFallback = async (chapterId) => {
-        try {
-            return await mangadex.fetchChapterPages(chapterId);
-        }
-        catch {
-            const { data } = await axios_1.default.get(`https://api.mangadex.org/at-home/server/${encodeURIComponent(chapterId)}`, {
-                timeout: 15000,
-                headers: {
-                    Accept: 'application/json',
-                    'User-Agent': 'Mozilla/5.0',
-                },
-            });
-            const baseUrl = String(data?.baseUrl || '');
-            const hash = String(data?.chapter?.hash || '');
-            const files = Array.isArray(data?.chapter?.data) ? data.chapter.data : [];
-            if (!baseUrl || !hash || !files.length) {
-                throw new Error('No chapter pages found');
-            }
-            return files.map((file, idx) => ({
-                img: `${baseUrl}/data/${hash}/${file}`,
-                page: String(idx + 1),
-            }));
-        }
+        return await mangadex.fetchChapterPages(chapterId);
     };
     fastify.get('/', (_, rp) => {
         rp.status(200).send({
@@ -82,6 +60,7 @@ const routes = async (fastify, options) => {
             reply.status(200).send(res);
         }
         catch (err) {
+            console.log('Error reading chapter:', chapterId, err);
             reply.status(500).send({
                 message: 'Something went wrong. Please try again later.',
             });

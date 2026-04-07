@@ -24,10 +24,10 @@ class SatoruProvider extends AnimeParser {
     classPath = 'ANIME.Satoru';
     private readonly requestTimeoutMs =
       Number(process.env.SATORU_FETCH_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 10000 : 8000);
+      (process.env.NODE_ENV === 'production' ? 5000 : 4000);
     private readonly proxyRequestTimeoutMs =
       Number(process.env.SATORU_PROXY_TIMEOUT_MS || '') ||
-      (process.env.NODE_ENV === 'production' ? 4000 : 4000);
+      (process.env.NODE_ENV === 'production' ? 2000 : 2000);
     private readonly maxProxyAttempts =
       Number(process.env.SATORU_PROXY_MAX_ATTEMPTS || '') ||
       (process.env.NODE_ENV === 'production' ? 2 : 2);

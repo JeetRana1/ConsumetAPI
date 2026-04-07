@@ -424,352 +424,398 @@ const buildDramaSlugVariants = (dramaSlug) => {
         push(tokens[0]);
     return [...set];
 };
-const routes = async (fastify, options) => {
-    const tryAnimeProvidersForMovie = async ({ titleCandidates, server, }) => {
-        if (!titleCandidates.length)
+const convertTmdbImagesToUrls = (data) => {
+    if (!data || typeof data !== 'object')
+        return data;
+    const convertPath = (path) => {
+        if (!path || typeof path !== 'string')
             return null;
-        const providersInOrder = [
-            'satoru',
-        ];
-        for (const providerKey of providersInOrder) {
-            const baseRoute = ANIME_PROVIDER_ROUTES[providerKey];
-            if (!baseRoute)
-                continue;
-            // Limit to top 2 titles for speed
-            const queries = titleCandidates.slice(0, 2);
-            // Parallelize title searches
-            const searchPromises = queries.map(async (query) => {
-                try {
-                    const searchRes = await fastify.inject({
-                        method: 'GET',
-                        url: `${baseRoute}/${encodeURIComponent(query)}`,
-                    });
-                    if (searchRes.statusCode >= 400)
-                        return null;
-                    const searchPayload = safeJsonParse(searchRes.body);
-                    const searchRows = Array.isArray(searchPayload?.results) ? searchPayload.results : [];
-                    if (!searchRows.length)
-                        return null;
-                    return searchRows
-                        .map((item) => ({
-                        item,
-                        score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
-                    }))
-                        .sort((a, b) => b.score - a.score)[0]?.item || null;
-                }
-                catch {
-                    return null;
-                }
-            });
-            const searchResults = await Promise.all(searchPromises);
-            // Try to process each found item in parallel
-            const pickPromises = searchResults
-                .filter((picked) => picked?.id)
-                .map(async (picked) => {
-                try {
-                    const infoRes = await fastify.inject({
-                        method: 'GET',
-                        url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
-                    });
-                    if (infoRes.statusCode >= 400)
-                        return null;
-                    const infoPayload = safeJsonParse(infoRes.body);
-                    const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
-                    if (!episodes.length)
-                        return null;
-                    const episodeIds = Array.from(new Set([
-                        episodes[0]?.id,
-                        episodes[episodes.length - 1]?.id,
-                        episodes.find((ep) => Number(ep?.number || 0) === 1)?.id,
-                    ]
-                        .filter((value) => typeof value === 'string' && value.trim())
-                        .map((value) => String(value).trim())));
-                    if (!episodeIds.length)
-                        return null;
-                    // Try first episode only for speed
-                    for (const candidateEpisodeId of episodeIds.slice(0, 1)) {
-                        const queryParts = [];
-                        if (server)
-                            queryParts.push(`server=${encodeURIComponent(server)}`);
-                        const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
-                        const watchRes = await fastify.inject({
-                            method: 'GET',
-                            url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
-                        });
-                        if (watchRes.statusCode >= 400)
-                            continue;
-                        const watchPayload = safeJsonParse(watchRes.body);
-                        if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
-                            return watchPayload;
-                        }
-                    }
-                    return null;
-                }
-                catch {
-                    return null;
-                }
-            });
-            const results = await Promise.all(pickPromises);
-            const firstValid = results.find((r) => r);
-            if (firstValid)
-                return firstValid;
-        }
+        if (path.startsWith('http'))
+            return path;
+        return `https://image.tmdb.org/t/p/w500${path}`;
+    };
+    if (data.poster_path)
+        data.image = convertPath(data.poster_path);
+    if (data.backdrop_path)
+        data.cover = convertPath(data.backdrop_path);
+    if (data.profile_path)
+        data.image = convertPath(data.profile_path);
+    if (Array.isArray(data.seasons)) {
+        data.seasons = data.seasons.map((season) => {
+            if (season.poster_path)
+                season.image = convertPath(season.poster_path);
+            return season;
+        });
+    }
+    if (Array.isArray(data.episodes)) {
+        data.episodes = data.episodes.map((episode) => {
+            if (episode.still_path)
+                episode.image = convertPath(episode.still_path);
+            return episode;
+        });
+    }
+    return data;
+};
+const tryAnimeProvidersForMovie = async (request, options) => {
+    const { titleCandidates, server } = options;
+    if (!titleCandidates.length)
         return null;
-    };
-    const fetchDramacoolWpSearch = async (query) => {
-        const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-        const endpoint = `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/wp-json/wp/v2/search?search=${encodeURIComponent(query)}&per_page=20`;
-        const response = await dramacool.client.get(endpoint);
-        const results = Array.isArray(response?.data)
-            ? response.data.filter((item) => item?.subtype === 'drama' && typeof item?.url === 'string')
-            : [];
-        return results;
-    };
-    const getDramacoolPostSitemaps = async () => {
-        if (dramacoolSitemapCache &&
-            Date.now() - dramacoolSitemapCache.fetchedAt < DRAMACOOL_SITEMAP_CACHE_TTL_MS) {
-            return dramacoolSitemapCache.postSitemaps;
-        }
-        const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-        const sitemapIndexUrl = `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/sitemap_index.xml`;
-        const xml = String((await dramacool.client.get(sitemapIndexUrl)).data || '');
-        const postSitemaps = parseLocsFromXml(xml).filter((url) => /\/post-sitemap\d*\.xml$/i.test(url));
-        dramacoolSitemapCache = { fetchedAt: Date.now(), postSitemaps };
-        return postSitemaps;
-    };
-    const fetchDramacoolEpisodesBySlug = async (dramaSlug) => {
-        const cached = dramacoolEpisodesCache.get(dramaSlug);
-        if (cached && Date.now() - cached.fetchedAt < DRAMACOOL_SITEMAP_CACHE_TTL_MS) {
-            return cached.episodes;
-        }
-        const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-        const postSitemaps = await getDramacoolPostSitemaps();
-        const variants = buildDramaSlugVariants(dramaSlug);
-        const found = new Set();
-        for (const sitemapUrl of postSitemaps) {
+    const providersInOrder = [
+        'satoru',
+    ];
+    for (const providerKey of providersInOrder) {
+        const baseRoute = ANIME_PROVIDER_ROUTES[providerKey];
+        if (!baseRoute)
+            continue;
+        // Limit to top 2 titles for speed
+        const queries = titleCandidates.slice(0, 2);
+        // Parallelize title searches
+        const searchPromises = queries.map(async (query) => {
             try {
-                const xml = String((await dramacool.client.get(sitemapUrl)).data || '');
-                const locs = parseLocsFromXml(xml);
-                for (const loc of locs) {
-                    const lower = loc.toLowerCase();
-                    const locSlug = extractSlug(lower);
-                    const isEpisode = /(?:^|-)episode-\d+/i.test(locSlug);
-                    const matched = variants.some((variant) => locSlug.startsWith(`${variant}-episode-`));
-                    const looseMatched = variants.some((variant) => locSlug.includes(`${variant}-`));
-                    if (lower.endsWith('.html') && isEpisode && (matched || looseMatched))
-                        found.add(loc);
-                }
+                const searchRes = await request.server.inject({
+                    method: 'GET',
+                    url: `${baseRoute}/${encodeURIComponent(query)}`,
+                });
+                if (searchRes.statusCode >= 400)
+                    return null;
+                const searchPayload = safeJsonParse(searchRes.body);
+                const searchRows = Array.isArray(searchPayload?.results) ? searchPayload.results : [];
+                if (!searchRows.length)
+                    return null;
+                return searchRows
+                    .map((item) => ({
+                    item,
+                    score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
+                }))
+                    .sort((a, b) => b.score - a.score)[0]?.item || null;
             }
             catch {
-                continue;
-            }
-        }
-        const episodes = [...found]
-            .map((url) => ({
-            id: url,
-            url,
-            episode: parseEpisodeNumber(url),
-        }))
-            .sort((a, b) => (a.episode || 0) - (b.episode || 0));
-        dramacoolEpisodesCache.set(dramaSlug, { fetchedAt: Date.now(), episodes });
-        return episodes;
-    };
-    const fetchDramacoolEpisodesFromDramaPage = async (dramaUrlOrSlug, dramaSlug) => {
-        const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-        const dramaUrl = /^https?:\/\//i.test(dramaUrlOrSlug)
-            ? dramaUrlOrSlug
-            : `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/${dramaUrlOrSlug.replace(/^\//, '')}`;
-        const html = String((await dramacool.client.get(dramaUrl)).data || '');
-        const $ = (0, cheerio_1.load)(html);
-        const foundStrict = new Set();
-        const foundLoose = new Set();
-        const variants = buildDramaSlugVariants(dramaSlug);
-        const selectors = [
-            '.list-episode a[href*="episode-"]',
-            '.all-episode a[href*="episode-"]',
-            '.episodes a[href*="episode-"]',
-            '[id*="episode"] a[href*="episode-"]',
-            '.entry-content a[href*="episode-"]',
-            'a[href*="episode-"]',
-        ];
-        for (const selector of selectors) {
-            $(selector).each((_, el) => {
-                const href = String($(el).attr('href') || '').trim();
-                if (!href)
-                    return;
-                const abs = toAbsoluteUrl(DRAMACOOL_WP_BASE, href);
-                if (!/episode-\d+\.html$/i.test(abs))
-                    return;
-                const slug = extractSlug(abs).toLowerCase();
-                const strict = variants.some((variant) => slug.startsWith(`${variant}-episode-`));
-                const loose = variants.some((variant) => slug.includes(`${variant}-`));
-                if (strict)
-                    foundStrict.add(abs);
-                else if (loose)
-                    foundLoose.add(abs);
-            });
-            if (foundStrict.size)
-                break;
-        }
-        const pool = foundStrict.size ? foundStrict : foundLoose;
-        return [...pool]
-            .map((url) => ({
-            id: url,
-            url,
-            episode: parseEpisodeNumber(url),
-        }))
-            .sort((a, b) => (a.episode || 0) - (b.episode || 0));
-    };
-    const buildDramacoolTmdbInfo = async (id, type) => {
-        const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
-        const fetchBase = async () => {
-            const res = await baseTmdb.fetchMediaInfo(id, type);
-            if (res && typeof res === 'object') {
-                // Optimize for speed by removing heavy fields not used in current UI
-                delete res.cast;
-                delete res.characters;
-                delete res.recommendations;
-                delete res.similar;
-            }
-            return res;
-        };
-        const baseInfo = main_1.redis
-            ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}`, fetchBase, main_1.REDIS_TTL)
-            : await fetchBase();
-        await attachBestTrailer(baseInfo, id, type);
-        const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-        if (!titleCandidates.length)
-            return baseInfo;
-        const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-        // Limit search terms to top 2 titles + year variants for speed
-        const mainTerms = titleCandidates.slice(0, 2);
-        const searchTerms = Array.from(new Set([
-            ...mainTerms,
-            ...mainTerms.flatMap((title) => Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []),
-        ])).slice(0, 4); // Limit to top 4 for speed
-        // Parallelize all searches
-        const searchPromises = searchTerms.map(async (term) => {
-            try {
-                return await fetchDramacoolWpSearch(term);
-            }
-            catch {
-                return [];
+                return null;
             }
         });
         const searchResults = await Promise.all(searchPromises);
-        const combinedResults = searchResults.flat();
-        const scored = combinedResults.map((item) => {
-            const normItem = normalizeText(item.title);
-            let score = 0;
-            for (const candidate of titleCandidates) {
-                const normCandidate = normalizeText(candidate);
-                if (normItem === normCandidate)
-                    score += 120;
-                else if (normItem.includes(normCandidate) || normCandidate.includes(normItem))
-                    score += 80;
-            }
-            if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-                if (normItem.includes(String(yearGuess)))
-                    score += 25;
-                if (normItem.includes(String(yearGuess - 1)) || normItem.includes(String(yearGuess + 1)))
-                    score += 8;
-            }
-            return { item, score };
-        });
-        const pick = scored.sort((a, b) => b.score - a.score)[0]?.item || combinedResults[0];
-        if (!pick)
-            return baseInfo;
-        const dramaSlug = extractSlug(pick.url);
-        let dcEpisodes = await fetchDramacoolEpisodesFromDramaPage(pick.url, dramaSlug);
-        if (!dcEpisodes.length) {
-            dcEpisodes = await fetchDramacoolEpisodesBySlug(dramaSlug);
-        }
-        if (!dcEpisodes.length) {
+        // Try to process each found item in parallel
+        const pickPromises = searchResults
+            .filter((picked) => picked?.id)
+            .map(async (picked) => {
             try {
-                const delegated = await fastify.inject({
+                const infoRes = await request.server.inject({
                     method: 'GET',
-                    url: `/movies/dramacool/info?id=${encodeURIComponent(pick.url)}`,
+                    url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
                 });
-                const payload = JSON.parse(delegated.body || '{}');
-                const fallbackEpisodes = Array.isArray(payload?.episodes)
-                    ? payload.episodes
-                        .map((ep) => ({
-                        id: ep?.id || ep?.url,
-                        url: ep?.url || ep?.id,
-                        episode: parseEpisodeNumber(String(ep?.id || ep?.url || ep?.title || '')),
-                    }))
-                        .filter((ep) => typeof ep.id === 'string')
-                    : [];
-                if (fallbackEpisodes.length) {
-                    dcEpisodes = fallbackEpisodes;
+                if (infoRes.statusCode >= 400)
+                    return null;
+                const infoPayload = safeJsonParse(infoRes.body);
+                const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
+                if (!episodes.length)
+                    return null;
+                const episodeIds = Array.from(new Set([
+                    episodes[0]?.id,
+                    episodes[episodes.length - 1]?.id,
+                    episodes.find((ep) => Number(ep?.number || 0) === 1)?.id,
+                ]
+                    .filter((value) => typeof value === 'string' && value.trim())
+                    .map((value) => String(value).trim())));
+                if (!episodeIds.length)
+                    return null;
+                // Try first episode only for speed
+                for (const candidateEpisodeId of episodeIds.slice(0, 1)) {
+                    const queryParts = [];
+                    if (server)
+                        queryParts.push(`server=${encodeURIComponent(server)}`);
+                    const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
+                    const watchRes = await request.server.inject({
+                        method: 'GET',
+                        url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
+                    });
+                    if (watchRes.statusCode >= 400)
+                        continue;
+                    const watchPayload = safeJsonParse(watchRes.body);
+                    if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
+                        return watchPayload;
+                    }
                 }
+                return null;
             }
             catch {
-                // ignore fallback and continue with whatever we already have
+                return null;
             }
-        }
-        const byEpisode = new Map();
-        for (const ep of dcEpisodes) {
-            if (typeof ep.episode === 'number')
-                byEpisode.set(ep.episode, ep);
-        }
-        if (Array.isArray(baseInfo?.seasons)) {
-            baseInfo.seasons = baseInfo.seasons.map((season, seasonIndex) => {
-                if (!Array.isArray(season?.episodes))
-                    return season;
-                const isPrimarySeason = (season?.season || seasonIndex + 1) === 1;
-                return {
-                    ...season,
-                    episodes: season.episodes.map((episode) => {
-                        if (!isPrimarySeason)
-                            return episode;
-                        const epNum = Number(episode?.episode || episode?.number);
-                        const mapped = byEpisode.get(epNum);
-                        if (!mapped)
-                            return episode;
-                        return {
-                            ...episode,
-                            id: mapped.id,
-                            url: mapped.url,
-                        };
-                    }),
-                };
-            });
-        }
-        baseInfo.id = dramaSlug;
-        baseInfo.url = pick.url;
-        return baseInfo;
-    };
-    const buildJustanimeTmdbInfo = async (id, type) => {
-        const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
-        const fetchBase = async () => {
-            const res = await baseTmdb.fetchMediaInfo(id, type);
-            if (res && typeof res === 'object') {
-                delete res.cast;
-                delete res.characters;
-                delete res.recommendations;
-                delete res.similar;
-            }
-            return res;
-        };
-        const baseInfo = main_1.redis
-            ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}`, fetchBase, main_1.REDIS_TTL)
-            : await fetchBase();
-        await attachBestTrailer(baseInfo, id, type);
-        const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-        if (!titleCandidates.length)
-            return baseInfo;
-        const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-        // Search JustAnime with primary titles
-        const term = titleCandidates[0];
+        });
+        const results = await Promise.all(pickPromises);
+        const firstValid = results.find((r) => r);
+        if (firstValid)
+            return firstValid;
+    }
+    return null;
+};
+const fetchDramacoolWpSearch = async (query) => {
+    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
+    const endpoint = `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/wp-json/wp/v2/search?search=${encodeURIComponent(query)}&per_page=20`;
+    const response = await dramacool.client.get(endpoint);
+    const results = Array.isArray(response?.data)
+        ? response.data.filter((item) => item?.subtype === 'drama' && typeof item?.url === 'string')
+        : [];
+    return results;
+};
+const getDramacoolPostSitemaps = async () => {
+    if (dramacoolSitemapCache &&
+        Date.now() - dramacoolSitemapCache.fetchedAt < DRAMACOOL_SITEMAP_CACHE_TTL_MS) {
+        return dramacoolSitemapCache.postSitemaps;
+    }
+    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
+    const sitemapIndexUrl = `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/sitemap_index.xml`;
+    const xml = String((await dramacool.client.get(sitemapIndexUrl)).data || '');
+    const postSitemaps = parseLocsFromXml(xml).filter((url) => /\/post-sitemap\d*\.xml$/i.test(url));
+    dramacoolSitemapCache = { fetchedAt: Date.now(), postSitemaps };
+    return postSitemaps;
+};
+const fetchDramacoolEpisodesBySlug = async (dramaSlug) => {
+    const cached = dramacoolEpisodesCache.get(dramaSlug);
+    if (cached && Date.now() - cached.fetchedAt < DRAMACOOL_SITEMAP_CACHE_TTL_MS) {
+        return cached.episodes;
+    }
+    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
+    const postSitemaps = await getDramacoolPostSitemaps();
+    const variants = buildDramaSlugVariants(dramaSlug);
+    const found = new Set();
+    for (const sitemapUrl of postSitemaps) {
         try {
-            const searchRes = await fastify.inject({
+            const xml = String((await dramacool.client.get(sitemapUrl)).data || '');
+            const locs = parseLocsFromXml(xml);
+            for (const loc of locs) {
+                const lower = loc.toLowerCase();
+                const locSlug = extractSlug(lower);
+                const isEpisode = /(?:^|-)episode-\d+/i.test(locSlug);
+                const matched = variants.some((variant) => locSlug.startsWith(`${variant}-episode-`));
+                const looseMatched = variants.some((variant) => locSlug.includes(`${variant}-`));
+                if (lower.endsWith('.html') && isEpisode && (matched || looseMatched))
+                    found.add(loc);
+            }
+        }
+        catch {
+            continue;
+        }
+    }
+    const episodes = [...found]
+        .map((url) => ({
+        id: url,
+        url,
+        episode: parseEpisodeNumber(url),
+    }))
+        .sort((a, b) => (a.episode || 0) - (b.episode || 0));
+    dramacoolEpisodesCache.set(dramaSlug, { fetchedAt: Date.now(), episodes });
+    return episodes;
+};
+const fetchDramacoolEpisodesFromDramaPage = async (dramaUrlOrSlug, dramaSlug) => {
+    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
+    const dramaUrl = /^https?:\/\//i.test(dramaUrlOrSlug)
+        ? dramaUrlOrSlug
+        : `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/${dramaUrlOrSlug.replace(/^\//, '')}`;
+    const html = String((await dramacool.client.get(dramaUrl)).data || '');
+    const $ = (0, cheerio_1.load)(html);
+    const foundStrict = new Set();
+    const foundLoose = new Set();
+    const variants = buildDramaSlugVariants(dramaSlug);
+    const selectors = [
+        '.list-episode a[href*="episode-"]',
+        '.all-episode a[href*="episode-"]',
+        '.episodes a[href*="episode-"]',
+        '[id*="episode"] a[href*="episode-"]',
+        '.entry-content a[href*="episode-"]',
+        'a[href*="episode-"]',
+    ];
+    for (const selector of selectors) {
+        $(selector).each((_, el) => {
+            const href = String($(el).attr('href') || '').trim();
+            if (!href)
+                return;
+            const abs = toAbsoluteUrl(DRAMACOOL_WP_BASE, href);
+            if (!/episode-\d+\.html$/i.test(abs))
+                return;
+            const slug = extractSlug(abs).toLowerCase();
+            const strict = variants.some((variant) => slug.startsWith(`${variant}-episode-`));
+            const loose = variants.some((variant) => slug.includes(`${variant}-`));
+            if (strict)
+                foundStrict.add(abs);
+            else if (loose)
+                foundLoose.add(abs);
+        });
+        if (foundStrict.size)
+            break;
+    }
+    const pool = foundStrict.size ? foundStrict : foundLoose;
+    return [...pool]
+        .map((url) => ({
+        id: url,
+        url,
+        episode: parseEpisodeNumber(url),
+    }))
+        .sort((a, b) => (a.episode || 0) - (b.episode || 0));
+};
+const buildDramacoolTmdbInfo = async (request, id, type) => {
+    const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+    const fetchBase = async () => {
+        const res = await baseTmdb.fetchMediaInfo(id, type);
+        if (res && typeof res === 'object') {
+            // Optimize for speed by removing heavy fields not used in current UI
+            delete res.cast;
+            delete res.characters;
+            delete res.recommendations;
+            delete res.similar;
+        }
+        return res;
+    };
+    const baseInfo = main_1.redis
+        ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}`, fetchBase, main_1.REDIS_TTL)
+        : await fetchBase();
+    await attachBestTrailer(baseInfo, id, type);
+    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+    if (!titleCandidates.length)
+        return baseInfo;
+    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+    // Limit search terms to top 2 titles + year variants for speed
+    const mainTerms = titleCandidates.slice(0, 2);
+    const searchTerms = Array.from(new Set([
+        ...mainTerms,
+        ...mainTerms.flatMap((title) => Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []),
+    ])).slice(0, 4); // Limit to top 4 for speed
+    // Parallelize all searches
+    const searchPromises = searchTerms.map(async (term) => {
+        try {
+            return await fetchDramacoolWpSearch(term);
+        }
+        catch {
+            return [];
+        }
+    });
+    const searchResults = await Promise.all(searchPromises);
+    const combinedResults = searchResults.flat();
+    const scored = combinedResults.map((item) => {
+        const normItem = normalizeText(item.title);
+        let score = 0;
+        for (const candidate of titleCandidates) {
+            const normCandidate = normalizeText(candidate);
+            if (normItem === normCandidate)
+                score += 120;
+            else if (normItem.includes(normCandidate) || normCandidate.includes(normItem))
+                score += 80;
+        }
+        if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+            if (normItem.includes(String(yearGuess)))
+                score += 25;
+            if (normItem.includes(String(yearGuess - 1)) || normItem.includes(String(yearGuess + 1)))
+                score += 8;
+        }
+        return { item, score };
+    });
+    const pick = scored.sort((a, b) => b.score - a.score)[0]?.item || combinedResults[0];
+    if (!pick)
+        return baseInfo;
+    const dramaSlug = extractSlug(pick.url);
+    let dcEpisodes = await fetchDramacoolEpisodesFromDramaPage(pick.url, dramaSlug);
+    if (!dcEpisodes.length) {
+        dcEpisodes = await fetchDramacoolEpisodesBySlug(dramaSlug);
+    }
+    if (!dcEpisodes.length) {
+        try {
+            const delegated = await request.server.inject({
+                method: 'GET',
+                url: `/movies/dramacool/info?id=${encodeURIComponent(pick.url)}`,
+            });
+            const payload = JSON.parse(delegated.body || '{}');
+            const fallbackEpisodes = Array.isArray(payload?.episodes)
+                ? payload.episodes
+                    .map((ep) => ({
+                    id: ep?.id || ep?.url,
+                    url: ep?.url || ep?.id,
+                    episode: parseEpisodeNumber(String(ep?.id || ep?.url || ep?.title || '')),
+                }))
+                    .filter((ep) => typeof ep.id === 'string')
+                : [];
+            if (fallbackEpisodes.length) {
+                dcEpisodes = fallbackEpisodes;
+            }
+        }
+        catch {
+            // ignore fallback and continue with whatever we already have
+        }
+    }
+    const byEpisode = new Map();
+    for (const ep of dcEpisodes) {
+        if (typeof ep.episode === 'number')
+            byEpisode.set(ep.episode, ep);
+    }
+    if (Array.isArray(baseInfo?.seasons)) {
+        baseInfo.seasons = baseInfo.seasons.map((season, seasonIndex) => {
+            if (!Array.isArray(season?.episodes))
+                return season;
+            const isPrimarySeason = (season?.season || seasonIndex + 1) === 1;
+            return {
+                ...season,
+                episodes: season.episodes.map((episode) => {
+                    if (!isPrimarySeason)
+                        return episode;
+                    const epNum = Number(episode?.episode || episode?.number);
+                    const mapped = byEpisode.get(epNum);
+                    if (!mapped)
+                        return episode;
+                    return {
+                        ...episode,
+                        id: mapped.id,
+                        url: mapped.url,
+                    };
+                }),
+            };
+        });
+    }
+    baseInfo.id = dramaSlug;
+    baseInfo.url = pick.url;
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+};
+const buildJustanimeTmdbInfo = async (request, id, type) => {
+    const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+    const fetchBase = async () => {
+        const res = await baseTmdb.fetchMediaInfo(id, type);
+        if (res && typeof res === 'object') {
+            delete res.cast;
+            delete res.characters;
+            delete res.recommendations;
+            delete res.similar;
+        }
+        return res;
+    };
+    const baseInfo = main_1.redis
+        ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}`, fetchBase, main_1.REDIS_TTL)
+        : await fetchBase();
+    await attachBestTrailer(baseInfo, id, type);
+    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+    if (!titleCandidates.length)
+        return baseInfo;
+    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+    // Search JustAnime with multiple title candidates and year variants
+    let pick = null;
+    const searchTerms = [];
+    // Add title candidates
+    searchTerms.push(...titleCandidates.slice(0, 2));
+    // Add simplified versions (remove special characters, colons, etc.)
+    titleCandidates.slice(0, 2).forEach(title => {
+        const simplified = title.replace(/[^\w\s]/g, '').trim();
+        if (simplified !== title)
+            searchTerms.push(simplified);
+    });
+    // Add year variants for better matching
+    if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+        searchTerms.push(...titleCandidates.slice(0, 2).map(title => `${title} ${yearGuess}`));
+    }
+    for (const term of searchTerms.slice(0, 6)) { // Try up to 6 search terms
+        try {
+            const searchRes = await request.server.inject({
                 method: 'GET',
                 url: `/anime/justanime/${encodeURIComponent(term)}`,
             });
             if (searchRes.statusCode < 400) {
                 const payload = safeJsonParse(searchRes.body || '{}');
-                // JustAnime returns {data:[...]} which the anime route re-emits as {data:[...enriched]}
                 const results = Array.isArray(payload?.results)
                     ? payload.results
                     : Array.isArray(payload?.data)
@@ -791,398 +837,356 @@ const routes = async (fastify, options) => {
                     }
                     return { item, score };
                 }).sort((a, b) => b.score - a.score);
-                const pick = scored[0]?.item;
-                if (pick) {
-                    const providerId = String(pick.id || pick.anilistId || '');
-                    const anilistId = pick.anilistId ? String(pick.anilistId) : null;
-                    if (providerId) {
-                        // Map episodes to JustAnime format: providerId$episode$number
-                        if (Array.isArray(baseInfo.seasons)) {
-                            baseInfo.seasons = baseInfo.seasons.map((season, seasonIdx) => {
-                                if (!Array.isArray(season.episodes))
-                                    return season;
-                                return {
-                                    ...season,
-                                    episodes: season.episodes.map((ep) => ({
-                                        ...ep,
-                                        id: `${providerId}$episode$${ep.episode || ep.number}`,
-                                    })),
-                                };
-                            });
-                        }
-                        else if (Array.isArray(baseInfo.episodes)) {
-                            baseInfo.episodes = baseInfo.episodes.map((ep) => ({
-                                ...ep,
-                                id: `${providerId}$episode$${ep.episode || ep.number}`,
-                            }));
-                        }
-                        if (anilistId)
-                            baseInfo.anilistId = anilistId;
-                        baseInfo.id = providerId;
-                    }
+                const candidate = scored[0]?.item;
+                if (candidate && (!pick || (scored[0]?.score || 0) > (pick.score || 0))) {
+                    pick = { ...candidate, score: scored[0]?.score || 0 };
                 }
             }
         }
         catch {
-            // ignore mapping errors
+            continue; // Try next term
         }
-        return baseInfo;
-    };
-    const buildAnimesaltTmdbInfo = async (id, type) => {
-        const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
-        const fetchBase = async () => {
-            const res = await baseTmdb.fetchMediaInfo(id, type);
-            if (res && typeof res === 'object') {
-                delete res.cast;
-                delete res.characters;
-                delete res.recommendations;
-                delete res.similar;
-            }
-            return res;
-        };
-        const baseInfo = main_1.redis
-            ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}`, fetchBase, main_1.REDIS_TTL)
-            : await fetchBase();
-        await attachBestTrailer(baseInfo, id, type);
-        const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-        if (!titleCandidates.length)
-            return baseInfo;
-        const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-        // Search AnimeSalt with primary titles
-        const term = titleCandidates[0];
-        try {
-            const searchRes = await fastify.inject({
-                method: 'GET',
-                url: `/anime/animesalt/${encodeURIComponent(term)}`,
-            });
-            if (searchRes.statusCode < 400) {
-                const payload = safeJsonParse(searchRes.body || '{}');
-                const results = Array.isArray(payload?.results) ? payload.results : [];
-                const scored = results.map((item) => {
-                    const itemTitle = String(item?.title || '');
-                    let score = titleMatchScore(itemTitle, titleCandidates);
-                    if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-                        const itemYear = Number(String(item?.releaseDate || '').slice(0, 4));
-                        if (itemYear === yearGuess)
-                            score += 50;
-                    }
-                    return { item, score };
-                }).sort((a, b) => b.score - a.score);
-                const pick = scored[0]?.item;
-                if (pick && pick.anilistId) {
-                    const anilistId = String(pick.anilistId);
-                    if (Array.isArray(baseInfo.seasons)) {
-                        baseInfo.seasons = baseInfo.seasons.map((season) => {
-                            if (!Array.isArray(season.episodes))
-                                return season;
-                            return {
-                                ...season,
-                                episodes: season.episodes.map((ep) => ({
-                                    ...ep,
-                                    id: `${anilistId}$episode$${ep.episode || ep.number}`,
-                                })),
-                            };
-                        });
-                    }
-                    else if (Array.isArray(baseInfo.episodes)) {
-                        baseInfo.episodes = baseInfo.episodes.map((ep) => ({
+    }
+    if (pick) {
+        const providerId = String(pick.id || pick.anilistId || '');
+        const anilistId = pick.anilistId ? String(pick.anilistId) : null;
+        if (providerId) {
+            // Map episodes to JustAnime format: providerId$episode$number
+            if (Array.isArray(baseInfo.seasons)) {
+                baseInfo.seasons = baseInfo.seasons.map((season, seasonIdx) => {
+                    if (!Array.isArray(season.episodes))
+                        return season;
+                    return {
+                        ...season,
+                        episodes: season.episodes.map((ep) => ({
                             ...ep,
-                            id: `${anilistId}$episode$${ep.episode || ep.number}`,
-                        }));
-                    }
-                    baseInfo.anilistId = anilistId;
-                    baseInfo.id = anilistId;
-                }
-            }
-        }
-        catch {
-            // ignore mapping errors
-        }
-        return baseInfo;
-    };
-    const buildFlixhqTmdbInfo = async (id, type) => {
-        const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
-        const fetchBase = async () => {
-            const res = await baseTmdb.fetchMediaInfo(id, type);
-            if (res && typeof res === 'object') {
-                delete res.cast;
-                delete res.characters;
-                delete res.recommendations;
-                delete res.similar;
-            }
-            return res;
-        };
-        const baseInfo = main_1.redis
-            ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}:flixhq-mapped:v2`, fetchBase, main_1.REDIS_TTL)
-            : await fetchBase();
-        await attachBestTrailer(baseInfo, id, type);
-        const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-        if (!titleCandidates.length)
-            return baseInfo;
-        const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-        const expectedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
-        const resolveAniListId = async () => {
-            const queries = titleCandidates.slice(0, 2);
-            for (const query of queries) {
-                try {
-                    const anilistRes = await fastify.inject({
-                        method: 'GET',
-                        url: `/meta/anilist/${encodeURIComponent(query)}`,
-                    });
-                    if (anilistRes.statusCode >= 400)
-                        continue;
-                    const anilistPayload = safeJsonParse(anilistRes.body || '{}');
-                    const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
-                    if (!anilistRows.length)
-                        continue;
-                    const picked = anilistRows
-                        .map((item) => ({
-                        item,
-                        score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
-                    }))
-                        .sort((a, b) => b.score - a.score)[0]?.item;
-                    const pickedId = String(picked?.id || '').trim();
-                    if (pickedId)
-                        return pickedId;
-                }
-                catch {
-                    continue;
-                }
-            }
-            return null;
-        };
-        const animeId = await resolveAniListId();
-        if (animeId)
-            baseInfo.anilistId = animeId;
-        // Build search terms, prioritizing exact titles over year variants
-        const mainTerms = titleCandidates.slice(0, 2); // First 2 most relevant titles
-        const searchTerms = Array.from(new Set([
-            ...mainTerms, // Prioritize exact title matches first
-            ...mainTerms.flatMap((title) => Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []),
-        ])).slice(0, 4); // Limit to top 4 search terms for speed
-        // Parallelize all searches instead of sequential
-        const searchPromises = searchTerms.map(async (term) => {
-            try {
-                const searchRes = await fastify.inject({
-                    method: 'GET',
-                    url: `/movies/flixhq/${encodeURIComponent(term)}`,
+                            id: `${providerId}$episode$${ep.episode || ep.number}`,
+                        })),
+                    };
                 });
-                if (searchRes.statusCode >= 400)
-                    return [];
-                const payload = safeJsonParse(searchRes.body || '{}');
-                return Array.isArray(payload?.data) ? payload.data : [];
+            }
+            else if (Array.isArray(baseInfo.episodes)) {
+                baseInfo.episodes = baseInfo.episodes.map((ep) => ({
+                    ...ep,
+                    id: `${providerId}$episode$${ep.episode || ep.number}`,
+                }));
+            }
+            if (anilistId)
+                baseInfo.anilistId = anilistId;
+            baseInfo.id = providerId;
+        }
+    }
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+};
+const buildAnimesaltTmdbInfo = async (request, id, type) => {
+    const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+    const fetchBase = async () => {
+        const res = await baseTmdb.fetchMediaInfo(id, type);
+        if (res && typeof res === 'object') {
+            delete res.cast;
+            delete res.characters;
+            delete res.recommendations;
+            delete res.similar;
+        }
+        return res;
+    };
+    const baseInfo = main_1.redis
+        ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}`, fetchBase, main_1.REDIS_TTL)
+        : await fetchBase();
+    await attachBestTrailer(baseInfo, id, type);
+    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+    if (!titleCandidates.length)
+        return baseInfo;
+    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+    // Search AnimeSalt with primary titles
+    const term = titleCandidates[0];
+    try {
+        const searchRes = await request.server.inject({
+            method: 'GET',
+            url: `/anime/animesalt/${encodeURIComponent(term)}`,
+        });
+        if (searchRes.statusCode < 400) {
+            const payload = safeJsonParse(searchRes.body || '{}');
+            const results = Array.isArray(payload?.results) ? payload.results : [];
+            const scored = results.map((item) => {
+                const itemTitle = String(item?.title || '');
+                let score = titleMatchScore(itemTitle, titleCandidates);
+                if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+                    const itemYear = Number(String(item?.releaseDate || '').slice(0, 4));
+                    if (itemYear === yearGuess)
+                        score += 50;
+                }
+                return { item, score };
+            }).sort((a, b) => b.score - a.score);
+            const pick = scored[0]?.item;
+            if (pick && pick.anilistId) {
+                const anilistId = String(pick.anilistId);
+                if (Array.isArray(baseInfo.seasons)) {
+                    baseInfo.seasons = baseInfo.seasons.map((season) => {
+                        if (!Array.isArray(season.episodes))
+                            return season;
+                        return {
+                            ...season,
+                            episodes: season.episodes.map((ep) => ({
+                                ...ep,
+                                id: `${anilistId}$episode$${ep.episode || ep.number}`,
+                            })),
+                        };
+                    });
+                }
+                else if (Array.isArray(baseInfo.episodes)) {
+                    baseInfo.episodes = baseInfo.episodes.map((ep) => ({
+                        ...ep,
+                        id: `${anilistId}$episode$${ep.episode || ep.number}`,
+                    }));
+                }
+                baseInfo.anilistId = anilistId;
+                baseInfo.id = anilistId;
+            }
+        }
+    }
+    catch {
+        // ignore mapping errors
+    }
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+};
+const buildFlixhqTmdbInfo = async (request, id, type) => {
+    const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+    const fetchBase = async () => {
+        const res = await baseTmdb.fetchMediaInfo(id, type);
+        if (res && typeof res === 'object') {
+            delete res.cast;
+            delete res.characters;
+            delete res.recommendations;
+            delete res.similar;
+        }
+        return res;
+    };
+    const baseInfo = main_1.redis
+        ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}:flixhq-mapped:v2`, fetchBase, main_1.REDIS_TTL)
+        : await fetchBase();
+    await attachBestTrailer(baseInfo, id, type);
+    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+    if (!titleCandidates.length)
+        return baseInfo;
+    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+    const expectedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+    const resolveAniListId = async () => {
+        const queries = titleCandidates.slice(0, 2);
+        for (const query of queries) {
+            try {
+                const anilistRes = await request.server.inject({
+                    method: 'GET',
+                    url: `/meta/anilist/${encodeURIComponent(query)}`,
+                });
+                if (anilistRes.statusCode >= 400)
+                    continue;
+                const anilistPayload = safeJsonParse(anilistRes.body || '{}');
+                const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
+                if (!anilistRows.length)
+                    continue;
+                const picked = anilistRows
+                    .map((item) => ({
+                    item,
+                    score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
+                }))
+                    .sort((a, b) => b.score - a.score)[0]?.item;
+                const pickedId = String(picked?.id || '').trim();
+                if (pickedId)
+                    return pickedId;
             }
             catch {
-                return [];
-            }
-        });
-        const searchResults = await Promise.all(searchPromises);
-        const combinedResults = searchResults.flat();
-        const seen = new Set();
-        const deduped = combinedResults.filter((row) => {
-            const key = String(row?.id || '').trim();
-            if (!key || seen.has(key))
-                return false;
-            seen.add(key);
-            return true;
-        });
-        const scored = deduped
-            .map((item) => {
-            const itemType = normalizeText(String(item?.type || ''));
-            const itemTitle = String(item?.name || item?.title || '');
-            const score = titleMatchScore(itemTitle, titleCandidates) +
-                (itemType === expectedType ? 120 : -250) +
-                (() => {
-                    const rowYear = Number(item?.releaseDate);
-                    if (!Number.isFinite(yearGuess) || yearGuess <= 1900 || !Number.isFinite(rowYear))
-                        return 0;
-                    if (rowYear === yearGuess)
-                        return 30;
-                    if (Math.abs(rowYear - yearGuess) === 1)
-                        return 10;
-                    return 0;
-                })() +
-                (() => {
-                    if (expectedType !== 'tv')
-                        return 0;
-                    const baseSeasons = Array.isArray(baseInfo?.seasons) ? baseInfo.seasons.length : 0;
-                    const rowSeasons = Number(item?.seasons || 0);
-                    if (!baseSeasons || !rowSeasons)
-                        return 0;
-                    if (baseSeasons === rowSeasons)
-                        return 12;
-                    if (Math.abs(baseSeasons - rowSeasons) <= 1)
-                        return 5;
-                    return 0;
-                })();
-            return { item, score };
-        })
-            .sort((a, b) => b.score - a.score);
-        // Early exit if top match is perfect (exact title + correct type + correct year)
-        const topMatch = scored[0];
-        if (topMatch && topMatch.score > 1100) {
-            // High confidence match: 1000 (exact) + 120 (type) + 30 (year) = 1150+
-            const pick = topMatch.item;
-            if (pick?.id) {
-                try {
-                    const infoRes = await fastify.inject({
-                        method: 'GET',
-                        url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
-                    });
-                    if (infoRes.statusCode < 400) {
-                        const payload = safeJsonParse(infoRes.body || '{}');
-                        const providerEpisodes = Array.isArray(payload?.providerEpisodes)
-                            ? payload.providerEpisodes
-                            : Array.isArray(payload?.data?.providerEpisodes)
-                                ? payload.data.providerEpisodes
-                                : [];
-                        if (providerEpisodes.length > 0) {
-                            // Skip to the end of the function with early result
-                            const bySeasonEpisode = new Map();
-                            for (const ep of providerEpisodes) {
-                                const seasonNum = Number(ep?.seasonNumber || 0);
-                                const episodeNum = Number(ep?.episodeNumber || 0);
-                                if (!seasonNum || !episodeNum)
-                                    continue;
-                                bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
-                            }
-                            if (Array.isArray(baseInfo?.seasons)) {
-                                baseInfo.seasons = baseInfo.seasons.map((season, seasonIndex) => {
-                                    const seasonNum = Number(season?.season || seasonIndex + 1);
-                                    if (!Array.isArray(season?.episodes))
-                                        return season;
-                                    return {
-                                        ...season,
-                                        episodes: season.episodes.map((episode, episodeIndex) => {
-                                            const episodeNum = Number(episode?.episode || episode?.number || episodeIndex + 1);
-                                            const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
-                                            if (!mapped?.episodeId)
-                                                return episode;
-                                            return {
-                                                ...episode,
-                                                id: mapped.episodeId,
-                                                url: mapped.episodeId,
-                                            };
-                                        }),
-                                    };
-                                });
-                            }
-                            baseInfo.provider = 'flixhq';
-                            baseInfo.providerSourceId = pick.id;
-                            return baseInfo; // Early return on perfect match
-                        }
-                    }
-                }
-                catch {
-                    // Fall through to normal path
-                }
+                continue;
             }
         }
-        const pick = scored[0]?.item;
-        if (!pick?.id)
-            return baseInfo;
-        // For movies, validate the pick by checking release year
-        if (expectedType === 'movie') {
+        return null;
+    };
+    const animeId = await resolveAniListId();
+    if (animeId)
+        baseInfo.anilistId = animeId;
+    // Build search terms, prioritizing exact titles over year variants
+    const mainTerms = titleCandidates.slice(0, 2); // First 2 most relevant titles
+    const searchTerms = Array.from(new Set([
+        ...mainTerms, // Prioritize exact title matches first
+        ...mainTerms.flatMap((title) => Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []),
+    ])).slice(0, 4); // Limit to top 4 search terms for speed
+    // Parallelize all searches instead of sequential
+    const searchPromises = searchTerms.map(async (term) => {
+        try {
+            const searchRes = await request.server.inject({
+                method: 'GET',
+                url: `/movies/flixhq/${encodeURIComponent(term)}`,
+            });
+            if (searchRes.statusCode >= 400)
+                return [];
+            const payload = safeJsonParse(searchRes.body || '{}');
+            return Array.isArray(payload?.data) ? payload.data : [];
+        }
+        catch {
+            return [];
+        }
+    });
+    const searchResults = await Promise.all(searchPromises);
+    const combinedResults = searchResults.flat();
+    const seen = new Set();
+    const deduped = combinedResults.filter((row) => {
+        const key = String(row?.id || '').trim();
+        if (!key || seen.has(key))
+            return false;
+        seen.add(key);
+        return true;
+    });
+    const scored = deduped
+        .map((item) => {
+        const itemType = normalizeText(String(item?.type || ''));
+        const itemTitle = String(item?.name || item?.title || '');
+        const score = titleMatchScore(itemTitle, titleCandidates) +
+            (itemType === expectedType ? 120 : -250) +
+            (() => {
+                const rowYear = Number(item?.releaseDate);
+                if (!Number.isFinite(yearGuess) || yearGuess <= 1900 || !Number.isFinite(rowYear))
+                    return 0;
+                if (rowYear === yearGuess)
+                    return 30;
+                if (Math.abs(rowYear - yearGuess) === 1)
+                    return 10;
+                return 0;
+            })() +
+            (() => {
+                if (expectedType !== 'tv')
+                    return 0;
+                const baseSeasons = Array.isArray(baseInfo?.seasons) ? baseInfo.seasons.length : 0;
+                const rowSeasons = Number(item?.seasons || 0);
+                if (!baseSeasons || !rowSeasons)
+                    return 0;
+                if (baseSeasons === rowSeasons)
+                    return 12;
+                if (Math.abs(baseSeasons - rowSeasons) <= 1)
+                    return 5;
+                return 0;
+            })();
+        return { item, score };
+    })
+        .sort((a, b) => b.score - a.score);
+    // Early exit if top match is perfect (exact title + correct type + correct year)
+    const topMatch = scored[0];
+    if (topMatch && topMatch.score > 1100) {
+        // High confidence match: 1000 (exact) + 120 (type) + 30 (year) = 1150+
+        const pick = topMatch.item;
+        if (pick?.id) {
             try {
-                const infoRes = await fastify.inject({
+                const infoRes = await request.server.inject({
                     method: 'GET',
                     url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
                 });
                 if (infoRes.statusCode < 400) {
                     const payload = safeJsonParse(infoRes.body || '{}');
-                    const movieInfo = payload?.data || payload;
-                    const releaseDateStr = String(movieInfo?.releaseDate || '');
-                    const flixReleaseYear = releaseDateStr ? Number(releaseDateStr.slice(0, 4)) : 0;
-                    const tmdbReleaseYear = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-                    // If years match or are close, accept it
-                    const yearDiff = Math.abs(flixReleaseYear - tmdbReleaseYear);
-                    if (flixReleaseYear && tmdbReleaseYear && yearDiff <= 1) {
+                    const providerEpisodes = Array.isArray(payload?.providerEpisodes)
+                        ? payload.providerEpisodes
+                        : Array.isArray(payload?.data?.providerEpisodes)
+                            ? payload.data.providerEpisodes
+                            : [];
+                    if (providerEpisodes.length > 0) {
+                        // Skip to the end of the function with early result
+                        const bySeasonEpisode = new Map();
+                        for (const ep of providerEpisodes) {
+                            const seasonNum = Number(ep?.seasonNumber || 0);
+                            const episodeNum = Number(ep?.episodeNumber || 0);
+                            if (!seasonNum || !episodeNum)
+                                continue;
+                            bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
+                        }
+                        if (Array.isArray(baseInfo?.seasons)) {
+                            baseInfo.seasons = baseInfo.seasons.map((season, seasonIndex) => {
+                                const seasonNum = Number(season?.season || seasonIndex + 1);
+                                if (!Array.isArray(season?.episodes))
+                                    return season;
+                                return {
+                                    ...season,
+                                    episodes: season.episodes.map((episode, episodeIndex) => {
+                                        const episodeNum = Number(episode?.episode || episode?.number || episodeIndex + 1);
+                                        const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
+                                        if (!mapped?.episodeId)
+                                            return episode;
+                                        return {
+                                            ...episode,
+                                            id: mapped.episodeId,
+                                            url: mapped.episodeId,
+                                        };
+                                    }),
+                                };
+                            });
+                        }
                         baseInfo.provider = 'flixhq';
                         baseInfo.providerSourceId = pick.id;
-                        return baseInfo;
-                    }
-                    else if (!tmdbReleaseYear || yearDiff > 1) {
-                        // If year doesn't match, try the next best match
-                        const nextPick = scored[1]?.item;
-                        if (nextPick?.id) {
-                            const nextInfoRes = await fastify.inject({
-                                method: 'GET',
-                                url: `/movies/flixhq/info?id=${encodeURIComponent(String(nextPick.id))}`,
-                            });
-                            if (nextInfoRes.statusCode < 400) {
-                                const nextPayload = safeJsonParse(nextInfoRes.body || '{}');
-                                const nextMovieInfo = nextPayload?.data || nextPayload;
-                                const nextReleaseDateStr = String(nextMovieInfo?.releaseDate || '');
-                                const nextFlixReleaseYear = nextReleaseDateStr ? Number(nextReleaseDateStr.slice(0, 4)) : 0;
-                                const nextYearDiff = Math.abs(nextFlixReleaseYear - tmdbReleaseYear);
-                                if (nextFlixReleaseYear && (!tmdbReleaseYear || nextYearDiff <= 1)) {
-                                    baseInfo.provider = 'flixhq';
-                                    baseInfo.providerSourceId = nextPick.id;
-                                    return baseInfo;
-                                }
-                            }
-                        }
+                        return baseInfo; // Early return on perfect match
                     }
                 }
             }
             catch {
-                // Fall through
+                // Fall through to normal path
             }
-            // If validation failed, return without mapping
-            return baseInfo;
         }
-        try {
-            const infoRes = await fastify.inject({
-                method: 'GET',
-                url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
+    }
+    let pick = scored[0]?.item;
+    if (!pick?.id)
+        return baseInfo;
+    try {
+        const infoRes = await request.server.inject({
+            method: 'GET',
+            url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
+        });
+        if (infoRes.statusCode >= 400)
+            return baseInfo;
+        const payload = safeJsonParse(infoRes.body || '{}');
+        const providerEpisodes = Array.isArray(payload?.providerEpisodes)
+            ? payload.providerEpisodes
+            : Array.isArray(payload?.data?.providerEpisodes)
+                ? payload.data.providerEpisodes
+                : [];
+        if (!providerEpisodes.length)
+            return baseInfo;
+        const bySeasonEpisode = new Map();
+        for (const ep of providerEpisodes) {
+            const seasonNum = Number(ep?.seasonNumber || 0);
+            const episodeNum = Number(ep?.episodeNumber || 0);
+            if (!seasonNum || !episodeNum)
+                continue;
+            bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
+        }
+        if (Array.isArray(baseInfo?.seasons)) {
+            baseInfo.seasons = baseInfo.seasons.map((season, seasonIndex) => {
+                const seasonNum = Number(season?.season || seasonIndex + 1);
+                if (!Array.isArray(season?.episodes))
+                    return season;
+                return {
+                    ...season,
+                    episodes: season.episodes.map((episode, episodeIndex) => {
+                        const episodeNum = Number(episode?.episode || episode?.number || episodeIndex + 1);
+                        const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
+                        if (!mapped?.episodeId)
+                            return episode;
+                        return {
+                            ...episode,
+                            id: mapped.episodeId,
+                            url: mapped.episodeId,
+                        };
+                    }),
+                };
             });
-            if (infoRes.statusCode >= 400)
-                return baseInfo;
-            const payload = safeJsonParse(infoRes.body || '{}');
-            const providerEpisodes = Array.isArray(payload?.providerEpisodes)
-                ? payload.providerEpisodes
-                : Array.isArray(payload?.data?.providerEpisodes)
-                    ? payload.data.providerEpisodes
-                    : [];
-            if (!providerEpisodes.length)
-                return baseInfo;
-            const bySeasonEpisode = new Map();
-            for (const ep of providerEpisodes) {
-                const seasonNum = Number(ep?.seasonNumber || 0);
-                const episodeNum = Number(ep?.episodeNumber || 0);
-                if (!seasonNum || !episodeNum)
-                    continue;
-                bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
-            }
-            if (Array.isArray(baseInfo?.seasons)) {
-                baseInfo.seasons = baseInfo.seasons.map((season, seasonIndex) => {
-                    const seasonNum = Number(season?.season || seasonIndex + 1);
-                    if (!Array.isArray(season?.episodes))
-                        return season;
-                    return {
-                        ...season,
-                        episodes: season.episodes.map((episode, episodeIndex) => {
-                            const episodeNum = Number(episode?.episode || episode?.number || episodeIndex + 1);
-                            const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
-                            if (!mapped?.episodeId)
-                                return episode;
-                            return {
-                                ...episode,
-                                id: mapped.episodeId,
-                                url: mapped.episodeId,
-                            };
-                        }),
-                    };
-                });
-            }
-            baseInfo.provider = 'flixhq';
-            baseInfo.providerSourceId = pick.id;
-            return baseInfo;
         }
-        catch {
-            return baseInfo;
-        }
-    };
+        baseInfo.provider = 'flixhq';
+        baseInfo.providerSourceId = pick.id;
+        convertTmdbImagesToUrls(baseInfo);
+        return baseInfo;
+    }
+    catch {
+        return baseInfo;
+    }
+};
+const routes = async (fastify, options) => {
     fastify.get('/', (_, rp) => {
         rp.status(200).send({
             intro: "Welcome to the tmdb provider: check out the provider's website @ https://www.themoviedb.org/",
@@ -1321,7 +1325,7 @@ const routes = async (fastify, options) => {
         }
         if (providerLower === 'dramacool') {
             try {
-                const res = await buildDramacoolTmdbInfo(id, type);
+                const res = await buildDramacoolTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
             }
             catch (err) {
@@ -1331,7 +1335,7 @@ const routes = async (fastify, options) => {
         }
         if (providerLower === 'justanime') {
             try {
-                const res = await buildJustanimeTmdbInfo(id, type);
+                const res = await buildJustanimeTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
             }
             catch (err) {
@@ -1341,7 +1345,7 @@ const routes = async (fastify, options) => {
         }
         if (providerLower === 'animesalt') {
             try {
-                const res = await buildAnimesaltTmdbInfo(id, type);
+                const res = await buildAnimesaltTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
             }
             catch (err) {
@@ -1351,7 +1355,7 @@ const routes = async (fastify, options) => {
         }
         if (providerLower === 'flixhq') {
             try {
-                const res = await buildFlixhqTmdbInfo(id, type);
+                const res = await buildFlixhqTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
             }
             catch (err) {
@@ -1379,6 +1383,7 @@ const routes = async (fastify, options) => {
                     delete info.recommendations;
                     delete info.similar;
                     await attachBestTrailer(info, id, type);
+                    convertTmdbImagesToUrls(info);
                 }
                 return info;
             };
@@ -1443,7 +1448,7 @@ const routes = async (fastify, options) => {
         }
         if (providerLower === 'dramacool') {
             try {
-                const res = await buildDramacoolTmdbInfo(id, type);
+                const res = await buildDramacoolTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
             }
             catch (err) {
@@ -1453,7 +1458,7 @@ const routes = async (fastify, options) => {
         }
         if (providerLower === 'flixhq') {
             try {
-                const res = await buildFlixhqTmdbInfo(id, type);
+                const res = await buildFlixhqTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
             }
             catch (err) {
@@ -1481,6 +1486,7 @@ const routes = async (fastify, options) => {
                     delete info.recommendations;
                     delete info.similar;
                     await attachBestTrailer(info, id, type);
+                    convertTmdbImagesToUrls(info);
                 }
                 return info;
             };
@@ -1611,8 +1617,8 @@ const routes = async (fastify, options) => {
             if ((providerLower === 'justanime' || providerLower === 'animesalt') && (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))) {
                 try {
                     const info = providerLower === 'justanime'
-                        ? await buildJustanimeTmdbInfo(id, type || 'tv')
-                        : await buildAnimesaltTmdbInfo(id, type || 'tv');
+                        ? await buildJustanimeTmdbInfo(request, id, type || 'tv')
+                        : await buildAnimesaltTmdbInfo(request, id, type || 'tv');
                     const requestedSeason = Number(request.query.season || 1);
                     const requestedEpisode = Number(request.query.episode || 1);
                     const seasonMatch = Array.isArray(info?.seasons)
@@ -1650,7 +1656,7 @@ const routes = async (fastify, options) => {
             try {
                 let dramacoolEpisodeId = episodeId;
                 if (!dramacoolEpisodeId && id && type) {
-                    const info = await buildDramacoolTmdbInfo(id, type);
+                    const info = await buildDramacoolTmdbInfo(request, id, type);
                     const requestedSeason = Number(request.query.season || 1);
                     const requestedEpisode = Number(request.query.episode || 1);
                     const seasonMatch = Array.isArray(info?.seasons)
@@ -1669,7 +1675,7 @@ const routes = async (fastify, options) => {
                     queryParts.push(`server=${encodeURIComponent(server)}`);
                 if (directOnly)
                     queryParts.push('directOnly=true');
-                const delegated = await fastify.inject({
+                const delegated = await request.server.inject({
                     method: 'GET',
                     url: `/movies/dramacool/watch?${queryParts.join('&')}`,
                 });
@@ -1702,7 +1708,7 @@ const routes = async (fastify, options) => {
                 // Try direct ID first (sometimes TMDB ID works directly)
                 if (/^\d+$/.test(movieId)) {
                     try {
-                        const directRes = await fastify.inject({
+                        const directRes = await request.server.inject({
                             method: 'GET',
                             url: `/movies/flixhq/watch?episodeId=${encodeURIComponent(movieId)}`,
                         });
@@ -1742,14 +1748,14 @@ const routes = async (fastify, options) => {
                 // Search FlixHQ with title
                 if (titleForSearch) {
                     try {
-                        const searchRes = await fastify.inject({
+                        const searchRes = await request.server.inject({
                             method: 'GET',
                             url: `/movies/flixhq/${encodeURIComponent(titleForSearch)}`,
                         });
                         if (searchRes.statusCode < 400) {
                             const payload = safeJsonParse(searchRes.body || '{}');
                             const results = Array.isArray(payload?.data) ? payload.data : [];
-                            const movieMatch = results.find((r) => normalizeText(String(r?.type || '')) === 'movie');
+                            const movieMatch = results.find((item) => normalizeText(String(item?.type || '')) === 'movie');
                             if (movieMatch?.id) {
                                 // Found movie! Directly call FlixHQ watch
                                 const queryParts = [`episodeId=${encodeURIComponent(movieMatch.id)}`];
@@ -1757,7 +1763,7 @@ const routes = async (fastify, options) => {
                                     queryParts.push(`server=${encodeURIComponent(server)}`);
                                 if (directOnly)
                                     queryParts.push('directOnly=true');
-                                const watchRes = await fastify.inject({
+                                const watchRes = await request.server.inject({
                                     method: 'GET',
                                     url: `/movies/flixhq/watch?${queryParts.join('&')}`,
                                 });
@@ -1787,7 +1793,7 @@ const routes = async (fastify, options) => {
         }
         if (!episodeId && type === 'tv' && id && (!providerLower || providerLower === 'flixhq')) {
             try {
-                const info = await buildFlixhqTmdbInfo(id, type);
+                const info = await buildFlixhqTmdbInfo(request, id, type);
                 const requestedSeason = Number(request.query.season || 1);
                 const requestedEpisode = Number(request.query.episode || 1);
                 const seasonMatch = Array.isArray(info?.seasons)
@@ -1821,7 +1827,7 @@ const routes = async (fastify, options) => {
                 }
                 const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
                 if (isAnimeLikeMovie(mediaInfo) && titleCandidates.length) {
-                    const animeFallback = await tryAnimeProvidersForMovie({
+                    const animeFallback = await tryAnimeProvidersForMovie(request, {
                         titleCandidates,
                         server,
                     });
@@ -1879,7 +1885,7 @@ const routes = async (fastify, options) => {
                 // FlixHQ often requires provider-specific numeric IDs (not TMDB ids) for watch extraction.
                 if (!sourceId && providerLower === 'flixhq') {
                     try {
-                        const flixInfo = await buildFlixhqTmdbInfo(id, type);
+                        const flixInfo = await buildFlixhqTmdbInfo(request, id, type);
                         const infoEpisodeId = String(flixInfo?.episodeId || '').trim();
                         const providerSourceId = String(flixInfo?.providerSourceId || '').trim();
                         sourceId = infoEpisodeId || providerSourceId || sourceId;
@@ -1903,7 +1909,7 @@ const routes = async (fastify, options) => {
                     const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
                     if (server)
                         queryParts.push(`server=${encodeURIComponent(server)}`);
-                    const delegated = await fastify.inject({
+                    const delegated = await request.server.inject({
                         method: 'GET',
                         url: `/movies/flixhq/watch?${queryParts.join('&')}`,
                     });
@@ -1944,7 +1950,7 @@ const routes = async (fastify, options) => {
                     const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
                     if (server)
                         queryParts.push(`server=${encodeURIComponent(server)}`);
-                    const delegated = await fastify.inject({
+                    const delegated = await request.server.inject({
                         method: 'GET',
                         url: `/movies/flixhq/watch?${queryParts.join('&')}`,
                     });
@@ -1981,7 +1987,7 @@ const routes = async (fastify, options) => {
                     }
                     const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
                     if (titleCandidates.length) {
-                        const animeFallback = await tryAnimeProvidersForMovie({
+                        const animeFallback = await tryAnimeProvidersForMovie(request, {
                             titleCandidates,
                             server,
                         });

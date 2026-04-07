@@ -11,33 +11,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const mangadex = configureProvider(new MANGA.MangaDex());
 
   const fetchChapterPagesWithFallback = async (chapterId: string) => {
-    try {
-      return await mangadex.fetchChapterPages(chapterId);
-    } catch {
-      const { data } = await axios.get(
-        `https://api.mangadex.org/at-home/server/${encodeURIComponent(chapterId)}`,
-        {
-          timeout: 15000,
-          headers: {
-            Accept: 'application/json',
-            'User-Agent': 'Mozilla/5.0',
-          },
-        },
-      );
-
-      const baseUrl = String(data?.baseUrl || '');
-      const hash = String(data?.chapter?.hash || '');
-      const files = Array.isArray(data?.chapter?.data) ? data.chapter.data : [];
-
-      if (!baseUrl || !hash || !files.length) {
-        throw new Error('No chapter pages found');
-      }
-
-      return files.map((file: string, idx: number) => ({
-        img: `${baseUrl}/data/${hash}/${file}`,
-        page: String(idx + 1),
-      }));
-    }
+    return await mangadex.fetchChapterPages(chapterId);
   };
 
   fastify.get('/', (_, rp) => {
@@ -111,6 +85,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         reply.status(200).send(res);
       } catch (err) {
+        console.log('Error reading chapter:', chapterId, err);
         reply.status(500).send({
           message: 'Something went wrong. Please try again later.',
         });
