@@ -4,6 +4,7 @@ import { PROVIDERS_LIST } from '@consumet/extensions';
 import satoru from './satoru';
 import justanime from './justanime';
 import animesalt from './animesalt';
+import animekai from './animekai';
 
 
 
@@ -11,6 +12,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(satoru, { prefix: '/satoru' });
   await fastify.register(justanime, { prefix: '/justanime' });
   await fastify.register(animesalt, { prefix: '/animesalt' });
+  await fastify.register(animekai, { prefix: '/animekai' });
 
 
 

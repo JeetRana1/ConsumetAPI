@@ -298,6 +298,7 @@ const ANIME_PROVIDER_ROUTES = {
     satoru: '/anime/satoru',
     justanime: '/anime/justanime',
     animesalt: '/anime/animesalt',
+    animekai: '/anime/animekai',
 };
 const resolveMovieProvider = (provider) => {
     if (!provider)
@@ -952,6 +953,508 @@ const buildAnimesaltTmdbInfo = async (request, id, type) => {
     convertTmdbImagesToUrls(baseInfo);
     return baseInfo;
 };
+const inferAnimekaiSeasonNumber = (value) => {
+    const raw = String(value || '').toLowerCase();
+    if (!raw)
+        return 1;
+    const seasonMatch = raw.match(/season\s*(\d+)/i);
+    if (seasonMatch?.[1]) {
+        const n = Number(seasonMatch[1]);
+        if (Number.isFinite(n) && n > 0)
+            return n;
+    }
+    const ordinalMatch = raw.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
+    if (ordinalMatch?.[1]) {
+        const n = Number(ordinalMatch[1]);
+        if (Number.isFinite(n) && n > 0)
+            return n;
+    }
+    const partMatch = raw.match(/\bpart\s*(\d+)\b/i);
+    if (partMatch?.[1]) {
+        const n = Number(partMatch[1]);
+        if (Number.isFinite(n) && n > 0)
+            return n;
+    }
+    return 1;
+};
+const buildAnimekaiTmdbInfo = async (request, id, type) => {
+    const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+    const fetchBase = async () => {
+        try {
+            const res = await baseTmdb.fetchMediaInfo(id, type);
+            if (res && typeof res === 'object') {
+                delete res.cast;
+                delete res.characters;
+                delete res.recommendations;
+                delete res.similar;
+            }
+            return res;
+        }
+        catch {
+            if (!main_1.tmdbApi) {
+                throw new Error('Failed to fetch TMDB base info for AnimeKai mapping');
+            }
+            const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+            const baseUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${main_1.tmdbApi}&language=en-US`;
+            const direct = await axios_1.default.get(baseUrl);
+            const raw = direct?.data || {};
+            const rescued = {
+                id: raw.id,
+                title: raw.title || raw.name || 'Unknown',
+                name: raw.name || raw.title || 'Unknown',
+                releaseDate: raw.release_date || raw.first_air_date || null,
+                firstAirDate: raw.first_air_date || null,
+                image: raw.poster_path || null,
+                cover: raw.backdrop_path || null,
+                description: raw.overview || '',
+                genres: Array.isArray(raw.genres) ? raw.genres : [],
+                seasons: [],
+                episodes: [],
+            };
+            if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
+                const seasonRows = raw.seasons
+                    .filter((season) => Number(season?.season_number || 0) > 0)
+                    .sort((a, b) => Number(a?.season_number || 0) - Number(b?.season_number || 0));
+                const seasonDetails = await Promise.all(seasonRows.map(async (season) => {
+                    const seasonNo = Number(season?.season_number || 0);
+                    try {
+                        const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${main_1.tmdbApi}&language=en-US`;
+                        const seasonRes = await axios_1.default.get(seasonUrl);
+                        const eps = Array.isArray(seasonRes?.data?.episodes)
+                            ? seasonRes.data.episodes.map((ep) => ({
+                                id: '',
+                                episode: Number(ep?.episode_number || 0),
+                                number: Number(ep?.episode_number || 0),
+                                title: ep?.name || `Episode ${ep?.episode_number || 0}`,
+                            }))
+                            : [];
+                        return {
+                            season: seasonNo,
+                            number: seasonNo,
+                            name: season?.name || `Season ${seasonNo}`,
+                            episodes: eps,
+                        };
+                    }
+                    catch {
+                        return {
+                            season: seasonNo,
+                            number: seasonNo,
+                            name: season?.name || `Season ${seasonNo}`,
+                            episodes: [],
+                        };
+                    }
+                }));
+                rescued.seasons = seasonDetails;
+            }
+            return rescued;
+        }
+    };
+    const baseInfo = main_1.redis
+        ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}:animekai-mapped:v2`, fetchBase, main_1.REDIS_TTL)
+        : await fetchBase();
+    await attachBestTrailer(baseInfo, id, type);
+    if (String(type || '').toLowerCase() === 'tv' && main_1.tmdbApi) {
+        const currentSeasons = Array.isArray(baseInfo?.seasons) ? baseInfo.seasons : [];
+        const nonSpecialCount = currentSeasons.filter((season) => Number(season?.season || season?.number || 0) > 0).length;
+        const looksCollapsed = nonSpecialCount <= 1;
+        if (looksCollapsed) {
+            try {
+                const tmdbSeriesUrl = `https://api.themoviedb.org/3/tv/${id}?api_key=${main_1.tmdbApi}&language=en-US`;
+                const seriesRes = await axios_1.default.get(tmdbSeriesUrl);
+                const rawSeasons = Array.isArray(seriesRes?.data?.seasons) ? seriesRes.data.seasons : [];
+                const seasonRows = rawSeasons
+                    .filter((season) => Number(season?.season_number || 0) > 0)
+                    .sort((a, b) => Number(a?.season_number || 0) - Number(b?.season_number || 0));
+                if (seasonRows.length > 1) {
+                    const rebuilt = await Promise.all(seasonRows.map(async (season) => {
+                        const seasonNo = Number(season?.season_number || 0);
+                        try {
+                            const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${main_1.tmdbApi}&language=en-US`;
+                            const seasonRes = await axios_1.default.get(seasonUrl);
+                            const eps = Array.isArray(seasonRes?.data?.episodes)
+                                ? seasonRes.data.episodes.map((ep) => ({
+                                    id: '',
+                                    episode: Number(ep?.episode_number || 0),
+                                    number: Number(ep?.episode_number || 0),
+                                    title: ep?.name || `Episode ${ep?.episode_number || 0}`,
+                                }))
+                                : [];
+                            return {
+                                season: seasonNo,
+                                number: seasonNo,
+                                name: season?.name || `Season ${seasonNo}`,
+                                episodes: eps,
+                            };
+                        }
+                        catch {
+                            return {
+                                season: seasonNo,
+                                number: seasonNo,
+                                name: season?.name || `Season ${seasonNo}`,
+                                episodes: [],
+                            };
+                        }
+                    }));
+                    baseInfo.seasons = rebuilt;
+                }
+            }
+            catch {
+                // Keep existing base seasons when direct TMDB season rebuild fails.
+            }
+        }
+    }
+    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+    if (!titleCandidates.length)
+        return baseInfo;
+    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+    const sequelTerms = titleCandidates.slice(0, 2).flatMap((title) => {
+        const clean = String(title || '').trim();
+        if (!clean)
+            return [];
+        const baseParts = [
+            // Standard season patterns
+            `${clean} season 2`,
+            `${clean} 2nd season`,
+            `${clean} season 3`,
+            `${clean} season 4`,
+            `${clean} season 5`,
+            `${clean} season 6`,
+            // Arc-based patterns (common for anime)
+            `${clean} part 1`,
+            `${clean} part 2`,
+            `${clean} part 3`,
+            // Alternate numbering
+            `${clean} 2`,
+            `${clean} 3`,
+            `${clean} 4`,
+        ];
+        // Add numeric year variants for modern animes
+        return baseParts;
+    });
+    const searchTerms = Array.from(new Set([
+        ...titleCandidates.slice(0, 2),
+        ...titleCandidates.slice(0, 2).map((title) => String(title || '').replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()),
+        ...sequelTerms,
+        ...(Number.isFinite(yearGuess) && yearGuess > 1900
+            ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
+            : []),
+    ].filter(Boolean))).slice(0, 24); // Increased to 24 to cover expanded sequel terms
+    const candidateMap = new Map();
+    for (const term of searchTerms) {
+        try {
+            const searchRes = await request.server.inject({
+                method: 'GET',
+                url: `/anime/animekai/search/${encodeURIComponent(term)}?page=1`,
+            });
+            if (searchRes.statusCode >= 400)
+                continue;
+            const payload = safeJsonParse(searchRes.body || '{}');
+            const rows = Array.isArray(payload?.results) ? payload.results : [];
+            for (const row of rows.slice(0, 8)) {
+                const rowId = String(row?.id || '').trim();
+                if (!rowId || candidateMap.has(rowId))
+                    continue;
+                const rowTitle = String(row?.title || row?.name || '').trim();
+                let score = titleMatchScore(rowTitle, titleCandidates);
+                const seasonHint = inferAnimekaiSeasonNumber(rowTitle);
+                if (seasonHint === 1)
+                    score += 5;
+                if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+                    const y = Number(String(row?.year || row?.releaseDate || '').slice(0, 4));
+                    if (y === yearGuess)
+                        score += 50;
+                    else if (Number.isFinite(y) && Math.abs(y - yearGuess) <= 1)
+                        score += 20;
+                }
+                candidateMap.set(rowId, {
+                    ...row,
+                    _score: score,
+                    _seasonHint: seasonHint,
+                });
+            }
+        }
+        catch {
+            continue;
+        }
+    }
+    const candidates = Array.from(candidateMap.values())
+        .sort((a, b) => Number(b?._score || 0) - Number(a?._score || 0))
+        .slice(0, 20); // Increased from 10 to 20 to catch more season-specific entries
+    if (!candidates.length) {
+        convertTmdbImagesToUrls(baseInfo);
+        return baseInfo;
+    }
+    const infos = [];
+    const assignedSeasonHints = new Set();
+    for (const candidate of candidates) {
+        const candidateId = String(candidate?.id || '').trim();
+        if (!candidateId)
+            continue;
+        try {
+            const infoRes = await request.server.inject({
+                method: 'GET',
+                url: `/anime/animekai/info?id=${encodeURIComponent(candidateId)}`,
+            });
+            if (infoRes.statusCode >= 400)
+                continue;
+            const infoPayload = safeJsonParse(infoRes.body || '{}');
+            const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
+            const episodeCount = episodes.length;
+            // Skip candidates with VERY few episodes (likely specials/shorts, not full seasons)
+            // Accept 8+ episodes OR anything that looks like 10+ continuous episodes
+            if (!episodeCount)
+                continue;
+            if (episodeCount < 8) {
+                // Only skip if it's clearly too small (less than 50% of typical season average ~13 eps)
+                const minAcceptable = Math.max(8, Math.floor((Number(baseInfo?.seasons?.at(0)?.episode_count || 13)) / 2));
+                if (episodeCount < minAcceptable)
+                    continue;
+            }
+            let seasonHint = Number(candidate?._seasonHint || inferAnimekaiSeasonNumber(infoPayload?.title || candidate?.title || '')) || 1;
+            // IMPROVED: Match by episode count against TMDB seasons for anime-specific sequels
+            // Many anime use arc names (Jujutsu Kaisen: Culling Game) instead of "Season 3"
+            if (Array.isArray(baseInfo?.seasons) && baseInfo.seasons.length > 1) {
+                const tmdbSeasons = baseInfo.seasons
+                    .filter((s) => Number(s?.season || s?.number || 0) > 0)
+                    .map((s) => {
+                    const seasonNo = Number(s?.season || s?.number || 0);
+                    // Try episodes array first, fallback to episode_count field
+                    const epCount = Array.isArray(s?.episodes)
+                        ? s.episodes.length
+                        : (Number(s?.episode_count || 0) || 0);
+                    return { seasonNo, epCount };
+                })
+                    .sort((a, b) => a.seasonNo - b.seasonNo);
+                // Try to match by episode count first (most reliable for arc-named seasons)
+                const matchedBySeason = tmdbSeasons.find((s) => s.epCount === episodeCount);
+                if (matchedBySeason && !assignedSeasonHints.has(matchedBySeason.seasonNo)) {
+                    seasonHint = matchedBySeason.seasonNo;
+                }
+                else if (Math.abs(seasonHint - 1) < tmdbSeasons.length && !assignedSeasonHints.has(seasonHint)) {
+                    // Use inferred hint if it's within valid season range and not yet assigned
+                }
+                else {
+                    // Last resort: find first unassigned season number
+                    const unassignedSeason = tmdbSeasons.find((s) => !assignedSeasonHints.has(s.seasonNo));
+                    if (unassignedSeason) {
+                        seasonHint = unassignedSeason.seasonNo;
+                    }
+                }
+            }
+            // Avoid duplicate season hints (prefer first/highest-episode candidate for each season)
+            if (assignedSeasonHints.has(seasonHint))
+                continue;
+            assignedSeasonHints.add(seasonHint);
+            infos.push({
+                id: candidateId,
+                title: String(infoPayload?.title || candidate?.title || '').trim(),
+                seasonHint,
+                episodes,
+                anilistId: String(candidate?.anilistId || '').trim() || undefined,
+            });
+        }
+        catch {
+            continue;
+        }
+    }
+    if (!infos.length) {
+        try {
+            const anilistRes = await request.server.inject({
+                method: 'GET',
+                url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || '')}`,
+            });
+            if (anilistRes.statusCode < 400) {
+                const anilistPayload = safeJsonParse(anilistRes.body || '{}');
+                const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
+                const picked = anilistRows
+                    .map((item) => ({ item, score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates) }))
+                    .sort((a, b) => b.score - a.score)[0]?.item;
+                const pickedId = String(picked?.id || '').trim();
+                if (pickedId)
+                    baseInfo.anilistId = pickedId;
+            }
+        }
+        catch {
+            // Ignore AniList fallback errors
+        }
+        convertTmdbImagesToUrls(baseInfo);
+        return baseInfo;
+    }
+    const best = infos[0];
+    baseInfo.id = best.id;
+    if (best.anilistId) {
+        baseInfo.anilistId = best.anilistId;
+    }
+    else {
+        try {
+            const anilistRes = await request.server.inject({
+                method: 'GET',
+                url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || best.title || '')}`,
+            });
+            if (anilistRes.statusCode < 400) {
+                const anilistPayload = safeJsonParse(anilistRes.body || '{}');
+                const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
+                const picked = anilistRows
+                    .map((item) => ({ item, score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates) }))
+                    .sort((a, b) => b.score - a.score)[0]?.item;
+                const pickedId = String(picked?.id || '').trim();
+                if (pickedId)
+                    baseInfo.anilistId = pickedId;
+            }
+        }
+        catch {
+            // Ignore AniList enrichment errors
+        }
+    }
+    if (String(type || '').toLowerCase() === 'tv' && Array.isArray(baseInfo?.seasons)) {
+        const existingSeasons = baseInfo.seasons
+            .filter((season) => Number(season?.season || season?.number || 0) > 0)
+            .map((season) => Number(season?.season || season?.number || 0));
+        const uniqueHints = Array.from(new Set(infos.map((info) => Number(info.seasonHint || 0)).filter((n) => Number.isFinite(n) && n > 0))).sort((a, b) => a - b);
+        if (existingSeasons.length <= 1 && uniqueHints.length > 1) {
+            baseInfo.seasons = uniqueHints.map((seasonNo) => {
+                const seasonInfo = infos.find((info) => Number(info.seasonHint || 0) === seasonNo);
+                const seasonEpisodes = Array.isArray(seasonInfo?.episodes) ? seasonInfo.episodes : [];
+                return {
+                    season: seasonNo,
+                    number: seasonNo,
+                    name: `Season ${seasonNo}`,
+                    id: seasonInfo?.id,
+                    providerAnimeId: seasonInfo?.id,
+                    episodes: seasonEpisodes.map((ep, idx) => ({
+                        id: String(ep?.id || ''),
+                        episode: Number(ep?.number || ep?.episode || idx + 1),
+                        number: Number(ep?.number || ep?.episode || idx + 1),
+                        title: String(ep?.title || `Episode ${idx + 1}`),
+                    })),
+                };
+            });
+        }
+        const nonSpecialSeasons = baseInfo.seasons
+            .filter((season) => Number(season?.season || season?.number || 0) > 0)
+            .sort((a, b) => Number(a?.season || a?.number || 0) - Number(b?.season || b?.number || 0));
+        const assigned = new Map();
+        const unassigned = [...infos];
+        // 1) Assign direct season hints first.
+        for (const info of infos) {
+            const hint = Number(info.seasonHint || 0);
+            if (!Number.isFinite(hint) || hint <= 0)
+                continue;
+            if (assigned.has(hint))
+                continue;
+            assigned.set(hint, info);
+        }
+        // 2) Assign remaining infos by season order.
+        for (const season of nonSpecialSeasons) {
+            const seasonNo = Number(season?.season || season?.number || 0);
+            if (assigned.has(seasonNo))
+                continue;
+            const next = unassigned.find((item) => {
+                return !Array.from(assigned.values()).includes(item);
+            });
+            if (!next)
+                continue;
+            assigned.set(seasonNo, next);
+        }
+        const singleInfoSequentialMode = infos.length === 1;
+        let globalEpisodeOffset = 0;
+        baseInfo.seasons = baseInfo.seasons.map((season) => {
+            if (!Array.isArray(season?.episodes))
+                return season;
+            const seasonNo = Number(season?.season || season?.number || 0);
+            const mappedInfo = assigned.get(seasonNo);
+            if (!mappedInfo) {
+                return season;
+            }
+            if (singleInfoSequentialMode) {
+                // Some AnimeKai titles expose all seasons as one continuous episode list.
+                // Distribute IDs by TMDB season episode counts to keep season watch mapping accurate.
+                const mappedEpisodes = Array.isArray(mappedInfo.episodes) ? mappedInfo.episodes : [];
+                const sortedMapped = [...mappedEpisodes].sort((a, b) => Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0));
+                // Get expected episode count from TMDB season - try episodes array first, then episode_count field
+                const seasonEpisodeCount = Array.isArray(season?.episodes)
+                    ? season.episodes.length
+                    : (Number(season?.episode_count || 0) || sortedMapped.length);
+                const seasonSlice = sortedMapped.slice(globalEpisodeOffset, globalEpisodeOffset + seasonEpisodeCount);
+                globalEpisodeOffset += seasonEpisodeCount;
+                const byIndex = new Map();
+                for (let i = 0; i < seasonSlice.length; i++) {
+                    byIndex.set(i + 1, seasonSlice[i]);
+                }
+                return {
+                    ...season,
+                    id: mappedInfo.id,
+                    providerAnimeId: mappedInfo.id,
+                    episodes: season.episodes.map((ep, idx) => {
+                        const mapped = byIndex.get(idx + 1);
+                        if (!mapped?.id)
+                            return ep;
+                        return {
+                            ...ep,
+                            id: String(mapped.id),
+                        };
+                    }),
+                };
+            }
+            const byEpNumber = new Map();
+            for (const ep of mappedInfo.episodes) {
+                const n = Number(ep?.number || ep?.episode || 0);
+                if (!Number.isFinite(n) || n <= 0)
+                    continue;
+                if (!byEpNumber.has(n))
+                    byEpNumber.set(n, ep);
+            }
+            // If TMDB season has no episodes populated, use the AnimeKai episodes directly
+            const seasonEpisodes = !Array.isArray(season?.episodes) || season.episodes.length === 0
+                ? Array.isArray(mappedInfo.episodes)
+                    ? mappedInfo.episodes.map((ep, idx) => ({
+                        id: String(ep?.id || ''),
+                        episode: Number(ep?.number || ep?.episode || idx + 1),
+                        number: Number(ep?.number || ep?.episode || idx + 1),
+                        title: String(ep?.title || `Episode ${idx + 1}`),
+                    }))
+                    : (season?.episodes || [])
+                : season.episodes.map((ep, idx) => {
+                    const epNo = Number(ep?.episode || ep?.number || idx + 1);
+                    const mapped = byEpNumber.get(epNo);
+                    if (!mapped?.id)
+                        return ep;
+                    return {
+                        ...ep,
+                        id: String(mapped.id),
+                    };
+                });
+            return {
+                ...season,
+                id: mappedInfo.id,
+                providerAnimeId: mappedInfo.id,
+                episodes: seasonEpisodes,
+            };
+        });
+    }
+    else if (Array.isArray(baseInfo?.episodes)) {
+        const byEpNumber = new Map();
+        for (const ep of best.episodes) {
+            const n = Number(ep?.number || ep?.episode || 0);
+            if (!Number.isFinite(n) || n <= 0)
+                continue;
+            if (!byEpNumber.has(n))
+                byEpNumber.set(n, ep);
+        }
+        baseInfo.episodes = baseInfo.episodes.map((ep, idx) => {
+            const epNo = Number(ep?.episode || ep?.number || idx + 1);
+            const mapped = byEpNumber.get(epNo);
+            if (!mapped?.id)
+                return ep;
+            return {
+                ...ep,
+                id: String(mapped.id),
+            };
+        });
+    }
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+};
 const buildFlixhqTmdbInfo = async (request, id, type) => {
     const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
     const fetchBase = async () => {
@@ -1257,14 +1760,23 @@ const routes = async (fastify, options) => {
             const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${main_1.tmdbApi}`;
             const res = await axios_1.default.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
             if (res.data) {
+                const movieRuntime = Number(res.data.runtime || 0);
+                const tvEpisodeRuntime = Array.isArray(res.data.episode_run_time) && res.data.episode_run_time.length
+                    ? Number(res.data.episode_run_time[0] || 0)
+                    : 0;
+                const normalizedRuntime = movieRuntime > 0 ? movieRuntime : tvEpisodeRuntime;
                 return {
                     id: res.data.id.toString(),
                     title: res.data.title || res.data.name || 'Unknown',
+                    type: type,
+                    media_type: type,
                     description: res.data.overview,
                     image: `https://image.tmdb.org/t/p/original${res.data.poster_path}`,
                     cover: `https://image.tmdb.org/t/p/original${res.data.backdrop_path}`,
                     status: res.data.status,
                     releaseDate: res.data.release_date || res.data.first_air_date,
+                    runtime: normalizedRuntime,
+                    duration: normalizedRuntime,
                     rating: res.data.vote_average,
                     genres: res.data.genres?.map((g) => g.name) || [],
                     totalEpisodes: res.data.number_of_episodes || (res.data.episodes ? res.data.episodes.length : 0),
@@ -1353,6 +1865,16 @@ const routes = async (fastify, options) => {
                 return reply.status(500).send({ message });
             }
         }
+        if (providerLower === 'animekai') {
+            try {
+                const res = await buildAnimekaiTmdbInfo(request, id, type);
+                return reply.status(200).send(res);
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return reply.status(500).send({ message });
+            }
+        }
         if (providerLower === 'flixhq') {
             try {
                 const res = await buildFlixhqTmdbInfo(request, id, type);
@@ -1394,6 +1916,8 @@ const routes = async (fastify, options) => {
             if (!res || !res.title || res.title === 'Unknown') {
                 const rescued = await getDirectTmdbInfo(id, type);
                 if (rescued) {
+                    await attachBestTrailer(rescued, id, type);
+                    convertTmdbImagesToUrls(rescued);
                     res = { ...(res || {}), ...rescued, message: 'Metadata partially rescued via direct fetch' };
                 }
             }
@@ -1404,6 +1928,8 @@ const routes = async (fastify, options) => {
             // Catch-all rescue if the entire fetch fails
             const rescued = await getDirectTmdbInfo(id, type);
             if (rescued) {
+                await attachBestTrailer(rescued, id, type);
+                convertTmdbImagesToUrls(rescued);
                 return reply.status(200).send({ ...rescued, episodes: [], message: 'Metadata rescued after fetch failure' });
             }
             reply.status(200).send({ id, title: 'Unknown', episodes: [], message: 'TMDB metadata fetch failed' });
@@ -1456,6 +1982,36 @@ const routes = async (fastify, options) => {
                 return reply.status(500).send({ message });
             }
         }
+        if (providerLower === 'justanime') {
+            try {
+                const res = await buildJustanimeTmdbInfo(request, id, type);
+                return reply.status(200).send(res);
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return reply.status(500).send({ message });
+            }
+        }
+        if (providerLower === 'animesalt') {
+            try {
+                const res = await buildAnimesaltTmdbInfo(request, id, type);
+                return reply.status(200).send(res);
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return reply.status(500).send({ message });
+            }
+        }
+        if (providerLower === 'animekai') {
+            try {
+                const res = await buildAnimekaiTmdbInfo(request, id, type);
+                return reply.status(200).send(res);
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return reply.status(500).send({ message });
+            }
+        }
         if (providerLower === 'flixhq') {
             try {
                 const res = await buildFlixhqTmdbInfo(request, id, type);
@@ -1497,6 +2053,8 @@ const routes = async (fastify, options) => {
             if (!res || !res.title || res.title === 'Unknown') {
                 const rescued = await getDirectTmdbInfo(id, type);
                 if (rescued) {
+                    await attachBestTrailer(rescued, id, type);
+                    convertTmdbImagesToUrls(rescued);
                     res = { ...(res || {}), ...rescued, message: 'Metadata partially rescued via direct fetch' };
                 }
             }
@@ -1507,6 +2065,8 @@ const routes = async (fastify, options) => {
             // Catch-all rescue
             const rescued = await getDirectTmdbInfo(id, type);
             if (rescued) {
+                await attachBestTrailer(rescued, id, type);
+                convertTmdbImagesToUrls(rescued);
                 return reply.status(200).send({ ...rescued, episodes: [], message: 'Metadata rescued after fetch failure' });
             }
             reply.status(200).send({ id, title: 'Unknown', episodes: [], message: 'TMDB metadata fetch failed' });
@@ -1614,11 +2174,13 @@ const routes = async (fastify, options) => {
         if (providerLower && ANIME_PROVIDER_ROUTES[providerLower]) {
             let resolvedEpisodeId = episodeId;
             // Attempt to resolve episodeId from season/episode if it's a provider-specific mapping provider
-            if ((providerLower === 'justanime' || providerLower === 'animesalt') && (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))) {
+            if ((providerLower === 'justanime' || providerLower === 'animesalt' || providerLower === 'animekai') && (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))) {
                 try {
                     const info = providerLower === 'justanime'
                         ? await buildJustanimeTmdbInfo(request, id, type || 'tv')
-                        : await buildAnimesaltTmdbInfo(request, id, type || 'tv');
+                        : providerLower === 'animesalt'
+                            ? await buildAnimesaltTmdbInfo(request, id, type || 'tv')
+                            : await buildAnimekaiTmdbInfo(request, id, type || 'tv');
                     const requestedSeason = Number(request.query.season || 1);
                     const requestedEpisode = Number(request.query.episode || 1);
                     const seasonMatch = Array.isArray(info?.seasons)

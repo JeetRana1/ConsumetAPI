@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "main": "src/main.ts",
     "scripts": {
-    "start": "node dist/main.js",
+        "start": "node dist/main.js",
         "dev": "nodemon src/main.ts",
         "build": "tsc",
         "lint": "prettier --write \"src/**/*.ts\""
@@ -30,6 +30,7 @@
         "axios": "^1.0.0",
         "chalk": "4.1.2",
         "cheerio": "1.0.0-rc.12",
+        "cloudscraper": "^4.6.0",
         "dotenv": "^16.0.3",
         "fastify": "^4.10.2",
         "googleapis": "^171.4.0",

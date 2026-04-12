@@ -161,6 +161,55 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   await fastify.register(news, { prefix: '/news' });
   await fastify.register(Utils, { prefix: '/utils' });
 
+  // HLS Proxy to work around CORS issues
+  fastify.get('/proxy/hls/*', async (request, reply) => {
+    const url = request.url.replace('/proxy/hls/', 'https://');
+    
+    try {
+      const response = await axios.get(url, {
+        headers: {
+          'Referer': 'https://streameeeeee.site/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+        timeout: 15000,
+        responseType: 'text',
+      });
+
+      // If it's an M3U8 manifest, rewrite relative URLs to absolute
+      if (url.includes('.m3u8')) {
+        let content = response.data;
+        const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+        
+        // Replace all .m3u8 URLs with proxy URLs
+        content = content.replace(/(https:\/\/[^\s]+\.m3u8)/g, (match: string) => {
+          return `/proxy/hls/${match}`;
+        });
+        
+        // Also proxy .ts segment files
+        content = content.replace(/(https:\/\/[^\s]+\.ts)/g, (match: string) => {
+          return `/proxy/hls/${match}`;
+        });
+
+        reply.header('Content-Type', 'application/vnd.apple.mpegurl');
+        reply.header('Access-Control-Allow-Origin', '*');
+        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        return reply.send(content);
+      }
+
+      // For other content (segments, etc.), proxy as-is
+      reply.header('Access-Control-Allow-Origin', '*');
+      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      reply.header('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+      return reply.send(response.data);
+
+    } catch (error: any) {
+      console.error('HLS Proxy error:', error.message);
+      return reply.status(500).send({ error: 'Proxy failed' });
+    }
+  });
+
   try {
     fastify.get('/', (_, rp) => {
       rp.status(200).send(
