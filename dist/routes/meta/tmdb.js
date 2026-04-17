@@ -1458,7 +1458,92 @@ const buildAnimekaiTmdbInfo = async (request, id, type) => {
 const buildFlixhqTmdbInfo = async (request, id, type) => {
     const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
     const fetchBase = async () => {
-        const res = await baseTmdb.fetchMediaInfo(id, type);
+        let res = null;
+        try {
+            res = await baseTmdb.fetchMediaInfo(id, type);
+        }
+        catch {
+            if (main_1.tmdbApi) {
+                const directUrl = `https://api.themoviedb.org/3/${type}/${id}?api_key=${main_1.tmdbApi}`;
+                const directRes = await axios_1.default.get(directUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                if (directRes?.data) {
+                    const direct = directRes.data;
+                    const isTv = String(type || '').toLowerCase() === 'tv';
+                    let seasons = Array.isArray(direct?.seasons)
+                        ? direct.seasons.map((s) => ({
+                            id: String(s?.id || ''),
+                            name: s?.name,
+                            season: s?.season_number,
+                            image: s?.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
+                            episodes: [],
+                        }))
+                        : [];
+                    if (isTv && seasons.length) {
+                        const seasonDetails = await Promise.all(seasons
+                            .filter((s) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0)
+                            .slice(0, 25)
+                            .map(async (s) => {
+                            try {
+                                const seasonNo = Number(s.season);
+                                const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${main_1.tmdbApi}&language=en-US`;
+                                const seasonRes = await axios_1.default.get(seasonUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                                const episodes = Array.isArray(seasonRes?.data?.episodes)
+                                    ? seasonRes.data.episodes.map((ep, idx) => {
+                                        const epNo = Number(ep?.episode_number || ep?.number || idx + 1);
+                                        return {
+                                            id: `${id}-s${seasonNo}e${epNo}`,
+                                            episode: epNo,
+                                            number: epNo,
+                                            title: ep?.name || `Episode ${epNo}`,
+                                            season: seasonNo,
+                                        };
+                                    })
+                                    : [];
+                                return { seasonNo, episodes };
+                            }
+                            catch {
+                                return null;
+                            }
+                        }));
+                        const bySeasonNo = new Map();
+                        seasonDetails.forEach((entry) => {
+                            if (!entry || !Number.isFinite(Number(entry.seasonNo)))
+                                return;
+                            bySeasonNo.set(Number(entry.seasonNo), Array.isArray(entry.episodes) ? entry.episodes : []);
+                        });
+                        seasons = seasons.map((s) => {
+                            const seasonNo = Number(s?.season || 0);
+                            return { ...s, episodes: bySeasonNo.get(seasonNo) || [] };
+                        });
+                    }
+                    const movieRuntime = Number(direct?.runtime || 0);
+                    const tvEpisodeRuntime = Array.isArray(direct?.episode_run_time) && direct.episode_run_time.length
+                        ? Number(direct.episode_run_time[0] || 0)
+                        : 0;
+                    const normalizedRuntime = movieRuntime > 0 ? movieRuntime : tvEpisodeRuntime;
+                    res = {
+                        id: String(direct?.id || id),
+                        title: direct?.title || direct?.name || 'Unknown',
+                        type,
+                        media_type: type,
+                        description: direct?.overview,
+                        image: direct?.poster_path ? `https://image.tmdb.org/t/p/original${direct.poster_path}` : null,
+                        cover: direct?.backdrop_path ? `https://image.tmdb.org/t/p/original${direct.backdrop_path}` : null,
+                        status: direct?.status,
+                        releaseDate: direct?.release_date || direct?.first_air_date,
+                        runtime: normalizedRuntime,
+                        duration: normalizedRuntime,
+                        rating: direct?.vote_average,
+                        genres: Array.isArray(direct?.genres) ? direct.genres.map((g) => g?.name).filter(Boolean) : [],
+                        totalEpisodes: Number(direct?.number_of_episodes || 0),
+                        seasons,
+                    };
+                }
+            }
+        }
+        if (!res) {
+            throw new Error('Failed to fetch base metadata for FlixHQ mapping');
+        }
         if (res && typeof res === 'object') {
             delete res.cast;
             delete res.characters;
@@ -1760,11 +1845,60 @@ const routes = async (fastify, options) => {
             const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${main_1.tmdbApi}`;
             const res = await axios_1.default.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
             if (res.data) {
+                const isTv = String(type || '').toLowerCase() === 'tv';
                 const movieRuntime = Number(res.data.runtime || 0);
                 const tvEpisodeRuntime = Array.isArray(res.data.episode_run_time) && res.data.episode_run_time.length
                     ? Number(res.data.episode_run_time[0] || 0)
                     : 0;
                 const normalizedRuntime = movieRuntime > 0 ? movieRuntime : tvEpisodeRuntime;
+                let seasons = Array.isArray(res.data.seasons)
+                    ? res.data.seasons.map((s) => ({
+                        id: s.id.toString(),
+                        name: s.name,
+                        season: s.season_number,
+                        image: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
+                        episodes: [],
+                    }))
+                    : [];
+                if (isTv && seasons.length) {
+                    const seasonFetches = seasons
+                        .filter((s) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0)
+                        .slice(0, 25)
+                        .map(async (s) => {
+                        try {
+                            const seasonNo = Number(s.season);
+                            const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${main_1.tmdbApi}&language=en-US`;
+                            const seasonRes = await axios_1.default.get(seasonUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                            const episodes = Array.isArray(seasonRes?.data?.episodes)
+                                ? seasonRes.data.episodes.map((ep, idx) => {
+                                    const epNo = Number(ep?.episode_number || ep?.number || idx + 1);
+                                    return {
+                                        id: `${id}-s${seasonNo}e${epNo}`,
+                                        episode: epNo,
+                                        number: epNo,
+                                        title: ep?.name || `Episode ${epNo}`,
+                                        season: seasonNo,
+                                    };
+                                })
+                                : [];
+                            return { seasonNo, episodes };
+                        }
+                        catch {
+                            return null;
+                        }
+                    });
+                    const seasonDetails = await Promise.all(seasonFetches);
+                    const bySeasonNo = new Map();
+                    seasonDetails.forEach((entry) => {
+                        if (!entry || !Number.isFinite(Number(entry.seasonNo)))
+                            return;
+                        bySeasonNo.set(Number(entry.seasonNo), Array.isArray(entry.episodes) ? entry.episodes : []);
+                    });
+                    seasons = seasons.map((s) => {
+                        const seasonNo = Number(s?.season || 0);
+                        return { ...s, episodes: bySeasonNo.get(seasonNo) || [] };
+                    });
+                }
                 return {
                     id: res.data.id.toString(),
                     title: res.data.title || res.data.name || 'Unknown',
@@ -1780,12 +1914,7 @@ const routes = async (fastify, options) => {
                     rating: res.data.vote_average,
                     genres: res.data.genres?.map((g) => g.name) || [],
                     totalEpisodes: res.data.number_of_episodes || (res.data.episodes ? res.data.episodes.length : 0),
-                    seasons: res.data.seasons?.map((s) => ({
-                        id: s.id.toString(),
-                        name: s.name,
-                        season: s.season_number,
-                        image: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
-                    })) || [],
+                    seasons,
                     // Minimal info to keep UI working
                 };
             }
@@ -1834,6 +1963,25 @@ const routes = async (fastify, options) => {
         }
         if (!type) {
             return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+        }
+        // When no provider is explicitly requested, prefer direct TMDB metadata.
+        // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
+        if (!providerLower) {
+            const fetchDirect = async () => {
+                const direct = await getDirectTmdbInfo(id, type);
+                if (!direct)
+                    return null;
+                await attachBestTrailer(direct, id, type);
+                convertTmdbImagesToUrls(direct);
+                return direct;
+            };
+            const directRes = main_1.redis
+                ? await cache_1.default.fetch(main_1.redis, `tmdb:info:direct:${type}:${id}:trailer-v1`, fetchDirect, main_1.REDIS_TTL)
+                : await fetchDirect();
+            if (directRes) {
+                return reply.status(200).send(directRes);
+            }
+            // Fall through to provider-backed path as a last resort.
         }
         if (providerLower === 'dramacool') {
             try {
@@ -1971,6 +2119,25 @@ const routes = async (fastify, options) => {
         }
         if (!type) {
             return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+        }
+        // When no provider is explicitly requested, prefer direct TMDB metadata.
+        // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
+        if (!providerLower) {
+            const fetchDirect = async () => {
+                const direct = await getDirectTmdbInfo(id, type);
+                if (!direct)
+                    return null;
+                await attachBestTrailer(direct, id, type);
+                convertTmdbImagesToUrls(direct);
+                return direct;
+            };
+            const directRes = main_1.redis
+                ? await cache_1.default.fetch(main_1.redis, `tmdb:info:direct:${type}:${id}:trailer-v1`, fetchDirect, main_1.REDIS_TTL)
+                : await fetchDirect();
+            if (directRes) {
+                return reply.status(200).send(directRes);
+            }
+            // Fall through to provider-backed path as a last resort.
         }
         if (providerLower === 'dramacool') {
             try {

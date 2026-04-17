@@ -250,6 +250,8 @@ const routes = async (fastify, options) => {
     // Handle audio track requests - return minimal valid m3u8 with dummy segment to prevent HLS errors
     // The segment URL points to a valid location but will return empty content
     const dummySegmentUrl = 'data:application/octet-stream;';
+    const proxyAffinityByHost = new Map();
+    const PROXY_AFFINITY_TTL_MS = 1000 * 60 * 8;
     // Direct routes
     fastify.get('/audio_tam/*', async (request, reply) => {
         return reply
@@ -344,10 +346,13 @@ const routes = async (fastify, options) => {
             const looksLikeM3u8 = pathLower.endsWith('.m3u8') ||
                 pathLower.includes('playlist') ||
                 queryLower.includes('.m3u8');
+            const looksLikeMediaSegment = /\.(ts|m4s|m4v|mp4|aac|mp3)(\?|$)/i.test(pathLower) ||
+                queryLower.includes('.m4s') ||
+                queryLower.includes('.ts');
             const refererForRequest = referer || `${target.protocol}//${target.host}/`;
             const baseRequestConfig = {
                 responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
-                timeout: looksLikeM3u8 ? 60000 : 90000,
+                timeout: looksLikeM3u8 ? 20000 : (looksLikeMediaSegment ? 25000 : 30000),
                 headers: {
                     Referer: refererForRequest,
                     Origin: (() => {
@@ -378,7 +383,13 @@ const routes = async (fastify, options) => {
                     }
                 })();
                 const forceDirectOnly = /(^|\.)net20\.cc$/.test(host) || /(^|\.)nm-cdn\d+\.top$/.test(host) || host.includes('animesalt');
-                const effectiveChain = forceDirectOnly ? [undefined] : chain;
+                const sticky = proxyAffinityByHost.get(host);
+                const stickyProxy = sticky && (Date.now() - sticky.at) < PROXY_AFFINITY_TTL_MS
+                    ? sticky.proxyUrl
+                    : undefined;
+                const effectiveChain = forceDirectOnly
+                    ? [undefined]
+                    : [...new Set([stickyProxy, ...chain])];
                 // If direct only or just one option, do it simple
                 if (effectiveChain.length <= 1) {
                     try {
@@ -423,10 +434,11 @@ const routes = async (fastify, options) => {
                             originForRequest = 'https://justanime.to';
                         }
                     }
-                    return await axios_1.default.get(targetUrl, {
+                    const perAttemptTimeout = Math.max(looksLikeM3u8 ? 9000 : (looksLikeMediaSegment ? 12000 : 10000), Math.min(Number(requestConfig.timeout || 12000), looksLikeM3u8 ? 14000 : 18000));
+                    const response = await axios_1.default.get(targetUrl, {
                         proxy: false,
                         ...requestConfig,
-                        timeout: Math.min(requestConfig.timeout || 10000, 3500), // Cap per-proxy wait for fragments
+                        timeout: perAttemptTimeout,
                         headers: {
                             ...requestConfig.headers,
                             Referer: refererForRequest,
@@ -434,6 +446,8 @@ const routes = async (fastify, options) => {
                         },
                         ...proxyOptions,
                     });
+                    proxyAffinityByHost.set(host, { proxyUrl, at: Date.now() });
+                    return response;
                 };
                 // Attempt direct first if not forced proxy
                 try {
@@ -611,6 +625,9 @@ const routes = async (fastify, options) => {
                     .join('\n');
                 return reply
                     .header('Content-Type', 'application/vnd.apple.mpegurl')
+                    .header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                    .header('Pragma', 'no-cache')
+                    .header('Expires', '0')
                     .send(rewritten);
             }
             const statusCode = Number(upstream.status) || 200;
@@ -633,6 +650,8 @@ const routes = async (fastify, options) => {
             if (!isM3u8 && upstream.data && typeof upstream.data.pipe === 'function') {
                 return reply
                     .header('Content-Type', contentType || 'application/octet-stream')
+                    .header('Connection', 'keep-alive')
+                    .header('Cache-Control', String(upstream.headers?.['cache-control'] || 'public, max-age=60, no-transform'))
                     .send(upstream.data);
             }
             return reply
