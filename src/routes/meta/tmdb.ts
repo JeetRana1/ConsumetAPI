@@ -20,6 +20,8 @@ const configureMeta = (meta: any) => {
   return meta;
 };
 
+const shouldLookupTrailers = String(process.env.TMDB_ENABLE_TRAILER_LOOKUP || 'false').toLowerCase() === 'true';
+
 const parseIso8601DurationToSeconds = (duration?: string): number => {
   if (!duration || typeof duration !== 'string') return 0;
   const match = duration.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i);
@@ -223,6 +225,7 @@ const chooseOfficialTrailerFromExisting = async (payload: any): Promise<string |
 
 const attachBestTrailer = async (info: any, id: string, type?: string) => {
   if (!info || typeof info !== 'object') return;
+  if (!shouldLookupTrailers) return;
 
   const tmdbTrailer = await fetchTmdbOfficialTrailer(id, type);
   if (tmdbTrailer) {
@@ -1872,11 +1875,14 @@ const convertTmdbImagesToUrls = (data: any) => {
     return null;
   };
 
-  const getDirectTmdbInfo = async (id: string, type: string) => {
+  const getDirectTmdbInfo = async (id: string, type: string, includeSeasons = false) => {
     try {
       if (!tmdbApi) return null;
       const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${tmdbApi}`;
-      const res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const res = await axios.get(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 5000,
+      });
       if (res.data) {
         const isTv = String(type || '').toLowerCase() === 'tv';
         const movieRuntime = Number(res.data.runtime || 0);
@@ -1894,7 +1900,7 @@ const convertTmdbImagesToUrls = (data: any) => {
             }))
           : [];
 
-        if (isTv && seasons.length) {
+        if (isTv && includeSeasons && seasons.length) {
           const seasonFetches = seasons
             .filter((s: any) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0)
             .slice(0, 25)
@@ -1902,7 +1908,10 @@ const convertTmdbImagesToUrls = (data: any) => {
               try {
                 const seasonNo = Number(s.season);
                 const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
-                const seasonRes = await axios.get(seasonUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                const seasonRes = await axios.get(seasonUrl, {
+                  headers: { 'User-Agent': 'Mozilla/5.0' },
+                  timeout: 5000,
+                });
                 const episodes = Array.isArray(seasonRes?.data?.episodes)
                   ? seasonRes.data.episodes.map((ep: any, idx: number) => {
                       const epNo = Number(ep?.episode_number || ep?.number || idx + 1);
