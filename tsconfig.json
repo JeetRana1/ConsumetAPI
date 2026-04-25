@@ -37,9 +37,6 @@
   "exclude": [
     "node_modules",
     "<node_internals>/**",
-    "bin/**",
-    "dist/**",
-    "scratch/**",
-    "demo/**"
+    "bin/**"
   ]
 }
