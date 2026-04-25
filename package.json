@@ -5,7 +5,7 @@
     "scripts": {
         "start": "node dist/main.js",
         "dev": "nodemon src/main.ts",
-        "build": "tsc",
+        "build": "node --max-old-space-size=2048 ./node_modules/typescript/bin/tsc",
         "lint": "prettier --write \"src/**/*.ts\""
     },
     "engines": {
