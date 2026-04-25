@@ -5,12 +5,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const extensions_1 = require("@consumet/extensions");
 const extensions_2 = require("@consumet/extensions");
-const cheerio_1 = require("cheerio");
 const main_1 = require("../../main");
 const cache_1 = __importDefault(require("../../utils/cache"));
 const streamable_1 = require("../../utils/streamable");
 const provider_1 = require("../../utils/provider");
 const movieServerFallback_1 = require("../../utils/movieServerFallback");
+const vegamoviesProvider_1 = require("../../providers/custom/vegamoviesProvider");
 const axios_1 = __importDefault(require("axios"));
 const googleapis_1 = require("googleapis");
 const configureMeta = (meta) => {
@@ -306,18 +306,12 @@ const resolveMovieProvider = (provider) => {
     switch (provider.toLowerCase()) {
         case 'flixhq':
             return (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ());
-        case 'dramacool':
-            return (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
         default:
             return undefined;
     }
 };
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const MOVIE_WATCH_ATTEMPT_TIMEOUT_MS = Number(process.env.MOVIE_WATCH_ATTEMPT_TIMEOUT_MS || (IS_PRODUCTION ? 7000 : 5000));
-const DRAMACOOL_WP_BASE = process.env.DRAMACOOL_BASE_URL || 'https://dramacool9.com.ro';
-const DRAMACOOL_SITEMAP_CACHE_TTL_MS = 1000 * 60 * 15;
-let dramacoolSitemapCache;
-const dramacoolEpisodesCache = new Map();
 const parseLocsFromXml = (xml) => {
     return [...xml.matchAll(/<loc>([^<]+)<\/loc>/gi)].map((m) => m[1].trim());
 };
@@ -385,6 +379,175 @@ const titleMatchScore = (candidateTitle, queries) => {
             score = Math.max(score, 700);
     }
     return score;
+};
+const normalizeVegamoviesSourceId = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw)
+        return '';
+    const withoutQuery = raw.split('?')[0].replace(/\.html$/i, '');
+    return (withoutQuery.split('/').filter(Boolean).pop() || withoutQuery).trim();
+};
+const resolveVegamoviesSlugFromTmdb = async (id, type) => {
+    const sourceId = normalizeVegamoviesSourceId(id);
+    if (!sourceId)
+        return '';
+    if (/^tt\d+$/i.test(sourceId) || !/^\d+$/.test(sourceId)) {
+        return sourceId;
+    }
+    const candidateTitles = [];
+    try {
+        if (main_1.tmdbApi) {
+            const mediaTypes = Array.from(new Set([
+                type === 'tv' ? 'tv' : 'movie',
+                type === 'tv' ? 'movie' : 'tv',
+            ]));
+            for (const mediaType of mediaTypes) {
+                try {
+                    const response = await axios_1.default.get(`https://api.themoviedb.org/3/${mediaType}/${id}?api_key=${main_1.tmdbApi}&language=en-US`);
+                    const data = response?.data;
+                    if (data) {
+                        candidateTitles.push(...getTitleCandidatesFromMedia(data));
+                        if (candidateTitles.length)
+                            break;
+                    }
+                }
+                catch {
+                    // Try the next TMDB media type.
+                }
+            }
+        }
+    }
+    catch {
+        // Fall through to secondary TMDB fetch below.
+    }
+    if (!candidateTitles.length) {
+        try {
+            const tmdbClient = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+            const mediaInfo = await tmdbClient.fetchMediaInfo(id, type || 'movie');
+            candidateTitles.push(...getTitleCandidatesFromMedia(mediaInfo));
+        }
+        catch {
+            // Ignore and return empty below.
+        }
+    }
+    const normalizedTitles = Array.from(new Set(candidateTitles.map((title) => String(title || '').trim()).filter(Boolean)));
+    if (!normalizedTitles.length)
+        return '';
+    let bestSlug = '';
+    let bestScore = -1;
+    for (const query of normalizedTitles.slice(0, 3)) {
+        try {
+            const searchRes = await vegamoviesProvider_1.VegamoviesProvider.search(query, 1);
+            const results = Array.isArray(searchRes?.results) ? searchRes.results : [];
+            for (const result of results.slice(0, 10)) {
+                const resultTitle = String(result?.title || '').trim();
+                const score = titleMatchScore(resultTitle, normalizedTitles);
+                if (score > bestScore && result?.id) {
+                    bestScore = score;
+                    bestSlug = String(result.id).trim();
+                }
+            }
+            if (bestScore >= 700)
+                break;
+        }
+        catch {
+            // Try the next title candidate.
+        }
+    }
+    return bestSlug;
+};
+const resolveTmdbExternalImdbId = async (id, type) => {
+    const sourceId = normalizeVegamoviesSourceId(id);
+    if (!sourceId)
+        return '';
+    if (/^tt\d+$/i.test(sourceId))
+        return sourceId;
+    if (!/^\d+$/.test(sourceId) || !main_1.tmdbApi)
+        return '';
+    const mediaTypes = Array.from(new Set([
+        type === 'tv' ? 'tv' : 'movie',
+        type === 'tv' ? 'movie' : 'tv',
+    ]));
+    for (const mediaType of mediaTypes) {
+        try {
+            const response = await axios_1.default.get(`https://api.themoviedb.org/3/${mediaType}/${sourceId}/external_ids?api_key=${main_1.tmdbApi}`);
+            const imdbId = String(response?.data?.imdb_id || '').trim();
+            if (/^tt\d+$/i.test(imdbId))
+                return imdbId;
+        }
+        catch {
+            // Try the next TMDB media type.
+        }
+    }
+    return '';
+};
+const resolveVegamoviesInfo = async (id, type) => {
+    const sourceId = await resolveVegamoviesSlugFromTmdb(id, type);
+    const lookupId = sourceId || normalizeVegamoviesSourceId(id);
+    if (!lookupId)
+        throw new Error('Unable to resolve Vegamovies title');
+    return vegamoviesProvider_1.VegamoviesProvider.getInfo(lookupId);
+};
+const resolveVegamoviesWatch = async (id, type, season, episode) => {
+    console.log(`[Vegamovies] Resolving watch for id=${id}, type=${type}, s=${season}, e=${episode}`);
+    let title = '';
+    let tmdbId = '';
+    // Try to get TMDB info to get a clean title for searching
+    try {
+        if (main_1.tmdbApi) {
+            let data = null;
+            if (/^tt\d+$/i.test(id)) {
+                // Search by IMDB ID
+                const findRes = await axios_1.default.get(`https://api.themoviedb.org/3/find/${id}?api_key=${main_1.tmdbApi}&external_source=imdb_id`);
+                const results = findRes.data.movie_results.concat(findRes.data.tv_results);
+                if (results.length) {
+                    data = results[0];
+                    tmdbId = data.id.toString();
+                }
+            }
+            else if (/^\d+$/.test(id)) {
+                // Search by TMDB ID
+                const mediaType = type === 'tv' ? 'tv' : 'movie';
+                const res = await axios_1.default.get(`https://api.themoviedb.org/3/${mediaType}/${id}?api_key=${main_1.tmdbApi}`);
+                data = res.data;
+                tmdbId = id;
+            }
+            if (data) {
+                title = data.title || data.name || '';
+            }
+        }
+    }
+    catch (err) {
+        console.warn(`[Vegamovies] Failed to fetch TMDB info for ${id}:`, err.message);
+    }
+    // If we have a title, search Vegamovies for it
+    if (title) {
+        console.log(`[Vegamovies] Searching for title: ${title}`);
+        const searchResults = await vegamoviesProvider_1.VegamoviesProvider.search(title);
+        const movie = searchResults?.results?.find((r) => r.title.toLowerCase().includes(title.toLowerCase()) ||
+            title.toLowerCase().includes(r.title.toLowerCase()));
+        if (movie) {
+            console.log(`[Vegamovies] Found slug via title search: ${movie.id}`);
+            return await vegamoviesProvider_1.VegamoviesProvider.getSources(movie.id, season, episode);
+        }
+    }
+    // Fallback to IMDB ID resolution if title search failed or no title found
+    const externalImdbId = await resolveTmdbExternalImdbId(id, type);
+    if (externalImdbId) {
+        console.log(`[Vegamovies] Attempting resolution via IMDB ID: ${externalImdbId}`);
+        try {
+            const sources = await vegamoviesProvider_1.VegamoviesProvider.getSources(externalImdbId, season, episode);
+            if (sources?.sources?.length)
+                return sources;
+        }
+        catch (err) {
+            console.warn(`[Vegamovies] Resolution via IMDB ID failed:`, err.message);
+        }
+    }
+    // Final fallback: use the provided ID directly
+    const lookupId = normalizeVegamoviesSourceId(id);
+    console.log(`[Vegamovies] Final fallback lookup ID: ${lookupId}`);
+    return await vegamoviesProvider_1.VegamoviesProvider.getSources(lookupId, season, episode);
 };
 const isAnimeLikeMovie = (media) => {
     const genreNames = toGenreNames(media?.genres);
@@ -548,231 +711,6 @@ const tryAnimeProvidersForMovie = async (request, options) => {
             return firstValid;
     }
     return null;
-};
-const fetchDramacoolWpSearch = async (query) => {
-    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-    const endpoint = `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/wp-json/wp/v2/search?search=${encodeURIComponent(query)}&per_page=20`;
-    const response = await dramacool.client.get(endpoint);
-    const results = Array.isArray(response?.data)
-        ? response.data.filter((item) => item?.subtype === 'drama' && typeof item?.url === 'string')
-        : [];
-    return results;
-};
-const getDramacoolPostSitemaps = async () => {
-    if (dramacoolSitemapCache &&
-        Date.now() - dramacoolSitemapCache.fetchedAt < DRAMACOOL_SITEMAP_CACHE_TTL_MS) {
-        return dramacoolSitemapCache.postSitemaps;
-    }
-    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-    const sitemapIndexUrl = `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/sitemap_index.xml`;
-    const xml = String((await dramacool.client.get(sitemapIndexUrl)).data || '');
-    const postSitemaps = parseLocsFromXml(xml).filter((url) => /\/post-sitemap\d*\.xml$/i.test(url));
-    dramacoolSitemapCache = { fetchedAt: Date.now(), postSitemaps };
-    return postSitemaps;
-};
-const fetchDramacoolEpisodesBySlug = async (dramaSlug) => {
-    const cached = dramacoolEpisodesCache.get(dramaSlug);
-    if (cached && Date.now() - cached.fetchedAt < DRAMACOOL_SITEMAP_CACHE_TTL_MS) {
-        return cached.episodes;
-    }
-    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-    const postSitemaps = await getDramacoolPostSitemaps();
-    const variants = buildDramaSlugVariants(dramaSlug);
-    const found = new Set();
-    for (const sitemapUrl of postSitemaps) {
-        try {
-            const xml = String((await dramacool.client.get(sitemapUrl)).data || '');
-            const locs = parseLocsFromXml(xml);
-            for (const loc of locs) {
-                const lower = loc.toLowerCase();
-                const locSlug = extractSlug(lower);
-                const isEpisode = /(?:^|-)episode-\d+/i.test(locSlug);
-                const matched = variants.some((variant) => locSlug.startsWith(`${variant}-episode-`));
-                const looseMatched = variants.some((variant) => locSlug.includes(`${variant}-`));
-                if (lower.endsWith('.html') && isEpisode && (matched || looseMatched))
-                    found.add(loc);
-            }
-        }
-        catch {
-            continue;
-        }
-    }
-    const episodes = [...found]
-        .map((url) => ({
-        id: url,
-        url,
-        episode: parseEpisodeNumber(url),
-    }))
-        .sort((a, b) => (a.episode || 0) - (b.episode || 0));
-    dramacoolEpisodesCache.set(dramaSlug, { fetchedAt: Date.now(), episodes });
-    return episodes;
-};
-const fetchDramacoolEpisodesFromDramaPage = async (dramaUrlOrSlug, dramaSlug) => {
-    const dramacool = (0, provider_1.configureProvider)(new extensions_2.MOVIES.DramaCool());
-    const dramaUrl = /^https?:\/\//i.test(dramaUrlOrSlug)
-        ? dramaUrlOrSlug
-        : `${DRAMACOOL_WP_BASE.replace(/\/$/, '')}/${dramaUrlOrSlug.replace(/^\//, '')}`;
-    const html = String((await dramacool.client.get(dramaUrl)).data || '');
-    const $ = (0, cheerio_1.load)(html);
-    const foundStrict = new Set();
-    const foundLoose = new Set();
-    const variants = buildDramaSlugVariants(dramaSlug);
-    const selectors = [
-        '.list-episode a[href*="episode-"]',
-        '.all-episode a[href*="episode-"]',
-        '.episodes a[href*="episode-"]',
-        '[id*="episode"] a[href*="episode-"]',
-        '.entry-content a[href*="episode-"]',
-        'a[href*="episode-"]',
-    ];
-    for (const selector of selectors) {
-        $(selector).each((_, el) => {
-            const href = String($(el).attr('href') || '').trim();
-            if (!href)
-                return;
-            const abs = toAbsoluteUrl(DRAMACOOL_WP_BASE, href);
-            if (!/episode-\d+\.html$/i.test(abs))
-                return;
-            const slug = extractSlug(abs).toLowerCase();
-            const strict = variants.some((variant) => slug.startsWith(`${variant}-episode-`));
-            const loose = variants.some((variant) => slug.includes(`${variant}-`));
-            if (strict)
-                foundStrict.add(abs);
-            else if (loose)
-                foundLoose.add(abs);
-        });
-        if (foundStrict.size)
-            break;
-    }
-    const pool = foundStrict.size ? foundStrict : foundLoose;
-    return [...pool]
-        .map((url) => ({
-        id: url,
-        url,
-        episode: parseEpisodeNumber(url),
-    }))
-        .sort((a, b) => (a.episode || 0) - (b.episode || 0));
-};
-const buildDramacoolTmdbInfo = async (request, id, type) => {
-    const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
-    const fetchBase = async () => {
-        const res = await baseTmdb.fetchMediaInfo(id, type);
-        if (res && typeof res === 'object') {
-            // Optimize for speed by removing heavy fields not used in current UI
-            delete res.cast;
-            delete res.characters;
-            delete res.recommendations;
-            delete res.similar;
-        }
-        return res;
-    };
-    const baseInfo = main_1.redis
-        ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}`, fetchBase, main_1.REDIS_TTL)
-        : await fetchBase();
-    await attachBestTrailer(baseInfo, id, type);
-    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-    if (!titleCandidates.length)
-        return baseInfo;
-    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-    // Limit search terms to top 2 titles + year variants for speed
-    const mainTerms = titleCandidates.slice(0, 2);
-    const searchTerms = Array.from(new Set([
-        ...mainTerms,
-        ...mainTerms.flatMap((title) => Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []),
-    ])).slice(0, 4); // Limit to top 4 for speed
-    // Parallelize all searches
-    const searchPromises = searchTerms.map(async (term) => {
-        try {
-            return await fetchDramacoolWpSearch(term);
-        }
-        catch {
-            return [];
-        }
-    });
-    const searchResults = await Promise.all(searchPromises);
-    const combinedResults = searchResults.flat();
-    const scored = combinedResults.map((item) => {
-        const normItem = normalizeText(item.title);
-        let score = 0;
-        for (const candidate of titleCandidates) {
-            const normCandidate = normalizeText(candidate);
-            if (normItem === normCandidate)
-                score += 120;
-            else if (normItem.includes(normCandidate) || normCandidate.includes(normItem))
-                score += 80;
-        }
-        if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-            if (normItem.includes(String(yearGuess)))
-                score += 25;
-            if (normItem.includes(String(yearGuess - 1)) || normItem.includes(String(yearGuess + 1)))
-                score += 8;
-        }
-        return { item, score };
-    });
-    const pick = scored.sort((a, b) => b.score - a.score)[0]?.item || combinedResults[0];
-    if (!pick)
-        return baseInfo;
-    const dramaSlug = extractSlug(pick.url);
-    let dcEpisodes = await fetchDramacoolEpisodesFromDramaPage(pick.url, dramaSlug);
-    if (!dcEpisodes.length) {
-        dcEpisodes = await fetchDramacoolEpisodesBySlug(dramaSlug);
-    }
-    if (!dcEpisodes.length) {
-        try {
-            const delegated = await request.server.inject({
-                method: 'GET',
-                url: `/movies/dramacool/info?id=${encodeURIComponent(pick.url)}`,
-            });
-            const payload = JSON.parse(delegated.body || '{}');
-            const fallbackEpisodes = Array.isArray(payload?.episodes)
-                ? payload.episodes
-                    .map((ep) => ({
-                    id: ep?.id || ep?.url,
-                    url: ep?.url || ep?.id,
-                    episode: parseEpisodeNumber(String(ep?.id || ep?.url || ep?.title || '')),
-                }))
-                    .filter((ep) => typeof ep.id === 'string')
-                : [];
-            if (fallbackEpisodes.length) {
-                dcEpisodes = fallbackEpisodes;
-            }
-        }
-        catch {
-            // ignore fallback and continue with whatever we already have
-        }
-    }
-    const byEpisode = new Map();
-    for (const ep of dcEpisodes) {
-        if (typeof ep.episode === 'number')
-            byEpisode.set(ep.episode, ep);
-    }
-    if (Array.isArray(baseInfo?.seasons)) {
-        baseInfo.seasons = baseInfo.seasons.map((season, seasonIndex) => {
-            if (!Array.isArray(season?.episodes))
-                return season;
-            const isPrimarySeason = (season?.season || seasonIndex + 1) === 1;
-            return {
-                ...season,
-                episodes: season.episodes.map((episode) => {
-                    if (!isPrimarySeason)
-                        return episode;
-                    const epNum = Number(episode?.episode || episode?.number);
-                    const mapped = byEpisode.get(epNum);
-                    if (!mapped)
-                        return episode;
-                    return {
-                        ...episode,
-                        id: mapped.id,
-                        url: mapped.url,
-                    };
-                }),
-            };
-        });
-    }
-    baseInfo.id = dramaSlug;
-    baseInfo.url = pick.url;
-    convertTmdbImagesToUrls(baseInfo);
-    return baseInfo;
 };
 const buildJustanimeTmdbInfo = async (request, id, type) => {
     const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
@@ -1983,16 +1921,6 @@ const routes = async (fastify, options) => {
             }
             // Fall through to provider-backed path as a last resort.
         }
-        if (providerLower === 'dramacool') {
-            try {
-                const res = await buildDramacoolTmdbInfo(request, id, type);
-                return reply.status(200).send(res);
-            }
-            catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                return reply.status(500).send({ message });
-            }
-        }
         if (providerLower === 'justanime') {
             try {
                 const res = await buildJustanimeTmdbInfo(request, id, type);
@@ -2027,6 +1955,20 @@ const routes = async (fastify, options) => {
             try {
                 const res = await buildFlixhqTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return reply.status(500).send({ message });
+            }
+        }
+        if (providerLower === 'vegamovies') {
+            try {
+                const direct = await getDirectTmdbInfo(id, type);
+                if (!direct)
+                    throw new Error('Unable to resolve TMDB metadata');
+                await attachBestTrailer(direct, id, type);
+                convertTmdbImagesToUrls(direct);
+                return reply.status(200).send(direct);
             }
             catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
@@ -2138,16 +2080,6 @@ const routes = async (fastify, options) => {
                 return reply.status(200).send(directRes);
             }
             // Fall through to provider-backed path as a last resort.
-        }
-        if (providerLower === 'dramacool') {
-            try {
-                const res = await buildDramacoolTmdbInfo(request, id, type);
-                return reply.status(200).send(res);
-            }
-            catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                return reply.status(500).send({ message });
-            }
         }
         if (providerLower === 'justanime') {
             try {
@@ -2322,6 +2254,7 @@ const routes = async (fastify, options) => {
         const server = request.query.server;
         const directOnlyRaw = String(request.query.directOnly || '').toLowerCase();
         const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
+        console.log(`[tmdb.ts] watch hit: id=${id}, type=${type}, provider=${provider}, providerLower=${providerLower}`);
         // Build cache key for watch results (skip caching if server is specified since that changes results)
         const cacheKey = !server ? `tmdb:watch:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
         // Try to return from cache first
@@ -2381,51 +2314,19 @@ const routes = async (fastify, options) => {
             const redirectUrl = `${animeBaseUrl}/watch/${resolvedEpisodeId}${queryString}`;
             return reply.redirect(redirectUrl);
         }
-        if (providerLower === 'dramacool') {
+        if (providerLower === 'vegamovies') {
             try {
-                let dramacoolEpisodeId = episodeId;
-                if (!dramacoolEpisodeId && id && type) {
-                    const info = await buildDramacoolTmdbInfo(request, id, type);
-                    const requestedSeason = Number(request.query.season || 1);
-                    const requestedEpisode = Number(request.query.episode || 1);
-                    const seasonMatch = Array.isArray(info?.seasons)
-                        ? info.seasons.find((s) => Number(s?.season || 1) === requestedSeason)
-                        : undefined;
-                    const epMatch = Array.isArray(seasonMatch?.episodes)
-                        ? seasonMatch.episodes.find((ep) => Number(ep?.episode || ep?.number || 0) === requestedEpisode)
-                        : undefined;
-                    dramacoolEpisodeId = epMatch?.id;
-                }
-                if (!dramacoolEpisodeId) {
-                    return reply.status(400).send({ message: 'episodeId is required for dramacool watch' });
-                }
-                const queryParts = [`episodeId=${encodeURIComponent(dramacoolEpisodeId)}`];
-                if (server)
-                    queryParts.push(`server=${encodeURIComponent(server)}`);
-                if (directOnly)
-                    queryParts.push('directOnly=true');
-                const delegated = await request.server.inject({
-                    method: 'GET',
-                    url: `/movies/dramacool/watch?${queryParts.join('&')}`,
-                });
-                const payloadText = delegated.body || '{}';
-                const payload = (() => {
-                    try {
-                        return JSON.parse(payloadText);
-                    }
-                    catch {
-                        return { message: payloadText };
-                    }
-                })();
-                // Cache successful watch results
-                if (cacheKey && main_1.redis && delegated.statusCode < 400) {
-                    main_1.redis.setex(cacheKey, main_1.REDIS_TTL, JSON.stringify(payload)).catch(() => { });
-                }
-                return reply.status(delegated.statusCode || 200).send(payload);
+                const q = request.query;
+                const season = type === 'tv' ? Number(q.season || 1) : (q.season ? Number(q.season) : undefined);
+                const episode = type === 'tv' ? Number(q.episode || 1) : (q.episode ? Number(q.episode) : undefined);
+                const res = await resolveVegamoviesWatch(id, type, season, episode);
+                console.log(`[Vegamovies] Watch resolved successfully: ${res?.sources?.length || 0} sources`);
+                return reply.status(200).send({ ...res, provider: 'vegamovies' });
             }
             catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
-                return reply.status(404).send({ message });
+                console.error(`[Vegamovies] Watch resolution failed: ${message}`);
+                return reply.status(500).send({ message, error: 'Vegamovies resolution error' });
             }
         }
         if (type === 'movie' && id && (!providerLower || providerLower === 'flixhq') && !episodeId) {
@@ -2603,8 +2504,7 @@ const routes = async (fastify, options) => {
                 if ((providerLower === 'flixhq' || !providerLower) && sourceId) {
                     const lowerSourceId = sourceId.toLowerCase();
                     const foreignProviderUrl = /^https?:\/\//i.test(sourceId);
-                    const foreignProviderHint = lowerSourceId.includes('dramacool') ||
-                        lowerSourceId.includes('animesalt') ||
+                    const foreignProviderHint = lowerSourceId.includes('animesalt') ||
                         lowerSourceId.includes('hianime') ||
                         lowerSourceId.includes('satoru');
                     if (foreignProviderUrl || foreignProviderHint) {
@@ -2749,7 +2649,8 @@ const routes = async (fastify, options) => {
                 }
             }
             const message = err instanceof Error ? err.message : String(err);
-            reply.status(404).send({ message });
+            console.error(`[tmdb.ts] watch failed: ${message}`);
+            reply.status(404).send({ message, error: 'Not Found or Extraction Failed' });
         }
     };
     fastify.get('/watch', watch);

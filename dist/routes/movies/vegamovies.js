@@ -1,117 +1,72 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
-const axios_1 = __importDefault(require("axios"));
-const cheerio_1 = require("cheerio");
-const browserRuntimeExtractor_1 = require("../../utils/browserRuntimeExtractor");
-const BASE_URL = 'https://vegamovies.actor';
+const vegamoviesProvider_1 = require("../../providers/custom/vegamoviesProvider");
 const routes = async (fastify, options) => {
+    // GET /movies/vegamovies/
+    fastify.get('/', async (request, reply) => {
+        try {
+            const { page = 1 } = request.query;
+            const data = await vegamoviesProvider_1.VegamoviesProvider.getRecent(Number(page));
+            reply.status(200).send(data);
+        }
+        catch (err) {
+            reply.status(500).send({ message: err.message || 'Something went wrong.' });
+        }
+    });
+    // GET /movies/vegamovies/:query
     fastify.get('/:query', async (request, reply) => {
-        const query = request.params.query;
-        const page = request.query.page || 1;
+        const { query } = request.params;
+        const { page = 1 } = request.query;
         try {
-            const res = await axios_1.default.get(`${BASE_URL}/page/${page}/?s=${encodeURIComponent(query)}`);
-            const $ = (0, cheerio_1.load)(res.data);
-            const results = [];
-            // Vegamovies articles
-            $('.blog-items article').each((i, el) => {
-                const title = $(el).find('h2 a').text() || $(el).find('.post-title a').text() || $(el).find('a').attr('title');
-                const url = $(el).find('a').attr('href');
-                const image = $(el).find('img').attr('src');
-                if (title && url) {
-                    results.push({
-                        id: url,
-                        title: title.trim(),
-                        url,
-                        image: image || '',
-                        type: 'Movie'
-                    });
-                }
-            });
-            reply.status(200).send({
-                currentPage: page,
-                hasNextPage: results.length >= 10,
-                results
-            });
+            const data = await vegamoviesProvider_1.VegamoviesProvider.search(query, Number(page));
+            reply.status(200).send(data);
         }
         catch (err) {
-            reply.status(500).send({ message: 'Something went wrong. Please try again later.' });
+            reply.status(500).send({ message: err.message || 'Something went wrong.' });
         }
     });
+    // GET /movies/vegamovies/search?q=avengers&page=1
+    fastify.get('/search', async (request, reply) => {
+        const { q, query, page = 1 } = request.query;
+        const searchQuery = q || query;
+        if (!searchQuery) {
+            return reply.status(400).send({ message: 'Query parameter "q" is required.' });
+        }
+        try {
+            const data = await vegamoviesProvider_1.VegamoviesProvider.search(searchQuery, Number(page));
+            reply.status(200).send(data);
+        }
+        catch (err) {
+            reply.status(500).send({ message: err.message || 'Something went wrong.' });
+        }
+    });
+    // GET /movies/vegamovies/info?id=426-avengers-endgame-2019-hindi-dual-audio-720p
     fastify.get('/info', async (request, reply) => {
-        const id = request.query.id;
-        if (typeof id === 'undefined') {
-            return reply.status(400).send({ message: 'id is required' });
+        const { id } = request.query;
+        if (!id) {
+            return reply.status(400).send({ message: 'Query parameter "id" is required.' });
         }
         try {
-            const url = id.startsWith('http') ? id : `${BASE_URL}/${id}`;
-            const res = await axios_1.default.get(url);
-            const $ = (0, cheerio_1.load)(res.data);
-            const title = $('h1').first().text() || $('title').text();
-            const image = $('img').first().attr('src');
-            const description = $('article').text().substring(0, 500).trim();
-            const iframes = [];
-            // Vegamovies loads iframe dynamically via JS, but IMDB ID is in the raw HTML
-            const imdbMatch = String(res.data || '').match(/(tt\d{7,9})/i);
-            if (imdbMatch && imdbMatch[1]) {
-                iframes.push(`https://kwita408ant.com/play/${imdbMatch[1]}`);
-            }
-            const episodes = iframes.map((src, i) => ({
-                id: src,
-                title: `Stream ${i + 1}`,
-                url: src
-            }));
-            if (episodes.length === 0) {
-                // Vegamovies often requires download, fallback
-                episodes.push({
-                    id: url,
-                    title: 'Check site manually',
-                    url: url
-                });
-            }
-            reply.status(200).send({
-                id,
-                title: title.replace(' - Vegamovies', '').trim(),
-                url,
-                image,
-                description,
-                episodes
-            });
+            const data = await vegamoviesProvider_1.VegamoviesProvider.getInfo(id);
+            reply.status(200).send(data);
         }
         catch (err) {
-            console.error('[vegamovies] Error fetching info:', err.message, err.response?.status);
-            reply.status(500).send({ message: 'Something went wrong. Please try again later.' });
+            reply.status(500).send({ message: err.message || 'Something went wrong.' });
         }
     });
+    // GET /movies/vegamovies/watch?id=tt4154796&season=1&episode=1
+    // id can be: IMDB ID (tt...) or a vegamovies slug
     fastify.get('/watch', async (request, reply) => {
-        const episodeId = request.query.episodeId;
-        if (typeof episodeId === 'undefined') {
-            return reply.status(400).send({ message: 'episodeId is required' });
+        const { id, season, episode } = request.query;
+        if (!id) {
+            return reply.status(400).send({ message: 'Query parameter "id" (IMDB ID or slug) is required.' });
         }
         try {
-            // EpisodeId is the iframe URL
-            if (!episodeId.startsWith('http')) {
-                return reply.status(200).send({
-                    headers: {},
-                    sources: [],
-                    subtitles: []
-                });
-            }
-            // Use Playwright extractor since kwita408ant hides the m3u8 behind AES decryption inside the player js.
-            // Playwright intercepts the unencrypted traffic automatically after clicking the video!
-            let sources = await (0, browserRuntimeExtractor_1.extractDirectSourcesWithPlaywright)(episodeId, BASE_URL, 15000);
-            reply.status(200).send({
-                headers: {
-                    Referer: episodeId,
-                },
-                sources,
-                subtitles: []
-            });
+            const data = await vegamoviesProvider_1.VegamoviesProvider.getSources(id, season ? Number(season) : undefined, episode ? Number(episode) : undefined);
+            reply.status(200).send(data);
         }
         catch (err) {
-            reply.status(500).send({ message: 'Something went wrong. Please try again later.' });
+            reply.status(500).send({ message: err.message || 'Something went wrong.' });
         }
     });
 };
