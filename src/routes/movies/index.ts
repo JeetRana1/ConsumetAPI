@@ -2,11 +2,11 @@ import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from '
 import { PROVIDERS_LIST } from '@consumet/extensions';
 
 import flixhq from './flixhq';
-import dramacool from './dramacool';
+import vegamovies from './vegamovies';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(flixhq, { prefix: '/flixhq' });
-  await fastify.register(dramacool, { prefix: '/dramacool' });
+  await fastify.register(vegamovies, { prefix: '/vegamovies' });
 
   fastify.get('/', async (request: any, reply: any) => {
     reply.status(200).send('Welcome to Consumet Movies and TV Shows');
@@ -43,6 +43,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         .status(500)
         .send({ message: 'Something went wrong. Please try again later.' });
     }
+  });
+
+  // Legacy route support for players calling /movies/:id/:title
+  fastify.get('/:id/:title', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id, title } = request.params as { id: string; title: string };
+    // We assume it's a movie if called on /movies/
+    // Prioritize vegamovies as it has the most robust search logic for TMDB IDs now
+    return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=vegamovies`);
   });
 };
 

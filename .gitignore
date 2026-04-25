@@ -1,15 +1,40 @@
+# Build and Dependencies
 node_modules/
-yarn-error.log
-.env
-src/scripts
-.vscode
-yarn.lock
-test.ts
-# dist
+dist/
 package-lock.json
 yarn.lock
+yarn-error.log
 .chrome-debug-9222
-debug_*.js
-test_*.js
+
+# Environment and Config
+.env
+.vscode
+.DS_Store
+
+# Scratch and Temporary Files
+scratch/
+src/scripts
 *.txt
+*.json
+!package.json
+!tsconfig.json
+
+# Test Scripts and Temp Pages
+test.ts
+test.js
+test_*.js
+debug_*.js
+test-vega*.js
+check-playlists.js
+temp_check.js
 temp.json
+breaking_bad_page.html
+tv_show.html
+player_tv.html
+frontend_fix.txt
+hls_fix.txt
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

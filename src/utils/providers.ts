@@ -34,10 +34,21 @@ export default class Providers {
       },
       async (request: ProvidersRequest, reply: FastifyReply) => {
         const { type } = request.query;
-        const providers = Object.values(PROVIDERS_LIST[type]).sort((one, two) =>
-          one.name.localeCompare(two.name),
-        );
-        reply.status(200).send(providers.map((element) => element.toString));
+        let providers = Object.values(PROVIDERS_LIST[type])
+          .map((element) => element.toString)
+          .filter((p) => p.name !== 'DramaCool');
+
+        if (type === 'MOVIES') {
+          providers.push({
+            name: 'Vegamovies',
+            class: 'VegamoviesProvider',
+            languages: ['English', 'Hindi', 'Dual Audio'],
+            isDirect: true,
+          });
+        }
+
+        providers.sort((one, two) => one.name.localeCompare(two.name));
+        reply.status(200).send(providers);
       },
     );
   };
