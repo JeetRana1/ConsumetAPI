@@ -5,7 +5,7 @@
     "scripts": {
         "start": "node dist/main.js",
         "dev": "nodemon src/main.ts",
-        "build": "esbuild src/main.ts --bundle --platform=node --format=cjs --target=node18 --packages=external --outfile=dist/main.js",
+        "build": "node --max-old-space-size=3072 ./node_modules/typescript/bin/tsc --pretty false",
         "typecheck": "node --max-old-space-size=2048 ./node_modules/typescript/bin/tsc --noEmit --pretty false",
         "lint": "prettier --write \"src/**/*.ts\""
     },

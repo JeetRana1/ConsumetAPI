@@ -22,6 +22,11 @@ const configureMeta = (meta: any) => {
 
 const shouldLookupTrailers = String(process.env.TMDB_ENABLE_TRAILER_LOOKUP || 'false').toLowerCase() === 'true';
 
+const createTmdbClient = (provider: any) => {
+  if (!tmdbApi) return null;
+  return configureMeta(new META.TMDB(tmdbApi, provider));
+};
+
 const parseIso8601DurationToSeconds = (duration?: string): number => {
   if (!duration || typeof duration !== 'string') return 0;
   const match = duration.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i);
@@ -1978,7 +1983,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     let type = sanitizeType((request.query as { type: string }).type);
     const provider = (request.query as { provider?: string }).provider;
     const providerLower = provider?.toLowerCase();
-    let tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
+    let tmdb = createTmdbClient(configureProvider(new MOVIES.FlixHQ()));
 
     if (!id) return reply.status(400).send({ message: "The 'id' query is required" });
 
@@ -2007,6 +2012,24 @@ const convertTmdbImagesToUrls = (data: any) => {
 
     if (!type) {
       return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+    }
+
+    if (!tmdbApi) {
+      const rescued = await getDirectTmdbInfo(id, type as string);
+      if (rescued) {
+        await attachBestTrailer(rescued, id, type as string);
+        convertTmdbImagesToUrls(rescued);
+        return reply.status(200).send(rescued);
+      }
+
+      return reply.status(200).send({
+        id,
+        title: 'Unknown',
+        type,
+        media_type: type,
+        episodes: [],
+        message: 'TMDB key not configured on the server.',
+      });
     }
 
     // When no provider is explicitly requested, prefer direct TMDB metadata.
@@ -2087,12 +2110,18 @@ const convertTmdbImagesToUrls = (data: any) => {
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
       if (selectedProvider) {
-        tmdb = configureMeta(new META.TMDB(tmdbApi, selectedProvider));
+        tmdb = createTmdbClient(selectedProvider);
+        if (!tmdb) {
+          return reply.status(200).send({ id, title: 'Unknown', type, media_type: type, episodes: [], message: 'TMDB key not configured on the server.' });
+        }
       } else {
         const possibleProvider = PROVIDERS_LIST.MOVIES.find(
           (p) => p.name.toLowerCase() === provider.toLocaleLowerCase(),
         );
-        tmdb = configureMeta(new META.TMDB(tmdbApi, possibleProvider));
+        tmdb = createTmdbClient(possibleProvider);
+        if (!tmdb) {
+          return reply.status(200).send({ id, title: 'Unknown', type, media_type: type, episodes: [], message: 'TMDB key not configured on the server.' });
+        }
       }
     }
 
@@ -2150,7 +2179,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     let type = sanitizeType((request.query as { type: string }).type);
     const provider = (request.query as { provider?: string }).provider;
     const providerLower = provider?.toLowerCase();
-    let tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
+    let tmdb = createTmdbClient(configureProvider(new MOVIES.FlixHQ()));
 
     // --- Smart Type Guessing Logic ---
     if (!type || (type !== 'movie' && type !== 'tv')) {
@@ -2176,6 +2205,17 @@ const convertTmdbImagesToUrls = (data: any) => {
 
     if (!type) {
       return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+    }
+
+    if (!tmdbApi) {
+      return reply.status(200).send({
+        id,
+        title: 'Unknown',
+        type,
+        media_type: type,
+        episodes: [],
+        message: 'TMDB key not configured on the server.',
+      });
     }
 
     // When no provider is explicitly requested, prefer direct TMDB metadata.
@@ -2243,12 +2283,12 @@ const convertTmdbImagesToUrls = (data: any) => {
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
       if (selectedProvider) {
-        tmdb = configureMeta(new META.TMDB(tmdbApi, selectedProvider));
+        tmdb = createTmdbClient(selectedProvider);
       } else {
         const possibleProvider = PROVIDERS_LIST.MOVIES.find(
           (p) => p.name.toLowerCase() === provider.toLocaleLowerCase(),
         );
-        tmdb = configureMeta(new META.TMDB(tmdbApi, possibleProvider));
+        tmdb = createTmdbClient(possibleProvider);
       }
     }
 
@@ -2314,7 +2354,22 @@ const convertTmdbImagesToUrls = (data: any) => {
 
     const page = (request.query as { page?: number }).page || 1;
 
-    const tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
+    if (!tmdbApi) {
+      return reply.status(200).send({
+        results: [],
+        page,
+        message: 'TMDB key not configured on the server.',
+      });
+    }
+
+    const tmdb = createTmdbClient(configureProvider(new MOVIES.FlixHQ()));
+    if (!tmdb) {
+      return reply.status(200).send({
+        results: [],
+        page,
+        message: 'TMDB client could not be initialized.',
+      });
+    }
 
     try {
       let res = await tmdb.fetchTrending(type, timePeriod, page);

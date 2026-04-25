@@ -20,6 +20,12 @@ const configureMeta = (meta) => {
     }
     return meta;
 };
+const shouldLookupTrailers = String(process.env.TMDB_ENABLE_TRAILER_LOOKUP || 'false').toLowerCase() === 'true';
+const createTmdbClient = (provider) => {
+    if (!main_1.tmdbApi)
+        return null;
+    return configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, provider));
+};
 const parseIso8601DurationToSeconds = (duration) => {
     if (!duration || typeof duration !== 'string')
         return 0;
@@ -211,6 +217,8 @@ const chooseOfficialTrailerFromExisting = async (payload) => {
 };
 const attachBestTrailer = async (info, id, type) => {
     if (!info || typeof info !== 'object')
+        return;
+    if (!shouldLookupTrailers)
         return;
     const tmdbTrailer = await fetchTmdbOfficialTrailer(id, type);
     if (tmdbTrailer) {
@@ -1776,12 +1784,15 @@ const routes = async (fastify, options) => {
         }
         return null;
     };
-    const getDirectTmdbInfo = async (id, type) => {
+    const getDirectTmdbInfo = async (id, type, includeSeasons = false) => {
         try {
             if (!main_1.tmdbApi)
                 return null;
             const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${main_1.tmdbApi}`;
-            const res = await axios_1.default.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+            const res = await axios_1.default.get(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                timeout: 5000,
+            });
             if (res.data) {
                 const isTv = String(type || '').toLowerCase() === 'tv';
                 const movieRuntime = Number(res.data.runtime || 0);
@@ -1798,7 +1809,7 @@ const routes = async (fastify, options) => {
                         episodes: [],
                     }))
                     : [];
-                if (isTv && seasons.length) {
+                if (isTv && includeSeasons && seasons.length) {
                     const seasonFetches = seasons
                         .filter((s) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0)
                         .slice(0, 25)
@@ -1806,7 +1817,10 @@ const routes = async (fastify, options) => {
                         try {
                             const seasonNo = Number(s.season);
                             const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${main_1.tmdbApi}&language=en-US`;
-                            const seasonRes = await axios_1.default.get(seasonUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                            const seasonRes = await axios_1.default.get(seasonUrl, {
+                                headers: { 'User-Agent': 'Mozilla/5.0' },
+                                timeout: 5000,
+                            });
                             const episodes = Array.isArray(seasonRes?.data?.episodes)
                                 ? seasonRes.data.episodes.map((ep, idx) => {
                                     const epNo = Number(ep?.episode_number || ep?.number || idx + 1);
@@ -1872,7 +1886,7 @@ const routes = async (fastify, options) => {
         let type = sanitizeType(request.query.type);
         const provider = request.query.provider;
         const providerLower = provider?.toLowerCase();
-        let tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ())));
+        let tmdb = createTmdbClient((0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
         if (!id)
             return reply.status(400).send({ message: "The 'id' query is required" });
         // --- Smart Type Guessing Logic ---
@@ -1901,6 +1915,22 @@ const routes = async (fastify, options) => {
         }
         if (!type) {
             return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+        }
+        if (!main_1.tmdbApi) {
+            const rescued = await getDirectTmdbInfo(id, type);
+            if (rescued) {
+                await attachBestTrailer(rescued, id, type);
+                convertTmdbImagesToUrls(rescued);
+                return reply.status(200).send(rescued);
+            }
+            return reply.status(200).send({
+                id,
+                title: 'Unknown',
+                type,
+                media_type: type,
+                episodes: [],
+                message: 'TMDB key not configured on the server.',
+            });
         }
         // When no provider is explicitly requested, prefer direct TMDB metadata.
         // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
@@ -1978,11 +2008,17 @@ const routes = async (fastify, options) => {
         if (typeof provider !== 'undefined') {
             const selectedProvider = resolveMovieProvider(provider);
             if (selectedProvider) {
-                tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, selectedProvider));
+                tmdb = createTmdbClient(selectedProvider);
+                if (!tmdb) {
+                    return reply.status(200).send({ id, title: 'Unknown', type, media_type: type, episodes: [], message: 'TMDB key not configured on the server.' });
+                }
             }
             else {
                 const possibleProvider = extensions_1.PROVIDERS_LIST.MOVIES.find((p) => p.name.toLowerCase() === provider.toLocaleLowerCase());
-                tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, possibleProvider));
+                tmdb = createTmdbClient(possibleProvider);
+                if (!tmdb) {
+                    return reply.status(200).send({ id, title: 'Unknown', type, media_type: type, episodes: [], message: 'TMDB key not configured on the server.' });
+                }
             }
         }
         try {
@@ -2035,7 +2071,7 @@ const routes = async (fastify, options) => {
         let type = sanitizeType(request.query.type);
         const provider = request.query.provider;
         const providerLower = provider?.toLowerCase();
-        let tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ())));
+        let tmdb = createTmdbClient((0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
         // --- Smart Type Guessing Logic ---
         if (!type || (type !== 'movie' && type !== 'tv')) {
             console.log(`[SmartGuess] type missing for id ${id}, attempting resolution...`);
@@ -2061,6 +2097,16 @@ const routes = async (fastify, options) => {
         }
         if (!type) {
             return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+        }
+        if (!main_1.tmdbApi) {
+            return reply.status(200).send({
+                id,
+                title: 'Unknown',
+                type,
+                media_type: type,
+                episodes: [],
+                message: 'TMDB key not configured on the server.',
+            });
         }
         // When no provider is explicitly requested, prefer direct TMDB metadata.
         // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
@@ -2124,11 +2170,11 @@ const routes = async (fastify, options) => {
         if (typeof provider !== 'undefined') {
             const selectedProvider = resolveMovieProvider(provider);
             if (selectedProvider) {
-                tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, selectedProvider));
+                tmdb = createTmdbClient(selectedProvider);
             }
             else {
                 const possibleProvider = extensions_1.PROVIDERS_LIST.MOVIES.find((p) => p.name.toLowerCase() === provider.toLocaleLowerCase());
-                tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, possibleProvider));
+                tmdb = createTmdbClient(possibleProvider);
             }
         }
         try {
@@ -2184,7 +2230,21 @@ const routes = async (fastify, options) => {
         if (!validTimePeriods.has(timePeriod))
             timePeriod = 'day';
         const page = request.query.page || 1;
-        const tmdb = configureMeta(new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ())));
+        if (!main_1.tmdbApi) {
+            return reply.status(200).send({
+                results: [],
+                page,
+                message: 'TMDB key not configured on the server.',
+            });
+        }
+        const tmdb = createTmdbClient((0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+        if (!tmdb) {
+            return reply.status(200).send({
+                results: [],
+                page,
+                message: 'TMDB client could not be initialized.',
+            });
+        }
         try {
             let res = await tmdb.fetchTrending(type, timePeriod, page);
             // If results are empty or missing, try direct rescue
