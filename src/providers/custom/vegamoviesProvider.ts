@@ -1,6 +1,15 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
+
+// Route player-domain requests through a SOCKS5 proxy (e.g. Tor) when
+// TOR_PROXY is set — this bypasses datacenter IP blocks on loffe414wil.com.
+// On the VM: install tor, then set TOR_PROXY=socks5://127.0.0.1:9050 in .env
+const _torProxyUrl = process.env.TOR_PROXY || '';
+const _proxyAgent = _torProxyUrl ? new SocksProxyAgent(_torProxyUrl) : null;
+console.log('[Vegamovies] Proxy agent:', _torProxyUrl ? `using ${_torProxyUrl}` : 'none (direct)');
+
 
 const BASE_URL = 'https://vegamovies.nf';
 const PLAYER_DOMAIN = 'https://loffe414wil.com';
@@ -266,8 +275,18 @@ export class VegamoviesProvider {
       }
 
       const playerUrl = `${PLAYER_DOMAIN}/play/${playerImdbId}${season ? `?s=${season}${episode ? `&e=${episode}` : ''}` : ''}`;
-      
-      const playerHtml = await fetchHtml(playerUrl);
+
+      // Fetch the player page, routing through Tor/SOCKS proxy if configured.
+      // loffe414wil.com blocks GCP datacenter IPs with 404 — the proxy routes
+      // through a residential exit node that the site allows through.
+      const playerHtmlRes = await axios.get(playerUrl, {
+        headers: { ...FETCH_HEADERS, Referer: BASE_URL + '/' },
+        timeout: 20000,
+        maxRedirects: 5,
+        ...(_proxyAgent ? { httpsAgent: _proxyAgent, httpAgent: _proxyAgent } : {}),
+      });
+      const playerHtml = typeof playerHtmlRes.data === 'string' ? playerHtmlRes.data : String(playerHtmlRes.data);
+
       const playerConfigFromHtml = extractPlayerConfig(playerHtml);
 
       let sources: Array<{ url: string; quality: string; isM3U8: boolean; isEmbed: boolean; referer?: string }> = [];
