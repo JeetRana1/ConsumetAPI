@@ -3,7 +3,7 @@ import * as cheerio from 'cheerio';
 import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
 
 const BASE_URL = 'https://vegamovies.nf';
-const PLAYER_DOMAIN = 'https://fusvi413kac.com';
+const PLAYER_DOMAIN = 'https://loffe414wil.com';
 
 const FETCH_HEADERS = {
   'User-Agent':
