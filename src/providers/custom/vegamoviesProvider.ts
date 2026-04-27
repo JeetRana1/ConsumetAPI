@@ -19,7 +19,8 @@ const FETCH_HEADERS = {
 };
 
 async function fetchHtml(url: string, referer = BASE_URL + '/'): Promise<string> {
-  const res = await axios.get(url, {
+  const proxyUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(url)}`;
+  const res = await axios.get(proxyUrl, {
     headers: { ...FETCH_HEADERS, Referer: referer },
     timeout: 15000,
     maxRedirects: 5,
@@ -197,7 +198,8 @@ export class VegamoviesProvider {
       searchBody.append('search_start', String(page));
       searchBody.append('story', query);
 
-      const res = await axios.post(`${BASE_URL}/`, searchBody.toString(), {
+      const proxyUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(BASE_URL + '/')}`;
+      const res = await axios.post(proxyUrl, searchBody.toString(), {
         headers: { 
           ...FETCH_HEADERS, 
           'Content-Type': 'application/x-www-form-urlencoded',
