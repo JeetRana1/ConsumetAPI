@@ -3,12 +3,9 @@ import * as cheerio from 'cheerio';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
 
-// Route player-domain requests through a SOCKS5 proxy (e.g. Tor) when
-// TOR_PROXY is set — this bypasses datacenter IP blocks on loffe414wil.com.
-// On the VM: install tor, then set TOR_PROXY=socks5://127.0.0.1:9050 in .env
-const _torProxyUrl = process.env.TOR_PROXY || '';
-const _proxyAgent = _torProxyUrl ? new SocksProxyAgent(_torProxyUrl) : null;
-console.log('[Vegamovies] Proxy agent:', _torProxyUrl ? `using ${_torProxyUrl}` : 'none (direct)');
+// Route player-domain requests through Shirna Proxy to bypass datacenter IP blocks.
+const SHIRNA_PROXY_URL = process.env.SHIRNA_PROXY_URL || 'http://localhost:3000/proxy?src=';
+console.log('[Vegamovies] Using Shirna Proxy:', SHIRNA_PROXY_URL);
 
 
 const BASE_URL = 'https://vegamovies.nf';
@@ -276,14 +273,12 @@ export class VegamoviesProvider {
 
       const playerUrl = `${PLAYER_DOMAIN}/play/${playerImdbId}${season ? `?s=${season}${episode ? `&e=${episode}` : ''}` : ''}`;
 
-      // Fetch the player page, routing through Tor/SOCKS proxy if configured.
-      // loffe414wil.com blocks GCP datacenter IPs with 404 — the proxy routes
-      // through a residential exit node that the site allows through.
-      const playerHtmlRes = await axios.get(playerUrl, {
+      // Fetch the player page, routing through the Shirna proxy
+      const proxyPlayerUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(playerUrl)}`;
+      const playerHtmlRes = await axios.get(proxyPlayerUrl, {
         headers: { ...FETCH_HEADERS, Referer: BASE_URL + '/' },
         timeout: 20000,
         maxRedirects: 5,
-        ...(_proxyAgent ? { httpsAgent: _proxyAgent, httpAgent: _proxyAgent } : {}),
       });
       const playerHtml = typeof playerHtmlRes.data === 'string' ? playerHtmlRes.data : String(playerHtmlRes.data);
 
@@ -294,7 +289,8 @@ export class VegamoviesProvider {
       if (playerConfigFromHtml?.file) {
         try {
           const fileUrl = playerConfigFromHtml.file.startsWith('http') ? playerConfigFromHtml.file : `${new URL(playerUrl).origin}${playerConfigFromHtml.file}`;
-          const playlistRes = await axios.get(fileUrl, {
+          const proxyFileUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(fileUrl)}`;
+          const playlistRes = await axios.get(proxyFileUrl, {
             headers: { 
               ...FETCH_HEADERS, 
               ...(playerConfigFromHtml.key ? { 'X-Csrf-Token': playerConfigFromHtml.key } : {}),
@@ -399,7 +395,8 @@ export class VegamoviesProvider {
 
               for (const candidateUrl of candidateUrls) {
                 try {
-                  const linkRes = await axios.get(candidateUrl, {
+                  const proxyCandidateUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(candidateUrl)}`;
+                  const linkRes = await axios.get(proxyCandidateUrl, {
                     headers: hdrs,
                     timeout: 12000,
                     responseType: 'text',
