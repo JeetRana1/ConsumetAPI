@@ -30,6 +30,12 @@ class Providers {
                         languages: ['English', 'Hindi', 'Dual Audio'],
                         isDirect: true,
                     });
+                    providers.push({
+                        name: 'Vidzen',
+                        class: 'VidzenProvider',
+                        languages: ['Multi'],
+                        isDirect: true,
+                    });
                 }
                 providers.sort((one, two) => one.name.localeCompare(two.name));
                 reply.status(200).send(providers);

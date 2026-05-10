@@ -528,7 +528,7 @@ const resolveVegamoviesInfo = async (id: string, type?: string) => {
   return VegamoviesProvider.getInfo(lookupId);
 };
 
-const resolveVegamoviesWatch = async (id: string, type?: string, season?: number, episode?: number) => {
+export const resolveVegamoviesWatch = async (id: string, type?: string, season?: number, episode?: number) => {
   console.log(`[Vegamovies] Resolving watch for id=${id}, type=${type}, s=${season}, e=${episode}`);
   
   let title = '';
@@ -2036,7 +2036,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
     if (!providerLower) {
       const fetchDirect = async () => {
-        const direct = await getDirectTmdbInfo(id, type as string);
+        const direct = await getDirectTmdbInfo(id, type as string, String(type || '').toLowerCase() === 'tv');
         if (!direct) return null;
         await attachBestTrailer(direct, id, type as string);
         convertTmdbImagesToUrls(direct);
@@ -2044,7 +2044,7 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       const directRes = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:direct:${type}:${id}:trailer-v1`, fetchDirect, REDIS_TTL)
+        ? await cache.fetch(redis as Redis, `tmdb:info:direct:${type}:${id}:seasons-v2`, fetchDirect, REDIS_TTL)
         : await fetchDirect();
 
       if (directRes) {
@@ -2222,7 +2222,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
     if (!providerLower) {
       const fetchDirect = async () => {
-        const direct = await getDirectTmdbInfo(id, type as string);
+        const direct = await getDirectTmdbInfo(id, type as string, String(type || '').toLowerCase() === 'tv');
         if (!direct) return null;
         await attachBestTrailer(direct, id, type as string);
         convertTmdbImagesToUrls(direct);
@@ -2230,7 +2230,7 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       const directRes = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:direct:${type}:${id}:trailer-v1`, fetchDirect, REDIS_TTL)
+        ? await cache.fetch(redis as Redis, `tmdb:info:direct:${type}:${id}:seasons-v2`, fetchDirect, REDIS_TTL)
         : await fetchDirect();
 
       if (directRes) {
@@ -2445,7 +2445,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     console.log(`[tmdb.ts] watch hit: id=${id}, type=${type}, provider=${provider}, providerLower=${providerLower}`);
 
     // Build cache key for watch results (skip caching if server is specified since that changes results)
-    const cacheKey = !server ? `tmdb:watch:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
+    const cacheKey = !server ? `tmdb:watch:v3:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
 
     // Try to return from cache first
     if (cacheKey && redis) {
@@ -2582,7 +2582,13 @@ const convertTmdbImagesToUrls = (data: any) => {
             if (searchRes.statusCode < 400) {
               const payload = safeJsonParse(searchRes.body || '{}');
               const results = Array.isArray(payload?.data) ? payload.data : [];
-              const movieMatch = results.find((item: any) => normalizeText(String(item?.type || '')) === 'movie');
+              const movieMatch = results
+                .filter((item: any) => normalizeText(String(item?.type || '')) === 'movie')
+                .map((item: any) => ({
+                  item,
+                  score: titleMatchScore(String(item?.name || item?.title || ''), [titleForSearch]),
+                }))
+                .sort((a: any, b: any) => b.score - a.score)[0]?.item;
               
               if (movieMatch?.id) {
                 // Found movie! Directly call FlixHQ watch

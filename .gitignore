@@ -24,13 +24,10 @@ test.ts
 test.js
 test_*.js
 debug_*.js
-test-vega*.js
 check-playlists.js
 temp_check.js
 temp.json
-breaking_bad_page.html
-tv_show.html
-player_tv.html
+# removed obsolete HTML files
 frontend_fix.txt
 hls_fix.txt
 

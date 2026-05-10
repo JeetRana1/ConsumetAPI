@@ -142,6 +142,9 @@ const routes = async (fastify, options) => {
         }
     };
     let aflIndexCache = null;
+    // Simple in-memory cache for recently-fetched manifests to avoid repeated upstream
+    // fetches during aggressive hot-reloads/seeks. TTL is short to avoid serving stale tokens.
+    const manifestCache = new Map();
     const fetchFillerFromAFL = async (title) => {
         try {
             const buildSlugCandidates = (t) => {
@@ -325,11 +328,29 @@ const routes = async (fastify, options) => {
             .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
     });
     fastify.get('/proxy', async (request, reply) => {
-        const url = String(request.query?.url || '');
-        const referer = String(request.query?.referer || '');
+        let url = String(request.query?.url || '');
+        let referer = String(request.query?.referer || '');
         const incomingRange = String(request.headers?.range || '');
         if (!url)
             return reply.status(400).send({ message: 'url is required' });
+        for (let i = 0; i < 6; i += 1) {
+            let nested;
+            try {
+                nested = new URL(url);
+            }
+            catch {
+                break;
+            }
+            if (!/\/utils\/proxy$/i.test(nested.pathname))
+                break;
+            const innerUrl = nested.searchParams.get('url');
+            if (!innerUrl)
+                break;
+            const innerReferer = nested.searchParams.get('referer');
+            url = innerUrl;
+            if (!referer && innerReferer)
+                referer = innerReferer;
+        }
         let target;
         try {
             target = new URL(url);
@@ -382,7 +403,11 @@ const routes = async (fastify, options) => {
                         return '';
                     }
                 })();
-                const forceDirectOnly = /(^|\.)net20\.cc$/.test(host) || /(^|\.)nm-cdn\d+\.top$/.test(host) || host.includes('animesalt');
+                const forceDirectOnly = /(^|\.)net20\.cc$/.test(host) ||
+                    /(^|\.)nm-cdn\d+\.top$/.test(host) ||
+                    host.includes('animesalt') ||
+                    host.includes('sprintcdn') ||
+                    host.includes('r66nv9ed');
                 const sticky = proxyAffinityByHost.get(host);
                 const stickyProxy = sticky && (Date.now() - sticky.at) < PROXY_AFFINITY_TTL_MS
                     ? sticky.proxyUrl
@@ -468,7 +493,22 @@ const routes = async (fastify, options) => {
                 }
                 throw lastErr || new Error('proxy failed');
             };
-            const upstream = await fetchWithChain(target.toString(), baseRequestConfig);
+            const cacheKey = `${target.toString()}|ref=${referer}`;
+            let upstream = undefined;
+            // Use short-lived cache for m3u8 manifests to avoid repeated upstream hits during hot-reloads/seeks
+            if (looksLikeM3u8) {
+                const cached = manifestCache.get(cacheKey);
+                if (cached && Date.now() - cached.at < cached.ttl) {
+                    upstream = {
+                        status: 200,
+                        data: Buffer.from(cached.raw, 'utf8'),
+                        headers: { 'content-type': cached.contentType || 'application/vnd.apple.mpegurl' },
+                    };
+                }
+            }
+            if (!upstream) {
+                upstream = await fetchWithChain(target.toString(), baseRequestConfig);
+            }
             if (upstream.status >= 400) {
                 return reply.status(upstream.status).send({
                     message: `upstream error ${upstream.status}`,
@@ -510,13 +550,31 @@ const routes = async (fastify, options) => {
                     }
                     return c;
                 };
+                const shouldProxyManifestUris = (() => {
+                    const host = target.hostname.toLowerCase();
+                    const ref = referer.toLowerCase();
+                    return (host.includes('sprintcdn') ||
+                        host.includes('r66nv9ed') ||
+                        ref.includes('flixhq') ||
+                        ref.includes('vidking') ||
+                        ref.includes('megacloud') ||
+                        ref.includes('upcloud') ||
+                        ref.includes('vidcloud'));
+                })();
+                const proxyOrigin = (() => {
+                    const proto = String(request.headers['x-forwarded-proto'] || request.protocol || 'http').split(',')[0].trim();
+                    const host = String(request.headers.host || request.hostname || '127.0.0.1:3000');
+                    return `${proto}://${host}`;
+                })();
                 const rewriteUri = (candidate) => {
                     try {
                         const normalized = normalizeManifestUri(candidate);
                         const abs = new URL(normalized, base).toString();
-                        const childReferer = referer || `${target.protocol}//${target.host}/`;
-                        const refererQuery = `&referer=${encodeURIComponent(childReferer)}`;
-                        return `/utils/proxy?url=${encodeURIComponent(abs)}${refererQuery}`;
+                        if (shouldProxyManifestUris) {
+                            const ref = refererForRequest ? `&referer=${encodeURIComponent(refererForRequest)}` : '';
+                            return `${proxyOrigin}/utils/proxy?url=${encodeURIComponent(abs)}${ref}`;
+                        }
+                        return abs;
                     }
                     catch {
                         return candidate;
@@ -612,10 +670,7 @@ const routes = async (fastify, options) => {
                     const trimmed = line.trim();
                     if (!trimmed)
                         return line;
-                    if (trimmed.startsWith('#EXT-X-MEDIA:') && trimmed.includes('URI="')) {
-                        return line.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${rewriteUri(uri)}"`);
-                    }
-                    if (trimmed.startsWith('#EXT-X-KEY') && trimmed.includes('URI="')) {
+                    if (trimmed.startsWith('#') && trimmed.includes('URI="')) {
                         return line.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${rewriteUri(uri)}"`);
                     }
                     if (trimmed.startsWith('#'))
@@ -623,8 +678,16 @@ const routes = async (fastify, options) => {
                     return rewriteUri(trimmed);
                 })
                     .join('\n');
+                // Cache rewritten manifest briefly so rapid reloads don't refetch upstream immediately
+                try {
+                    manifestCache.set(cacheKey, { at: Date.now(), ttl: 5000, raw: rewritten, contentType: 'application/vnd.apple.mpegurl' });
+                }
+                catch { }
                 return reply
                     .header('Content-Type', 'application/vnd.apple.mpegurl')
+                    .header('Access-Control-Allow-Origin', '*')
+                    .header('Access-Control-Allow-Headers', 'Range,Content-Type')
+                    .header('Access-Control-Expose-Headers', 'Content-Length,Content-Range')
                     .header('Cache-Control', 'no-cache, no-store, must-revalidate')
                     .header('Pragma', 'no-cache')
                     .header('Expires', '0')
@@ -647,6 +710,10 @@ const routes = async (fastify, options) => {
                 if (v != null)
                     reply.header(h, String(v));
             }
+            // Ensure CORS is allowed for proxied media responses so browser can fetch segments
+            reply.header('Access-Control-Allow-Origin', '*');
+            reply.header('Access-Control-Allow-Headers', 'Range,Content-Type');
+            reply.header('Access-Control-Expose-Headers', 'Content-Length,Content-Range');
             if (!isM3u8 && upstream.data && typeof upstream.data.pipe === 'function') {
                 return reply
                     .header('Content-Type', contentType || 'application/octet-stream')
@@ -716,6 +783,43 @@ const routes = async (fastify, options) => {
         if (!['http:', 'https:'].includes(target.protocol)) {
             return reply.status(400).send('invalid protocol');
         }
+        const getUrlVariants = (value) => {
+            const variants = new Set();
+            const add = (candidate) => {
+                const normalized = String(candidate || '').trim();
+                if (!normalized)
+                    return;
+                try {
+                    const parsed = new URL(normalized);
+                    if (['http:', 'https:'].includes(parsed.protocol))
+                        variants.add(parsed.toString());
+                }
+                catch {
+                    // ignore invalid decode attempts
+                }
+            };
+            add(value);
+            try {
+                add(decodeURI(value));
+            }
+            catch { /* ignore */ }
+            try {
+                add(decodeURIComponent(value));
+            }
+            catch { /* ignore */ }
+            return [...variants];
+        };
+        const toShirnaProxyUrl = (subtitleUrl) => {
+            const rawBase = String(process.env.SHIRNA_PROXY_URL || '').trim();
+            if (!rawBase)
+                return null;
+            if (rawBase.includes('{url}'))
+                return rawBase.replace('{url}', encodeURIComponent(subtitleUrl));
+            if (/[?&](src|url)=$/i.test(rawBase))
+                return `${rawBase}${encodeURIComponent(subtitleUrl)}`;
+            const joiner = rawBase.includes('?') ? '&' : '?';
+            return `${rawBase}${joiner}src=${encodeURIComponent(subtitleUrl)}`;
+        };
         const refererForRequest = referer || `${target.protocol}//${target.host}/`;
         let originForRequest = refererForRequest;
         try {
@@ -752,33 +856,64 @@ const routes = async (fastify, options) => {
             return cues.length ? `WEBVTT\n\n${cues.join('\n\n')}` : '';
         };
         try {
+            const { getCachedSubtitleText } = await Promise.resolve().then(() => __importStar(require('./browserRuntimeExtractor')));
+            const cachedSubtitle = getCachedSubtitleText(url);
+            if (cachedSubtitle) {
+                let raw = cachedSubtitle;
+                const isVtt = raw.trim().toLowerCase().startsWith('webvtt');
+                if (!isVtt && raw.includes('-->'))
+                    raw = `WEBVTT\n\n${raw.replace(/\r+/g, '').replace(/^\uFEFF/, '')}`;
+                return reply
+                    .header('Content-Type', 'text/vtt; charset=utf-8')
+                    .header('Access-Control-Allow-Origin', '*')
+                    .header('Cache-Control', 'public, max-age=1800')
+                    .send(raw);
+            }
             const proxyCandidates = await (0, outboundProxy_1.getProxyCandidates)();
+            const urlVariants = getUrlVariants(url);
+            const targetRequests = [
+                ...urlVariants.map((requestUrl) => ({ requestUrl, displayUrl: requestUrl })),
+                ...urlVariants
+                    .map((requestUrl) => toShirnaProxyUrl(requestUrl))
+                    .filter((requestUrl) => Boolean(requestUrl))
+                    .map((requestUrl) => ({ requestUrl, displayUrl: requestUrl })),
+            ];
             const chain = [undefined, ...proxyCandidates];
             let raw = '';
             let lastErr = null;
-            for (const proxyUrl of chain) {
-                try {
-                    const { toAxiosProxyOptions: tap } = await Promise.resolve().then(() => __importStar(require('./outboundProxy')));
-                    const proxyOpts = tap(proxyUrl);
-                    const resp = await axios_1.default.get(url, {
-                        proxy: false,
-                        ...proxyOpts,
-                        responseType: 'text',
-                        timeout: 15000,
-                        headers: {
-                            Referer: refererForRequest,
-                            Origin: originForRequest,
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                        },
-                        maxRedirects: 5,
-                        validateStatus: (s) => s < 400,
-                    });
-                    raw = String(resp.data || '');
+            for (const targetRequest of targetRequests) {
+                for (const proxyUrl of chain) {
+                    try {
+                        const { toAxiosProxyOptions: tap } = await Promise.resolve().then(() => __importStar(require('./outboundProxy')));
+                        const proxyOpts = tap(proxyUrl);
+                        const resp = await axios_1.default.get(targetRequest.requestUrl, {
+                            proxy: false,
+                            ...proxyOpts,
+                            responseType: 'text',
+                            timeout: 15000,
+                            headers: {
+                                Accept: 'text/vtt,text/plain,*/*',
+                                Referer: refererForRequest,
+                                Origin: originForRequest,
+                                'X-Forward-Origin': originForRequest,
+                                'X-Forward-Referer': refererForRequest,
+                                'Sec-Fetch-Dest': 'empty',
+                                'Sec-Fetch-Mode': 'cors',
+                                'Sec-Fetch-Site': 'cross-site',
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                            },
+                            maxRedirects: 5,
+                            validateStatus: (s) => s < 400,
+                        });
+                        raw = String(resp.data || '');
+                        break;
+                    }
+                    catch (e) {
+                        lastErr = e;
+                    }
+                }
+                if (raw)
                     break;
-                }
-                catch (e) {
-                    lastErr = e;
-                }
             }
             if (!raw) {
                 return reply.status(502).send(lastErr?.message || 'upstream fetch failed');

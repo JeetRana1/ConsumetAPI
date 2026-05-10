@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.resolveVegamoviesWatch = void 0;
 const extensions_1 = require("@consumet/extensions");
 const extensions_2 = require("@consumet/extensions");
 const main_1 = require("../../main");
@@ -557,6 +558,7 @@ const resolveVegamoviesWatch = async (id, type, season, episode) => {
     console.log(`[Vegamovies] Final fallback lookup ID: ${lookupId}`);
     return await vegamoviesProvider_1.VegamoviesProvider.getSources(lookupId, season, episode);
 };
+exports.resolveVegamoviesWatch = resolveVegamoviesWatch;
 const isAnimeLikeMovie = (media) => {
     const genreNames = toGenreNames(media?.genres);
     const hasAnimationGenre = genreNames.some((genre) => genre.includes('animation'));
@@ -1936,7 +1938,7 @@ const routes = async (fastify, options) => {
         // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
         if (!providerLower) {
             const fetchDirect = async () => {
-                const direct = await getDirectTmdbInfo(id, type);
+                const direct = await getDirectTmdbInfo(id, type, String(type || '').toLowerCase() === 'tv');
                 if (!direct)
                     return null;
                 await attachBestTrailer(direct, id, type);
@@ -1944,7 +1946,7 @@ const routes = async (fastify, options) => {
                 return direct;
             };
             const directRes = main_1.redis
-                ? await cache_1.default.fetch(main_1.redis, `tmdb:info:direct:${type}:${id}:trailer-v1`, fetchDirect, main_1.REDIS_TTL)
+                ? await cache_1.default.fetch(main_1.redis, `tmdb:info:direct:${type}:${id}:seasons-v2`, fetchDirect, main_1.REDIS_TTL)
                 : await fetchDirect();
             if (directRes) {
                 return reply.status(200).send(directRes);
@@ -2112,7 +2114,7 @@ const routes = async (fastify, options) => {
         // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
         if (!providerLower) {
             const fetchDirect = async () => {
-                const direct = await getDirectTmdbInfo(id, type);
+                const direct = await getDirectTmdbInfo(id, type, String(type || '').toLowerCase() === 'tv');
                 if (!direct)
                     return null;
                 await attachBestTrailer(direct, id, type);
@@ -2120,7 +2122,7 @@ const routes = async (fastify, options) => {
                 return direct;
             };
             const directRes = main_1.redis
-                ? await cache_1.default.fetch(main_1.redis, `tmdb:info:direct:${type}:${id}:trailer-v1`, fetchDirect, main_1.REDIS_TTL)
+                ? await cache_1.default.fetch(main_1.redis, `tmdb:info:direct:${type}:${id}:seasons-v2`, fetchDirect, main_1.REDIS_TTL)
                 : await fetchDirect();
             if (directRes) {
                 return reply.status(200).send(directRes);
@@ -2316,7 +2318,7 @@ const routes = async (fastify, options) => {
         const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
         console.log(`[tmdb.ts] watch hit: id=${id}, type=${type}, provider=${provider}, providerLower=${providerLower}`);
         // Build cache key for watch results (skip caching if server is specified since that changes results)
-        const cacheKey = !server ? `tmdb:watch:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
+        const cacheKey = !server ? `tmdb:watch:v3:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
         // Try to return from cache first
         if (cacheKey && main_1.redis) {
             try {
@@ -2379,7 +2381,7 @@ const routes = async (fastify, options) => {
                 const q = request.query;
                 const season = type === 'tv' ? Number(q.season || 1) : (q.season ? Number(q.season) : undefined);
                 const episode = type === 'tv' ? Number(q.episode || 1) : (q.episode ? Number(q.episode) : undefined);
-                const res = await resolveVegamoviesWatch(id, type, season, episode);
+                const res = await (0, exports.resolveVegamoviesWatch)(id, type, season, episode);
                 console.log(`[Vegamovies] Watch resolved successfully: ${res?.sources?.length || 0} sources`);
                 return reply.status(200).send({ ...res, provider: 'vegamovies' });
             }
@@ -2445,7 +2447,13 @@ const routes = async (fastify, options) => {
                         if (searchRes.statusCode < 400) {
                             const payload = safeJsonParse(searchRes.body || '{}');
                             const results = Array.isArray(payload?.data) ? payload.data : [];
-                            const movieMatch = results.find((item) => normalizeText(String(item?.type || '')) === 'movie');
+                            const movieMatch = results
+                                .filter((item) => normalizeText(String(item?.type || '')) === 'movie')
+                                .map((item) => ({
+                                item,
+                                score: titleMatchScore(String(item?.name || item?.title || ''), [titleForSearch]),
+                            }))
+                                .sort((a, b) => b.score - a.score)[0]?.item;
                             if (movieMatch?.id) {
                                 // Found movie! Directly call FlixHQ watch
                                 const queryParts = [`episodeId=${encodeURIComponent(movieMatch.id)}`];

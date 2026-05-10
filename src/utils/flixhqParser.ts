@@ -1,15 +1,38 @@
 import * as cheerio from 'cheerio';
 
+function extractIdFromHref(href: string | undefined): string | null {
+  if (!href) return null;
+  try {
+    // Handle both full URLs and relative paths
+    const path = href.includes('flixhq')
+      ? new URL(href).pathname
+      : href;
+    // Remove leading/trailing slashes, then replace only the FIRST slash with hyphen
+    // This preserves the format: watch-series-slug-name so provider can reconstruct as watch-series/slug-name
+    const cleaned = path
+      .replace(/^\/+/, '')
+      .replace(/\/+$/g, '');
+    // Replace only the first slash with hyphen
+    return cleaned.replace('/', '-') || null;
+  } catch {
+    // Fallback for malformed URLs
+    const cleaned = href
+      .replace(/^\/+/, '')
+      .replace(/\/+$/g, '');
+    return cleaned.replace('/', '-') || null;
+  }
+}
+
 export function parseItems($: cheerio.CheerioAPI, selector: string) {
   const items: any[] = [];
   $(selector).each((_, element) => {
     const type = $(element).find('span.float-right.fdi-type').text().trim();
     const baseData = {
-      id: $(element)
-        .find('a.film-poster-ahref.flw-item-tip')
-        .attr('href')
-        ?.slice(1)
-        .replace('/', '-') || null,
+      id: extractIdFromHref(
+        $(element)
+          .find('a.film-poster-ahref.flw-item-tip')
+          .attr('href')
+      ),
       name: $(element).find('h3.film-name').text().trim() || null,
       posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') || null,
       quality: $(element).find('div.pick.film-poster-quality').text().trim() || null,
@@ -45,11 +68,11 @@ export function parseMixedSection($: cheerio.CheerioAPI, selector: string) {
   $(selector).each((_, element) => {
     const type = $(element).find('span.float-right.fdi-type').text().trim();
     const baseData = {
-      id: $(element)
-        .find('a.film-poster-ahref.flw-item-tip')
-        .attr('href')
-        ?.slice(1)
-        .replace('/', '-') || null,
+      id: extractIdFromHref(
+        $(element)
+          .find('a.film-poster-ahref.flw-item-tip')
+          .attr('href')
+      ),
       name: $(element).find('h3.film-name').text().trim() || null,
       posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') || null,
       quality: $(element).find('div.pick.film-poster-quality').text().trim() || null,
@@ -84,12 +107,12 @@ export function parseMixedSection($: cheerio.CheerioAPI, selector: string) {
 export function parseHome($: cheerio.CheerioAPI) {
   const slider: any[] = [];
   $('div#slider > div.swiper-wrapper > div.swiper-slide').each((_, element) => {
-    const id = $(element)
-      .find('a.slide-link')
-      .attr('href')
-      ?.slice(1)
-      .replace('/', '-');
-    const type = id?.includes('tv') ? 'TV' : 'Movie';
+    const id = extractIdFromHref(
+      $(element)
+        .find('a.slide-link')
+        .attr('href')
+    );
+    const type = id?.includes('tv') || id?.includes('series') ? 'TV' : 'Movie';
     slider.push({
       id: id || null,
       name: $(element).find('h3.film-title').text().trim() || null,
@@ -154,13 +177,19 @@ export function parsePaginatedResults($: cheerio.CheerioAPI, selector: string) {
   $(selector).each((_, element) => {
     const type = $(element).find('span.float-right.fdi-type').text().trim();
     const baseData = {
-      id: $(element)
-        .find('a.film-poster-ahref.flw-item-tip')
-        .attr('href')
-        ?.slice(1)
-        .replace('/', '-') || null,
-      name: $(element).find('h2.film-name').text().trim() || null,
-      posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') || null,
+      id: extractIdFromHref(
+        $(element)
+          .find('a.film-poster-ahref.flw-item-tip')
+          .attr('href')
+      ),
+      name:
+        $(element).find('h2.film-name, h3.film-name').first().text().replace(/\s+/g, ' ').trim() ||
+        $(element).find('img.film-poster-img').attr('alt')?.replace(/\s+Watch Online.*$/i, '').trim() ||
+        null,
+      posterImage:
+        $(element).find('img.film-poster-img.lazyload').attr('data-src') ||
+        $(element).find('img.film-poster-img').attr('src') ||
+        null,
       quality: $(element).find('div.pick.film-poster-quality').text().trim() || null,
       type,
     };
@@ -194,7 +223,7 @@ export function parseSearchSuggestions($: cheerio.CheerioAPI) {
   $('a.nav-item').each((_, element) => {
     const type = $(element).find('div.film-infor span:last').text().trim();
     const baseData = {
-      id: $(element).attr('href')?.slice(1).replace('/', '-') || null,
+      id: extractIdFromHref($(element).attr('href')),
       name: $(element).find('h3.film-name').text().trim() || null,
       posterImage: $(element).find('img.film-poster-img').attr('src') || null,
       type,
@@ -229,11 +258,11 @@ export function parseInfo($: cheerio.CheerioAPI) {
   $('div.block_area-content.block_area-list.film_list.film_list-grid div.flw-item').each((_, element) => {
     const type = $(element).find('span.float-right.fdi-type').text().trim();
     const baseData = {
-      id: $(element)
-        .find('a.film-poster-ahref.flw-item-tip')
-        .attr('href')
-        ?.slice(1)
-        .replace('/', '-') || null,
+      id: extractIdFromHref(
+        $(element)
+          .find('a.film-poster-ahref.flw-item-tip')
+          .attr('href')
+      ),
       name: $(element).find('h3.film-name').text().trim() || null,
       posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') || null,
       quality: $(element).find('div.pick.film-poster-quality').text().trim() || null,
@@ -262,13 +291,42 @@ export function parseInfo($: cheerio.CheerioAPI) {
     }
   });
 
-  const id = $('h2.heading-name > a').attr('href')?.slice(1).replace('/', '-') || null;
-  const type = id?.includes('tv') ? 'TV' : 'Movie';
+  const headingLink = $('.m_i-d-content .heading-name > a, h1.heading-name > a, h2.heading-name > a').first();
+  const pageHref =
+    headingLink.attr('href') ||
+    $('link[rel="canonical"]').attr('href') ||
+    $('meta[property="og:url"]').attr('content');
+  const id = extractIdFromHref(pageHref) || null;
+  const type = id?.includes('tv') || id?.includes('series') ? 'TV' : 'Movie';
+  const structuredTitle = $('script[type="application/ld+json"]')
+    .map((_, el) => {
+      try {
+        const json = JSON.parse($(el).contents().text());
+        const graphItems = Array.isArray(json?.['@graph']) ? json['@graph'] : [json];
+        const mediaItem = graphItems.find((item: any) =>
+          ['Movie', 'TVSeries', 'Series'].includes(String(item?.['@type'] || '')),
+        );
+        return typeof mediaItem?.name === 'string' ? mediaItem.name.trim() : null;
+      } catch {
+        return null;
+      }
+    })
+    .get()
+    .find(Boolean);
 
   const mediaInfo = {
     id,
-    name: $('h2.heading-name > a').text().trim() || null,
-    posterImage: $('div.w_b-cover').attr('style')?.match(/url\(["']?(.*?)["']?\)/)?.[1] || null,
+    name:
+      headingLink.text().replace(/\s+/g, ' ').trim() ||
+      structuredTitle ||
+      $('meta[property="og:title"]').attr('content')?.replace(/^Watch\s+/i, '').replace(/\s+FlixHQ.*$/i, '').trim() ||
+      $('img#image_storage').attr('alt')?.trim() ||
+      null,
+    posterImage:
+      $('img#image_storage').attr('data-img') ||
+      $('img#image_storage').attr('src') ||
+      $('div.w_b-cover').attr('style')?.match(/url\(["']?(.*?)["']?\)/)?.[1] ||
+      null,
     type,
     quality: $('div.stats button.btn.btn-sm.btn-quality').text().trim() || null,
     releaseDate: $('.row-line:has(span:contains("Released:"))').text().replace('Released:', '').trim() || null,
@@ -351,24 +409,30 @@ export function parseEpisodes($: cheerio.CheerioAPI, seasonNumber: number, media
       const rawId =
         anchor.attr('data-id') ||
         $(el).attr('data-id') ||
-        anchor.attr('id')?.split('-')[1];
+        anchor.attr('id')?.split('-')[1] ||
+        extractIdFromHref(anchor.attr('href'));
       if (!rawId) return null;
 
       const rawNumber =
         anchor.attr('data-number') ||
         $(el).attr('data-number') ||
+        anchor.attr('href')?.match(/s(\d+)-e(\d+)/i)?.[2] ||
         anchor.text() ||
         anchor.attr('title') ||
         '';
       const episodeNumber = parseInt(String(rawNumber).replace(/\D/g, ''), 10) || null;
+      const seasonFromHref = anchor.attr('href')?.match(/s(\d+)-e\d+/i)?.[1];
+      const resolvedSeasonNumber = parseInt(String(seasonFromHref || seasonNumber || ''), 10) || seasonNumber || null;
       const titleAttr = anchor.attr('title') || anchor.text().trim();
       const episodeTitle = titleAttr?.split(':').at(1)?.trim() || titleAttr || null;
 
       return {
-        episodeId: `${mediaId.replace('watch-', '')}-episode-${rawId}`,
+        episodeId: String(rawId).startsWith('episode-')
+          ? rawId
+          : `${mediaId.replace('watch-', '')}-episode-${rawId}`,
         title: episodeTitle,
         episodeNumber,
-        seasonNumber: seasonNumber || null,
+        seasonNumber: resolvedSeasonNumber,
       };
     })
     .get()

@@ -10,6 +10,7 @@ const fastify_1 = __importDefault(require("fastify"));
 const cors_1 = __importDefault(require("@fastify/cors"));
 const axios_1 = __importDefault(require("axios"));
 const https_1 = __importDefault(require("https"));
+const outboundProxy_1 = require("./utils/outboundProxy");
 // --- Global Axios Optimization ---
 // Solves ECONNRESET and 403 blocks by forcing IPv4 and setting a browser User-Agent
 axios_1.default.defaults.httpsAgent = new https_1.default.Agent({ family: 4, keepAlive: true });
@@ -137,30 +138,100 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     await fastify.register(meta_1.default, { prefix: '/meta' });
     await fastify.register(news_1.default, { prefix: '/news' });
     await fastify.register(utils_1.default, { prefix: '/utils' });
+    const buildProxyPath = (targetUrl) => {
+        const raw = String(targetUrl || '').trim();
+        if (!raw)
+            return raw;
+        if (/^\/proxy\/hls\//i.test(raw))
+            return raw;
+        try {
+            const parsed = new URL(raw);
+            return `/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
+        }
+        catch {
+            return raw;
+        }
+    };
+    const rewriteHlsManifest = (manifest, manifestUrl) => {
+        const resolveAndProxy = (value) => {
+            const trimmed = String(value || '').trim();
+            if (!trimmed)
+                return trimmed;
+            try {
+                return buildProxyPath(new URL(trimmed, manifestUrl).toString());
+            }
+            catch {
+                return trimmed;
+            }
+        };
+        let output = String(manifest || '');
+        output = output.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${resolveAndProxy(uri)}"`);
+        output = output.replace(/URI='([^']+)'/g, (_match, uri) => `URI='${resolveAndProxy(uri)}'`);
+        output = output
+            .split('\n')
+            .map((line) => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#'))
+                return line;
+            if (/^(data:|blob:)/i.test(trimmed))
+                return line;
+            return resolveAndProxy(trimmed);
+        })
+            .join('\n');
+        return output;
+    };
+    const isLikelyHlsManifest = (body, contentType) => {
+        const text = String(body || '').trim();
+        if (!text)
+            return false;
+        if (/application\/(vnd\.apple\.mpegurl|x-mpegURL)|audio\/x-mpegurl/i.test(String(contentType || ''))) {
+            return true;
+        }
+        return /^#EXTM3U\b/m.test(text);
+    };
+    const fetchHlsResource = async (url, isManifest, incomingRange, referer) => {
+        const proxyCandidates = [...(0, outboundProxy_1.getProxyCandidatesSync)(), ''];
+        let lastError = null;
+        for (const proxyUrl of proxyCandidates) {
+            try {
+                const proxyOptions = proxyUrl ? (0, outboundProxy_1.toAxiosProxyOptions)(proxyUrl) : {};
+                const response = await axios_1.default.get(url, {
+                    headers: {
+                        'Referer': referer || 'https://streameeeeee.site/',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                        ...(incomingRange ? { Range: incomingRange } : {}),
+                        ...(isManifest ? {} : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
+                        ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
+                    },
+                    timeout: 15000,
+                    responseType: isManifest ? 'text' : 'arraybuffer',
+                    validateStatus: (status) => status < 500,
+                    ...proxyOptions,
+                });
+                if (isManifest && !isLikelyHlsManifest(String(response.data || ''), response.headers['content-type'])) {
+                    lastError = new Error(`Invalid HLS manifest response (${response.status})`);
+                    continue;
+                }
+                return response;
+            }
+            catch (error) {
+                lastError = error;
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error('HLS proxy failed');
+    };
     // HLS Proxy to work around CORS issues
     fastify.get('/proxy/hls/*', async (request, reply) => {
         const url = request.url.replace('/proxy/hls/', 'https://');
+        const isManifest = url.includes('.m3u8');
+        const incomingRange = String(request.headers.range || '');
+        const incomingReferer = String(request.headers.referer || request.headers.referrer || '').trim();
+        const requestReferer = incomingReferer || 'https://streameeeeee.site/';
         try {
-            const response = await axios_1.default.get(url, {
-                headers: {
-                    'Referer': 'https://streameeeeee.site/',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                },
-                timeout: 15000,
-                responseType: 'text',
-            });
+            const response = await fetchHlsResource(url, isManifest, incomingRange, requestReferer);
             // If it's an M3U8 manifest, rewrite relative URLs to absolute
-            if (url.includes('.m3u8')) {
-                let content = response.data;
-                const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
-                // Replace all .m3u8 URLs with proxy URLs
-                content = content.replace(/(https:\/\/[^\s]+\.m3u8)/g, (match) => {
-                    return `/proxy/hls/${match}`;
-                });
-                // Also proxy .ts segment files
-                content = content.replace(/(https:\/\/[^\s]+\.ts)/g, (match) => {
-                    return `/proxy/hls/${match}`;
-                });
+            if (isManifest) {
+                const content = rewriteHlsManifest(String(response.data || ''), url);
                 reply.header('Content-Type', 'application/vnd.apple.mpegurl');
                 reply.header('Access-Control-Allow-Origin', '*');
                 reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -172,7 +243,31 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
             reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
             reply.header('Content-Type', response.headers['content-type'] || 'application/octet-stream');
-            return reply.send(response.data);
+            if (response.headers['content-length'])
+                reply.header('Content-Length', response.headers['content-length']);
+            if (response.headers['content-range'])
+                reply.header('Content-Range', response.headers['content-range']);
+            if (response.headers['accept-ranges'])
+                reply.header('Accept-Ranges', response.headers['accept-ranges']);
+            // Optional verbose debug to inspect proxied HLS segment responses
+            if (String(process.env.HLS_PROXY_DEBUG || '').toLowerCase() === 'true') {
+                try {
+                    const buf = Buffer.from(response.data || Buffer.alloc(0));
+                    console.log('[HLS PROXY DEBUG] url=', url);
+                    console.log('[HLS PROXY DEBUG] incoming Range=', incomingRange || '<none>');
+                    console.log('[HLS PROXY DEBUG] proxied headers:', {
+                        'content-range': response.headers['content-range'],
+                        'accept-ranges': response.headers['accept-ranges'],
+                        'content-length': response.headers['content-length'],
+                        'content-type': response.headers['content-type'],
+                    });
+                    console.log('[HLS PROXY DEBUG] proxied body byteLength=', buf.length);
+                }
+                catch (e) {
+                    console.log('[HLS PROXY DEBUG] error while logging proxy response', e?.message || String(e));
+                }
+            }
+            return reply.send(Buffer.from(response.data));
         }
         catch (error) {
             console.error('HLS Proxy error:', error.message);

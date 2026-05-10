@@ -23,11 +23,16 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.extractDirectSourcesWithPlaywright = void 0;
+exports.extractDirectSourcesWithPlaywright = exports.extractPlaybackWithPlaywright = exports.getCachedSubtitleText = void 0;
 const DIRECT_MEDIA_REGEX = /(https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4|mpd)(?:\?[^\s"'<>]*)?)/gi;
 const HLS_PROXY_REGEX = /(https?:\/\/[^\s"'<>]+?\/m3u8-proxy\?[^\s"'<>]+|https?:\/\/[^\s"'<>]+?\/getm3u8\/[^\s"'<>]+)/gi;
+const SUBTITLE_REGEX = /(https?:\/\/[^\s"'<>]+?\.(?:vtt|srt|ass)(?:\?[^\s"'<>]*)?)/gi;
+const subtitleTextCache = new Map();
+const SUBTITLE_TEXT_CACHE_MS = 30 * 60 * 1000;
 const isDirectMediaUrl = (value) => {
     const normalized = String(value || '');
+    if (!isUsableMediaUrl(normalized))
+        return false;
     if (/\.(m3u8|mp4|mpd)(\?|$)/i.test(normalized))
         return true;
     if (/\/m3u8-proxy\?/i.test(normalized))
@@ -36,9 +41,37 @@ const isDirectMediaUrl = (value) => {
         return true;
     if (/\/getm3u8\//i.test(normalized))
         return true;
-    if (normalized.startsWith('blob:'))
-        return true;
     return false;
+};
+const isUsableMediaUrl = (value) => {
+    const normalized = String(value || '').trim();
+    if (!normalized)
+        return false;
+    if (/^blob:/i.test(normalized))
+        return false;
+    try {
+        const parsed = new URL(normalized.startsWith('//') ? `https:${normalized}` : normalized);
+        const host = parsed.hostname.toLowerCase();
+        if (host === 'example.com' || host.endsWith('.example.com'))
+            return false;
+        if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0')
+            return false;
+        if (host.includes('placeholder') || host.includes('dummy'))
+            return false;
+    }
+    catch {
+        return false;
+    }
+    return true;
+};
+const dropDuplicateHlsVariants = (urls) => {
+    const hasMasterForBase = new Set(urls
+        .filter((url) => /\/master\.m3u8(?:\?|$)/i.test(url))
+        .map((url) => url.replace(/\/master\.m3u8(?:\?.*)?$/i, '')));
+    return urls.filter((url) => {
+        const base = url.replace(/\/index-[^/]+\.m3u8(?:\?.*)?$/i, '');
+        return !hasMasterForBase.has(base) || /\/master\.m3u8(?:\?|$)/i.test(url);
+    });
 };
 const normalizeUrl = (value) => {
     const raw = String(value || '').trim();
@@ -47,6 +80,44 @@ const normalizeUrl = (value) => {
     if (raw.startsWith('//'))
         return `https:${raw}`;
     return raw;
+};
+const getSubtitleCacheKeys = (url) => {
+    const normalized = normalizeUrl(url);
+    if (!normalized)
+        return [];
+    const keys = new Set([normalized]);
+    try {
+        const parsed = new URL(normalized);
+        keys.add(`${parsed.origin}${parsed.pathname}`);
+    }
+    catch {
+        // ignore
+    }
+    return [...keys];
+};
+const getCachedSubtitleText = (url) => {
+    for (const key of getSubtitleCacheKeys(url)) {
+        const cached = subtitleTextCache.get(key);
+        if (!cached)
+            continue;
+        if (cached.expiresAt <= Date.now()) {
+            subtitleTextCache.delete(key);
+            continue;
+        }
+        return cached.value;
+    }
+    return undefined;
+};
+exports.getCachedSubtitleText = getCachedSubtitleText;
+const setCachedSubtitleText = (url, value) => {
+    if (!value || !getSubtitleCacheKeys(url).length)
+        return;
+    for (const key of getSubtitleCacheKeys(url)) {
+        subtitleTextCache.set(key, {
+            value,
+            expiresAt: Date.now() + SUBTITLE_TEXT_CACHE_MS,
+        });
+    }
 };
 const parseUrlsFromText = (text) => {
     const found = new Set();
@@ -63,20 +134,65 @@ const parseUrlsFromText = (text) => {
     }
     return [...found];
 };
-const extractDirectSourcesWithPlaywright = async (embedUrl, referer, timeoutMs = 12000) => {
+const parseSubtitlesFromText = (text) => {
+    const found = new Map();
+    const add = (url, lang, kind, isDefault) => {
+        const normalized = normalizeUrl(url);
+        if (!normalized || !isUsableMediaUrl(normalized))
+            return;
+        if (!/\.(vtt|srt|ass)(\?|$)/i.test(normalized))
+            return;
+        const existing = found.get(normalized);
+        if (existing && (!lang || lang === 'Unknown'))
+            return;
+        found.set(normalized, {
+            url: normalized,
+            lang: String(lang || 'Unknown'),
+            kind,
+            default: Boolean(isDefault),
+        });
+    };
+    try {
+        const parsed = JSON.parse(text);
+        const list = Array.isArray(parsed)
+            ? parsed
+            : Array.isArray(parsed?.tracks)
+                ? parsed.tracks
+                : Array.isArray(parsed?.subtitles)
+                    ? parsed.subtitles
+                    : [];
+        for (const item of list) {
+            add(item?.file || item?.url || item?.src, item?.label || item?.lang || item?.language, item?.kind, item?.default);
+        }
+    }
+    catch {
+        // Fall back to regex parsing below.
+    }
+    let match;
+    while ((match = SUBTITLE_REGEX.exec(text)) !== null) {
+        add(match[1]);
+    }
+    return [...found.values()];
+};
+const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12000) => {
     const normalizedEmbed = normalizeUrl(embedUrl);
     if (!normalizedEmbed)
-        return [];
+        return { sources: [], subtitles: [] };
     let chromium;
     try {
         ({ chromium } = await Promise.resolve().then(() => __importStar(require('playwright'))));
     }
     catch {
-        return [];
+        return { sources: [], subtitles: [] };
     }
     const discovered = new Set();
+    const subtitles = new Map();
     let browser;
     const timeout = Math.max(4000, timeoutMs);
+    const addSubtitles = (items) => {
+        for (const item of items)
+            subtitles.set(item.url, item);
+    };
     try {
         browser = await chromium.launch({
             headless: true,
@@ -103,6 +219,10 @@ const extractDirectSourcesWithPlaywright = async (embedUrl, referer, timeoutMs =
                     const body = await response.text();
                     for (const parsed of parseUrlsFromText(String(body || '')))
                         discovered.add(parsed);
+                    addSubtitles(parseSubtitlesFromText(String(body || '')));
+                    if (u && /\.(vtt|srt|ass)(\?|$)/i.test(u) && String(body || '').trim()) {
+                        setCachedSubtitleText(u, String(body || ''));
+                    }
                 }
             }
             catch {
@@ -127,7 +247,13 @@ const extractDirectSourcesWithPlaywright = async (embedUrl, referer, timeoutMs =
                 video.play().catch(() => undefined);
             }
         }).catch(() => undefined);
-        await page.waitForTimeout(Math.min(7000, Math.max(2500, timeout - 2000)));
+        const wantsSubtitles = /[?&]sub\.info=/i.test(normalizedEmbed);
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < Math.min(4500, Math.max(1800, timeout - 2000))) {
+            if (discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
+                break;
+            await page.waitForTimeout(250);
+        }
         await context.close();
     }
     catch {
@@ -143,13 +269,25 @@ const extractDirectSourcesWithPlaywright = async (embedUrl, referer, timeoutMs =
             }
         }
     }
-    return [...discovered]
+    const sources = dropDuplicateHlsVariants([...discovered])
         .filter((u) => isDirectMediaUrl(u))
+        .sort((a, b) => {
+        const score = (url) => (/\.m3u8(?:\?|$)/i.test(url) ? 50 : 0) +
+            (/\/master\.m3u8(?:\?|$)/i.test(url) || /\/index\.m3u8(?:\?|$)/i.test(url) ? 20 : 0) -
+            (/\.mp4(?:\?|$)/i.test(url) ? 10 : 0);
+        return score(b) - score(a);
+    })
         .map((url) => ({
         url,
         quality: 'auto',
         isM3U8: /\.m3u8(\?|$)/i.test(url) || /\/m3u8-proxy\?/i.test(url) || /\/getm3u8\//i.test(url),
         isEmbed: false,
     }));
+    return { sources, subtitles: [...subtitles.values()] };
+};
+exports.extractPlaybackWithPlaywright = extractPlaybackWithPlaywright;
+const extractDirectSourcesWithPlaywright = async (embedUrl, referer, timeoutMs = 12000) => {
+    const playback = await (0, exports.extractPlaybackWithPlaywright)(embedUrl, referer, timeoutMs);
+    return playback.sources;
 };
 exports.extractDirectSourcesWithPlaywright = extractDirectSourcesWithPlaywright;

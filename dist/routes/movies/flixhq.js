@@ -7,10 +7,70 @@ const cache_1 = __importDefault(require("../../utils/cache"));
 const main_1 = require("../../main");
 const flixhqProvider_1 = require("../../providers/custom/flixhqProvider");
 const isDirectMediaUrl = (value) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || '')) || /\/m3u8-proxy\?/i.test(String(value || ''));
+const isUsableSourceUrl = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw || /^blob:/i.test(raw))
+        return false;
+    try {
+        const parsed = new URL(raw);
+        const host = parsed.hostname.toLowerCase();
+        if (host === 'example.com' || host.endsWith('.example.com'))
+            return false;
+        if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0')
+            return false;
+        if (host.includes('placeholder') || host.includes('dummy'))
+            return false;
+        return true;
+    }
+    catch {
+        return false;
+    }
+};
+const buildProxyHlsUrl = (request, sourceUrl) => {
+    const raw = String(sourceUrl || '').trim();
+    if (!raw)
+        return raw;
+    if (/^\/proxy\/hls\//i.test(raw)) {
+        const host = String(request.headers.host || '').trim();
+        if (!host)
+            return raw;
+        return `${request.protocol}://${host}${raw}`;
+    }
+    try {
+        const parsed = new URL(raw);
+        const host = String(request.headers.host || '').trim();
+        if (!host)
+            return raw;
+        return `${request.protocol}://${host}/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
+    }
+    catch {
+        return raw;
+    }
+};
 const sortAndLimitSources = (rawSources) => {
-    const deduped = rawSources.filter((item, idx, arr) => arr.findIndex((v) => String(v?.url || '') === String(item?.url || '')) === idx);
-    const direct = deduped.filter((s) => isDirectMediaUrl(String(s?.url || '')));
-    const nonDirect = deduped.filter((s) => !isDirectMediaUrl(String(s?.url || '')));
+    const usable = rawSources.filter((item) => isUsableSourceUrl(String(item?.url || '')));
+    const deduped = usable.filter((item, idx, arr) => arr.findIndex((v) => String(v?.url || '') === String(item?.url || '')) === idx);
+    const hasMasterForBase = new Set(deduped
+        .map((source) => String(source?.url || ''))
+        .filter((url) => /\/master\.m3u8(?:\?|$)/i.test(url))
+        .map((url) => url.replace(/\/master\.m3u8(?:\?.*)?$/i, '')));
+    const collapsed = deduped.filter((source) => {
+        const url = String(source?.url || '');
+        const base = url.replace(/\/index-[^/]+\.m3u8(?:\?.*)?$/i, '');
+        return !hasMasterForBase.has(base) || /\/master\.m3u8(?:\?|$)/i.test(url);
+    });
+    const direct = collapsed
+        .filter((s) => isDirectMediaUrl(String(s?.url || '')))
+        .sort((a, b) => {
+        const score = (source) => {
+            const url = String(source?.url || '');
+            return ((/\.m3u8(?:\?|$)/i.test(url) || source?.isM3U8 ? 50 : 0) +
+                (/\/master\.m3u8(?:\?|$)/i.test(url) || /\/index\.m3u8(?:\?|$)/i.test(url) ? 20 : 0) -
+                (/\.mp4(?:\?|$)/i.test(url) ? 10 : 0));
+        };
+        return score(b) - score(a);
+    });
+    const nonDirect = collapsed.filter((s) => !isDirectMediaUrl(String(s?.url || '')));
     return [...direct.slice(0, 8), ...nonDirect.slice(0, 2)];
 };
 const routes = async (fastify, options) => {
@@ -171,10 +231,20 @@ const routes = async (fastify, options) => {
         }
         try {
             let res = main_1.redis
-                ? await cache_1.default.fetch(main_1.redis, `flixhq:watch:${episodeId}:${server}`, async () => await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server), main_1.REDIS_TTL)
+                ? await cache_1.default.fetch(main_1.redis, `flixhq:watch:v3:${episodeId}:${server}`, async () => await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server), main_1.REDIS_TTL)
                 : await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server);
             if (res && res.sources) {
-                res.sources = sortAndLimitSources(res.sources);
+                res.sources = sortAndLimitSources(res.sources).map((source) => {
+                    const url = String(source?.url || '');
+                    const shouldProxy = /\.(m3u8|mpd)(\?|$)/i.test(url) || Boolean(source?.isM3U8);
+                    if (!shouldProxy)
+                        return source;
+                    return {
+                        ...source,
+                        url: buildProxyHlsUrl(request, url),
+                        requiresProxy: false,
+                    };
+                });
             }
             reply.status(200).send(res);
         }

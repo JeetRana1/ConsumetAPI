@@ -3,9 +3,13 @@ import * as cheerio from 'cheerio';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
 
-// Route player-domain requests through Shirna Proxy to bypass datacenter IP blocks.
-const SHIRNA_PROXY_URL = process.env.SHIRNA_PROXY_URL || 'http://localhost:3000/proxy?src=';
-console.log('[Vegamovies] Using Shirna Proxy:', SHIRNA_PROXY_URL);
+// Route player-domain requests through Shirna Proxy to bypass datacenter IP blocks in production.
+const SHIRNA_PROXY_URL = process.env.SHIRNA_PROXY_URL || '';
+if (SHIRNA_PROXY_URL) {
+  console.log('[Vegamovies] Using Shirna Proxy:', SHIRNA_PROXY_URL);
+} else {
+  console.log('[Vegamovies] Direct connection (no proxy)');
+}
 
 
 const BASE_URL = 'https://vegamovies.nf';
@@ -19,7 +23,7 @@ const FETCH_HEADERS = {
 };
 
 async function fetchHtml(url: string, referer = BASE_URL + '/'): Promise<string> {
-  const proxyUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(url)}`;
+  const proxyUrl = SHIRNA_PROXY_URL ? `${SHIRNA_PROXY_URL}${encodeURIComponent(url)}` : url;
   const res = await axios.get(proxyUrl, {
     headers: { ...FETCH_HEADERS, Referer: referer },
     timeout: 15000,
@@ -198,7 +202,7 @@ export class VegamoviesProvider {
       searchBody.append('search_start', String(page));
       searchBody.append('story', query);
 
-      const proxyUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(BASE_URL + '/')}`;
+      const proxyUrl = SHIRNA_PROXY_URL ? `${SHIRNA_PROXY_URL}${encodeURIComponent(BASE_URL + '/')}` : `${BASE_URL}/`;
       const res = await axios.post(proxyUrl, searchBody.toString(), {
         headers: { 
           ...FETCH_HEADERS, 
@@ -275,8 +279,8 @@ export class VegamoviesProvider {
 
       const playerUrl = `${PLAYER_DOMAIN}/play/${playerImdbId}${season ? `?s=${season}${episode ? `&e=${episode}` : ''}` : ''}`;
 
-      // Fetch the player page, routing through the Shirna proxy
-      const proxyPlayerUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(playerUrl)}`;
+      // Fetch the player page, routing through the Shirna proxy if enabled
+      const proxyPlayerUrl = SHIRNA_PROXY_URL ? `${SHIRNA_PROXY_URL}${encodeURIComponent(playerUrl)}` : playerUrl;
       const playerHtmlRes = await axios.get(proxyPlayerUrl, {
         headers: { ...FETCH_HEADERS, Referer: BASE_URL + '/' },
         timeout: 20000,
@@ -291,7 +295,7 @@ export class VegamoviesProvider {
       if (playerConfigFromHtml?.file) {
         try {
           const fileUrl = playerConfigFromHtml.file.startsWith('http') ? playerConfigFromHtml.file : `${new URL(playerUrl).origin}${playerConfigFromHtml.file}`;
-          const proxyFileUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(fileUrl)}`;
+          const proxyFileUrl = SHIRNA_PROXY_URL ? `${SHIRNA_PROXY_URL}${encodeURIComponent(fileUrl)}` : fileUrl;
           const playlistRes = await axios.get(proxyFileUrl, {
             headers: { 
               ...FETCH_HEADERS, 
@@ -397,7 +401,7 @@ export class VegamoviesProvider {
 
               for (const candidateUrl of candidateUrls) {
                 try {
-                  const proxyCandidateUrl = `${SHIRNA_PROXY_URL}${encodeURIComponent(candidateUrl)}`;
+                  const proxyCandidateUrl = SHIRNA_PROXY_URL ? `${SHIRNA_PROXY_URL}${encodeURIComponent(candidateUrl)}` : candidateUrl;
                   const linkRes = await axios.get(proxyCandidateUrl, {
                     headers: hdrs,
                     timeout: 12000,
