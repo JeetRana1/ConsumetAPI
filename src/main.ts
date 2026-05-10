@@ -237,7 +237,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
           ...(proxyOptions as any),
         });
 
-        if (isManifest && !isLikelyHlsManifest(String(response.data || ''), response.headers['content-type'])) {
+        const responseContentType = String(response.headers['content-type'] || '');
+
+        if (isManifest && !isLikelyHlsManifest(String(response.data || ''), responseContentType)) {
           lastError = new Error(`Invalid HLS manifest response (${response.status})`);
           continue;
         }
