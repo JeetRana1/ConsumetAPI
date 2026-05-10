@@ -24,4 +24,4 @@ jobs:
       - name: Install dependencies & build
         run: |
           npm install
-          npx tsc
+          npm run build
