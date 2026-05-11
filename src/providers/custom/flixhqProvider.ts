@@ -425,7 +425,12 @@ export class FlixHQProvider {
       const cacheKey = `flixhq:servers:${episodeId}`;
       const cached = cache.get(cacheKey);
       if (cached) return cached;
+      
+      console.log(`[FlixHQ] fetchServers: episodeId=${episodeId}`);
+      
       const { pageUrl, kind } = this.buildWatchPageUrl(episodeId);
+      console.log(`[FlixHQ] Watch page URL: ${pageUrl}, kind=${kind}`);
+      
       const pageData = await fetcher(pageUrl, false, 'flixhq');
       if (!pageData || !pageData.success) throw new Error('Failed to fetch movie/series page');
 
@@ -436,6 +441,7 @@ export class FlixHQProvider {
         $('.watch_block[data-token]').attr('data-token') ||
         $('[data-token]').first().attr('data-token');
 
+      console.log(`[FlixHQ] Token extracted: ${token ? 'yes' : 'no'}`);
       if (!token) throw new Error('Could not extract players token from page');
 
       const fieldName =
@@ -445,9 +451,13 @@ export class FlixHQProvider {
           ? 'players_show'
           : 'players';
 
+      console.log(`[FlixHQ] Field name: ${fieldName}`);
+
       const url = this.buildAjaxUrl('', '');
       const formData = new URLSearchParams();
       formData.append(fieldName, token);
+
+      console.log(`[FlixHQ] Sending AJAX POST to ${url} with fieldName=${fieldName}`);
 
       const res = await fetcher(url, false, 'flixhq', {
         method: 'POST',
@@ -457,7 +467,14 @@ export class FlixHQProvider {
 
       if (!res || !res.success) throw new Error('Failed to fetch players');
 
+      console.log(`[FlixHQ] AJAX response: ${res.text.substring(0, 300)}`);
+
       const parsedServers = this.parseServerJson(res.text) || parser.parseServers(cheerio.load(res.text));
+      console.log(`[FlixHQ] Parsed servers: ${Array.isArray(parsedServers) ? parsedServers.length : 0} servers`);
+      if (Array.isArray(parsedServers) && parsedServers.length > 0) {
+        console.log(`[FlixHQ] Server names: ${parsedServers.map((s: any) => s?.serverName).join(', ')}`);
+      }
+      
       if (!Array.isArray(parsedServers) || parsedServers.length === 0) {
         throw new Error('No servers found for players');
       }
@@ -472,6 +489,7 @@ export class FlixHQProvider {
       cache.set(cacheKey, result, 1000 * 30); // cache servers for 30s
       return result;
     } catch (error: any) {
+      console.log(`[FlixHQ] fetchServers error: ${error.message}`);
       return { error: error.message };
     }
   }
@@ -569,6 +587,8 @@ export class FlixHQProvider {
 
       const tryServer = async (selectedServer: any) => {
         const liveLink = selectedServer.serverUrl || selectedServer.link;
+        console.log(`[FlixHQ] tryServer: serverName=${selectedServer?.serverName}, serverId=${selectedServer?.serverId}, liveLink=${typeof liveLink === 'string' ? liveLink.substring(0, 100) : 'N/A'}`);
+        
         // If direct URL to a known player page, try extracting sources quickly (cached)
         if (typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
           const cacheKey = `flixhq:source:${liveLink}`;
@@ -577,6 +597,7 @@ export class FlixHQProvider {
 
           const extracted = await this.fetchSources(liveLink, selectedServer.serverName || server);
           const sourceCount = Array.isArray(extracted?.sources) ? extracted.sources.length : 0;
+          console.log(`[FlixHQ] Direct liveLink extraction: ${sourceCount} sources found`);
           if (sourceCount > 0) {
             cache.set(cacheKey, extracted, 1000 * 60); // cache 1 minute
             return extracted;
@@ -588,8 +609,11 @@ export class FlixHQProvider {
         let embedData: any = null;
         for (const referer of refererCandidates) {
           try {
+            const ajaxUrl = `${this.baseUrl}/ajax/episode/sources/${selectedServer.serverId}`;
+            console.log(`[FlixHQ] AJAX call: ${ajaxUrl}, referer=${referer.substring(0, 100)}`);
+            
             const embedRes = await fetcher(
-              `${this.baseUrl}/ajax/episode/sources/${selectedServer.serverId}`,
+              ajaxUrl,
               false,
               'flixhq',
               {
@@ -601,23 +625,35 @@ export class FlixHQProvider {
               },
             );
 
-            if (!embedRes || !embedRes.success) continue;
+            if (!embedRes || !embedRes.success) {
+              console.log(`[FlixHQ] AJAX failed: success=${embedRes?.success}`);
+              continue;
+            }
 
+            console.log(`[FlixHQ] AJAX response text: ${embedRes.text.substring(0, 200)}`);
+            
             try {
               const parsed = JSON.parse(embedRes.text);
+              console.log(`[FlixHQ] AJAX parsed: ${JSON.stringify(parsed).substring(0, 200)}`);
               if (parsed?.link) {
                 embedData = parsed;
+                console.log(`[FlixHQ] Found embed link: ${parsed.link.substring(0, 100)}`);
                 break;
               }
-            } catch {
+            } catch (e) {
+              console.log(`[FlixHQ] Failed to parse AJAX JSON: ${e}`);
               // Try next referer candidate.
             }
           } catch (e) {
+            console.log(`[FlixHQ] AJAX fetch error: ${e}`);
             // continue to next referer
           }
         }
 
-        if (!embedData?.link) throw new Error('Failed to get embed link from AJAX');
+        if (!embedData?.link) {
+          console.log(`[FlixHQ] No embed link found for serverId=${selectedServer?.serverId}`);
+          throw new Error('Failed to get embed link from AJAX');
+        }
 
         const cacheKey = `flixhq:embed:${embedData.link}`;
         const cachedEmbed = cache.get(cacheKey);
