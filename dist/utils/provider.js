@@ -62,7 +62,7 @@ const normalizeBaseUrl = (value) => value.replace(/\/+$/, '');
 const applyFlixhqBaseUrl = (provider) => {
     if (!isFlixhqProvider(provider))
         return;
-    const desiredBase = normalizeBaseUrl(String(process.env.FLIXHQ_BASE_URL || 'https://flixhq-tv.lol').trim());
+    const desiredBase = normalizeBaseUrl(String(process.env.FLIXHQ_BASE_URL || 'https://flixhq.one').trim());
     if (!desiredBase)
         return;
     provider.baseUrl = desiredBase;
