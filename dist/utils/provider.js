@@ -102,9 +102,33 @@ const wrapFlixhqServerFetcher = (provider) => {
     if (!isFlixhqProvider(provider) || !provider.client?.get || !provider.baseUrl)
         return;
     const original = provider.fetchEpisodeServers.bind(provider);
+    const hasUsableServerList = (value) => Array.isArray(value) && value.some((entry) => {
+        if (!entry || typeof entry !== 'object')
+            return false;
+        const server = entry;
+        return Boolean(String(server.id || server.url || server.name || '').trim());
+    });
     provider.fetchEpisodeServers = async (...args) => {
         try {
-            return await original(...args);
+            const existing = await original(...args);
+            if (hasUsableServerList(existing)) {
+                return existing;
+            }
+            const episodeId = String(args?.[0] || '').trim();
+            const mediaId = typeof args?.[1] === 'string' ? args[1].trim() : undefined;
+            if (!episodeId)
+                return existing;
+            const fallbackUrl = `${provider.baseUrl}/ajax/episode/servers/${encodeURIComponent(episodeId)}`;
+            const response = await provider.client.get(fallbackUrl);
+            const html = String(response?.data || '');
+            const parsed = parseFlixhqServerList(html).map((entry) => ({
+                name: entry.name,
+                id: entry.id,
+                url: buildFlixhqWatchUrl(String(provider.baseUrl), mediaId, entry.id),
+            }));
+            if (parsed.length)
+                return parsed;
+            return existing;
         }
         catch (error) {
             const episodeId = String(args?.[0] || '').trim();
@@ -273,7 +297,14 @@ const wrapMovieSourceFetcher = (provider) => {
     const original = provider.fetchEpisodeSources.bind(provider);
     provider.fetchEpisodeSources = async (...args) => {
         try {
-            return await original(...args);
+            const existing = await original(...args);
+            if (hasUsableSources(existing)) {
+                return existing;
+            }
+            const rescued = await rescueMovieSources(provider, args);
+            if (rescued)
+                return rescued;
+            return existing;
         }
         catch (error) {
             const rescued = await rescueMovieSources(provider, args);
