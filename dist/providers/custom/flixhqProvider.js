@@ -526,8 +526,8 @@ class FlixHQProvider {
             const availableServerNames = new Set(servers.map((s) => String(s?.serverName || '').toLowerCase()));
             const priorityOrder = Array.from(new Set([
                 availableServerNames.has(requestedServer) ? requestedServer : '',
+                'flixhq', // Prioritize FlixHQ (faster extraction)
                 'vidking',
-                'flixhq',
                 'megacloud',
                 'upcloud',
                 'vidcloud',
@@ -629,7 +629,7 @@ class FlixHQProvider {
                 }
                 throw new Error(`No playable sources from server ${String(selectedServer?.serverName || 'unknown')}`);
             };
-            const parallelism = Math.min(3, prioritizedServers.length);
+            const parallelism = 1; // Try servers sequentially (one at a time) to stop at first successful one
             const chunks = [];
             for (let i = 0; i < prioritizedServers.length; i += parallelism) {
                 chunks.push(prioritizedServers.slice(i, i + parallelism));
