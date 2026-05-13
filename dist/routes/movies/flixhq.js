@@ -31,16 +31,24 @@ const buildProxyHlsUrl = (request, sourceUrl) => {
     if (!raw)
         return raw;
     if (/^\/proxy\/hls\//i.test(raw)) {
-        const host = String(request.headers.host || '').trim();
+        let host = String(request.headers.host || '').trim();
         if (!host)
             return raw;
+        // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
+        if (host === 'localhost:80' || host === 'localhost') {
+            host = '127.0.0.1:3000';
+        }
         return `${request.protocol}://${host}${raw}`;
     }
     try {
         const parsed = new URL(raw);
-        const host = String(request.headers.host || '').trim();
+        let host = String(request.headers.host || '').trim();
         if (!host)
             return raw;
+        // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
+        if (host === 'localhost:80' || host === 'localhost') {
+            host = '127.0.0.1:3000';
+        }
         return `${request.protocol}://${host}/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
     }
     catch {
@@ -230,6 +238,10 @@ const routes = async (fastify, options) => {
             return reply.status(400).send({ message: 'episodeId is required' });
         }
         try {
+            // Debug: log incoming request headers
+            const hostHeader = String(request.headers.host || '').trim();
+            const protocol = request.protocol;
+            console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
             let res = main_1.redis
                 ? await cache_1.default.fetch(main_1.redis, `flixhq:watch:v3:${episodeId}:${server}`, async () => await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server), main_1.REDIS_TTL)
                 : await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server);

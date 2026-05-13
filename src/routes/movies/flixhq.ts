@@ -29,15 +29,23 @@ const buildProxyHlsUrl = (request: FastifyRequest, sourceUrl: string): string =>
   const raw = String(sourceUrl || '').trim();
   if (!raw) return raw;
   if (/^\/proxy\/hls\//i.test(raw)) {
-    const host = String(request.headers.host || '').trim();
+    let host = String(request.headers.host || '').trim();
     if (!host) return raw;
+    // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
+    if (host === 'localhost:80' || host === 'localhost') {
+      host = '127.0.0.1:3000';
+    }
     return `${request.protocol}://${host}${raw}`;
   }
 
   try {
     const parsed = new URL(raw);
-    const host = String(request.headers.host || '').trim();
+    let host = String(request.headers.host || '').trim();
     if (!host) return raw;
+    // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
+    if (host === 'localhost:80' || host === 'localhost') {
+      host = '127.0.0.1:3000';
+    }
     return `${request.protocol}://${host}/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
   } catch {
     return raw;
@@ -313,6 +321,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     }
 
     try {
+      // Debug: log incoming request headers
+      const hostHeader = String(request.headers.host || '').trim();
+      const protocol = request.protocol;
+      console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
+
       let res = redis
         ? await cache.fetch(
             redis as Redis,
