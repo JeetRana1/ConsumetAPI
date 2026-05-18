@@ -688,12 +688,13 @@ class FlixHQProvider {
                     new Promise((_, reject) => setTimeout(() => reject(new Error(`Server ${selectedServer?.serverName} extraction timeout after ${timeoutMs}ms`)), timeoutMs)),
                 ]);
             };
+            const serverExtractionTimeoutMs = Math.max(16000, Number(process.env.FLIXHQ_SERVER_EXTRACTION_TIMEOUT_MS || 45000));
             const firstSuccessful = async (chunk) => {
                 return new Promise((resolve, reject) => {
                     let pending = chunk.length;
                     let lastError = null;
                     for (const s of chunk) {
-                        tryServerWithTimeout(s, 16000)
+                        tryServerWithTimeout(s, serverExtractionTimeoutMs)
                             .then(resolve)
                             .catch((e) => {
                             console.error(`[FlixHQ] Server ${s?.serverName} failed:`, e.message);
