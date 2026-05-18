@@ -29,6 +29,8 @@ const HLS_PROXY_REGEX = /(https?:\/\/[^\s"'<>]+?\/m3u8-proxy\?[^\s"'<>]+|https?:
 const SUBTITLE_REGEX = /(https?:\/\/[^\s"'<>]+?\.(?:vtt|srt|ass)(?:\?[^\s"'<>]*)?)/gi;
 const subtitleTextCache = new Map();
 const SUBTITLE_TEXT_CACHE_MS = 30 * 60 * 1000;
+const PLAYWRIGHT_DEBUG = String(process.env.PLAYWRIGHT_DEBUG || '').toLowerCase() === '1'
+    || String(process.env.PLAYWRIGHT_DEBUG || '').toLowerCase() === 'true';
 const isDirectMediaUrl = (value) => {
     const normalized = String(value || '');
     if (!isUsableMediaUrl(normalized))
@@ -80,6 +82,28 @@ const normalizeUrl = (value) => {
     if (raw.startsWith('//'))
         return `https:${raw}`;
     return raw;
+};
+const getPlaywrightProxy = () => {
+    const raw = String(process.env.PLAYWRIGHT_PROXY || process.env.OUTBOUND_PROXY || process.env.PROXY || '')
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean)[0];
+    if (!raw)
+        return undefined;
+    try {
+        const parsed = new URL(raw);
+        const username = decodeURIComponent(parsed.username || '');
+        const password = decodeURIComponent(parsed.password || '');
+        parsed.username = '';
+        parsed.password = '';
+        return {
+            server: parsed.toString(),
+            ...(username ? { username, password } : {}),
+        };
+    }
+    catch {
+        return { server: raw };
+    }
 };
 const getSubtitleCacheKeys = (url) => {
     const normalized = normalizeUrl(url);
@@ -206,8 +230,10 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
             subtitles.set(item.url, item);
     };
     try {
+        const playwrightProxy = getPlaywrightProxy();
         browser = await chromium.launch({
             headless: true,
+            ...(playwrightProxy ? { proxy: playwrightProxy } : {}),
             args: ['--no-sandbox', '--disable-dev-shm-usage'],
         });
         const context = await browser.newContext({
@@ -215,6 +241,22 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         });
         const page = await context.newPage();
+        if (PLAYWRIGHT_DEBUG) {
+            page.on('console', (message) => {
+                const text = String(message.text?.() || '');
+                if (text)
+                    console.log(`[Playwright console:${message.type?.() || 'log'}] ${normalizedEmbed} ${text.slice(0, 500)}`);
+            });
+            page.on('requestfailed', (request) => {
+                const failure = request.failure?.();
+                console.log(`[Playwright request failed] ${request.url()} ${failure?.errorText || ''}`.trim());
+            });
+            page.on('response', (response) => {
+                const status = Number(response.status?.() || 0);
+                if (status >= 400)
+                    console.log(`[Playwright response ${status}] ${response.url()}`);
+            });
+        }
         page.on('request', (request) => {
             addDiscovered(request.url());
         });
@@ -310,8 +352,8 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
         }
         await context.close();
     }
-    catch {
-        // Swallow browser failures and return empty set.
+    catch (err) {
+        console.error(`[Playwright extractor failed] ${normalizedEmbed}`, err);
     }
     finally {
         if (browser) {
@@ -347,6 +389,9 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
         isM3U8: /\.m3u8(\?|$)/i.test(url) || /\/m3u8-proxy\?/i.test(url) || /\/getm3u8\//i.test(url),
         isEmbed: false,
     }));
+    if (PLAYWRIGHT_DEBUG) {
+        console.log(`[Playwright extractor result] ${normalizedEmbed} sources=${sources.length} subtitles=${subtitles.size}`);
+    }
     return { sources, subtitles: [...subtitles.values()] };
 };
 exports.extractPlaybackWithPlaywright = extractPlaybackWithPlaywright;
