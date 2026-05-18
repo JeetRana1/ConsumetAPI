@@ -597,6 +597,9 @@ class FlixHQProvider {
                 console.log(`[FlixHQ] tryServer: serverName=${selectedServer?.serverName}, serverId=${selectedServer?.serverId}, liveLink=${typeof liveLink === 'string' ? liveLink.substring(0, 100) : 'N/A'}`);
                 // If direct URL to a known player page, try extracting sources quickly (cached)
                 if (typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+                    if (options.allowEmbedFallback && !strictServer) {
+                        return toEmbedFallback(selectedServer, liveLink);
+                    }
                     try {
                         const cacheKey = `flixhq:source:v4:${liveLink}`;
                         const cached = cache.get(cacheKey);
