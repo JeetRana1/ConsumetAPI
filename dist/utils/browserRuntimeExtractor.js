@@ -185,10 +185,22 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
     catch {
         return { sources: [], subtitles: [] };
     }
-    const discovered = new Set();
+    const discovered = new Map();
     const subtitles = new Map();
     let browser;
     const timeout = Math.max(4000, timeoutMs);
+    const isVidkingEmbed = /vidking/i.test(normalizedEmbed);
+    const isVideasyEmbed = /videasy/i.test(normalizedEmbed);
+    const wantsSubtitles = /[?&]sub\.info=/i.test(normalizedEmbed);
+    let activeMirrorLabel = '';
+    const addDiscovered = (url, label) => {
+        const normalized = normalizeUrl(url);
+        if (!normalized || !isDirectMediaUrl(normalized))
+            return;
+        const cleanLabel = String(label || activeMirrorLabel || '').trim();
+        if (!discovered.has(normalized) || cleanLabel)
+            discovered.set(normalized, cleanLabel);
+    };
     const addSubtitles = (items) => {
         for (const item of items)
             subtitles.set(item.url, item);
@@ -204,21 +216,18 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
         });
         const page = await context.newPage();
         page.on('request', (request) => {
-            const u = normalizeUrl(request.url());
-            if (u && isDirectMediaUrl(u))
-                discovered.add(u);
+            addDiscovered(request.url());
         });
         page.on('response', async (response) => {
             try {
                 const u = normalizeUrl(response.url());
-                if (u && isDirectMediaUrl(u))
-                    discovered.add(u);
+                addDiscovered(u);
                 const headers = response.headers() || {};
                 const contentType = String(headers['content-type'] || '').toLowerCase();
                 if (contentType.includes('json') || contentType.includes('javascript') || contentType.includes('text')) {
                     const body = await response.text();
                     for (const parsed of parseUrlsFromText(String(body || '')))
-                        discovered.add(parsed);
+                        addDiscovered(parsed);
                     addSubtitles(parseSubtitlesFromText(String(body || '')));
                     if (u && /\.(vtt|srt|ass)(\?|$)/i.test(u) && String(body || '').trim()) {
                         setCachedSubtitleText(u, String(body || ''));
@@ -231,23 +240,68 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
         });
         await page.goto(normalizedEmbed, { waitUntil: 'domcontentloaded', timeout });
         // Trigger player/network activity in common embed pages.
-        await page.evaluate(() => {
-            const clickables = Array.from(document.querySelectorAll('#adv, .adblock, .rek, button, .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'));
-            for (const el of clickables) {
-                try {
-                    el.click();
+        if (!isVidkingEmbed && !isVideasyEmbed)
+            await page.evaluate(() => {
+                const clickables = Array.from(document.querySelectorAll('#adv, .adblock, .rek, button, .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'));
+                for (const el of clickables) {
+                    try {
+                        el.click();
+                    }
+                    catch {
+                        // ignore
+                    }
                 }
-                catch {
-                    // ignore
+                const video = document.querySelector('video');
+                if (video) {
+                    video.muted = true;
+                    video.play().catch(() => undefined);
                 }
+            }).catch(() => undefined);
+        if (isVidkingEmbed || isVideasyEmbed) {
+            const mirrors = ['Hydrogen', 'Lithium', 'Helium', 'Oxygen'];
+            for (const mirror of mirrors) {
+                activeMirrorLabel = mirror;
+                await page
+                    .evaluate((target) => {
+                    const norm = (value) => value.replace(/\s+/g, ' ').trim().toLowerCase();
+                    const wanted = norm(target);
+                    const candidates = Array.from(document.querySelectorAll('button, [role="button"], [aria-label], [title], .server, .source, .server-item, .source-item, a, li, div'));
+                    const ranked = candidates
+                        .map((el) => {
+                        const text = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+                        const rect = el.getBoundingClientRect();
+                        return { el, text, area: Math.max(1, rect.width * rect.height) };
+                    })
+                        .filter(({ text, area }) => {
+                        if (!text || area <= 1)
+                            return false;
+                        if (text === wanted)
+                            return true;
+                        return text.includes(wanted) && text.length <= wanted.length + 24;
+                    })
+                        .sort((a, b) => {
+                        const exactDelta = Number(b.text === wanted) - Number(a.text === wanted);
+                        if (exactDelta)
+                            return exactDelta;
+                        return a.text.length - b.text.length || a.area - b.area;
+                    });
+                    const hit = ranked[0]?.el;
+                    if (!hit)
+                        return false;
+                    const text = norm(hit.innerText || hit.textContent || hit.getAttribute('aria-label') || hit.getAttribute('title') || '');
+                    if (!text.includes(wanted))
+                        return false;
+                    hit.scrollIntoView({ block: 'center', inline: 'center' });
+                    hit.click();
+                    return true;
+                }, mirror)
+                    .catch(() => false);
+                await page.waitForTimeout(isVideasyEmbed ? 2500 : 1600).catch(() => undefined);
+                if (discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
+                    break;
             }
-            const video = document.querySelector('video');
-            if (video) {
-                video.muted = true;
-                video.play().catch(() => undefined);
-            }
-        }).catch(() => undefined);
-        const wantsSubtitles = /[?&]sub\.info=/i.test(normalizedEmbed);
+            activeMirrorLabel = '';
+        }
         const startedAt = Date.now();
         while (Date.now() - startedAt < Math.min(4500, Math.max(1800, timeout - 2000))) {
             if (discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
@@ -269,17 +323,27 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
             }
         }
     }
-    const sources = dropDuplicateHlsVariants([...discovered])
+    const sourceEntries = dropDuplicateHlsVariants([...discovered.keys()])
         .filter((u) => isDirectMediaUrl(u))
         .sort((a, b) => {
-        const score = (url) => (/\.m3u8(?:\?|$)/i.test(url) ? 50 : 0) +
-            (/\/master\.m3u8(?:\?|$)/i.test(url) || /\/index\.m3u8(?:\?|$)/i.test(url) ? 20 : 0) -
-            (/\.mp4(?:\?|$)/i.test(url) ? 10 : 0);
+        const score = (url) => {
+            const label = String(discovered.get(url) || '').toLowerCase();
+            return ((/\.m3u8(?:\?|$)/i.test(url) ? 80 : 0) +
+                (/\/master\.m3u8(?:\?|$)/i.test(url) ? 25 : 0) +
+                (/\/index\.m3u8(?:\?|$)/i.test(url) ? 15 : 0) +
+                (/\.mp4(?:\?|$)/i.test(url) ? 20 : 0) +
+                (/hydrogen/.test(label) ? 35 : 0) +
+                (/lithium/.test(label) ? 30 : 0) +
+                (/helium/.test(label) ? 15 : 0) -
+                (/oxygen/.test(label) ? 40 : 0));
+        };
         return score(b) - score(a);
-    })
+    });
+    const sources = sourceEntries
         .map((url) => ({
         url,
-        quality: 'auto',
+        quality: discovered.get(url) ? `auto (${discovered.get(url)})` : 'auto',
+        server: discovered.get(url) || undefined,
         isM3U8: /\.m3u8(\?|$)/i.test(url) || /\/m3u8-proxy\?/i.test(url) || /\/getm3u8\//i.test(url),
         isEmbed: false,
     }));

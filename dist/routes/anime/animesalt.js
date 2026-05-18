@@ -33,6 +33,102 @@ const main_1 = require("../../main");
 const anilist_1 = __importDefault(require("@consumet/extensions/dist/providers/meta/anilist"));
 const BASE_URL = 'https://animesalt.ac';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const normalizeAnimeSaltSearchText = (value) => String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[’‘`´]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[×✕]/g, 'x')
+    .replace(/[‐‑‒–—―]/g, '-')
+    .replace(/[_-]+/g, ' ')
+    .replace(/[:;,.!?()[\]{}"'’]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+const buildAnimeSaltSearchQueries = (query) => {
+    const raw = String(query || '').replace(/\s+/g, ' ').trim();
+    const folded = normalizeAnimeSaltSearchText(raw);
+    const withoutSeason = folded.replace(/\b(season|part|cour|arc)\s*\d+\b/gi, ' ').replace(/\s+/g, ' ').trim();
+    const short = folded.split(' ').slice(0, 4).join(' ');
+    return Array.from(new Set([raw, folded, withoutSeason, short].filter((q) => q && q.length >= 2)));
+};
+const decodePlayerString = (value) => String(value || '')
+    .replace(/\\\//g, '/')
+    .replace(/\\u0026/g, '&')
+    .replace(/\\u003d/g, '=')
+    .replace(/\\u003a/g, ':')
+    .replace(/&amp;/gi, '&')
+    .replace(/&#038;/gi, '&')
+    .trim();
+const absolutizeAnimeSaltUrl = (value, baseUrl) => {
+    const raw = decodePlayerString(value);
+    if (!raw)
+        return raw;
+    try {
+        return new URL(raw, baseUrl).toString();
+    }
+    catch {
+        return raw;
+    }
+};
+const pushAnimeSaltSubtitle = (subtitles, seen, lang, url, referer) => {
+    const resolvedUrl = absolutizeAnimeSaltUrl(url, referer || BASE_URL);
+    if (!resolvedUrl || seen.has(resolvedUrl))
+        return;
+    seen.add(resolvedUrl);
+    subtitles.push({
+        lang: String(lang || 'English').replace(/^[-\s]+|[-\s]+$/g, '').trim() || 'English',
+        url: resolvedUrl,
+        referer,
+        provider: 'animesalt',
+    });
+};
+const extractAnimeSaltSubtitles = (html, referer) => {
+    const page = String(html || '');
+    const subtitles = [];
+    const seen = new Set();
+    const parseBracketList = (value) => {
+        const raw = decodePlayerString(value);
+        const parts = raw.split(/,(?=\[[^\]]+\])/g);
+        for (const part of parts) {
+            const match = String(part || '').trim().match(/^\[([^\]]+)\]\s*(.+)$/);
+            if (!match)
+                continue;
+            pushAnimeSaltSubtitle(subtitles, seen, match[1], match[2], referer);
+        }
+    };
+    const stringPatterns = [
+        /(?:var\s+)?playerjsSubtitle\s*=\s*(["'`])([\s\S]*?)\1\s*;?/gi,
+        /(?:subtitle|subtitles|tracks)\s*:\s*(["'`])(\[[^\]]+\][\s\S]*?)\1/gi,
+        /(?:subtitle|subtitles)\s*=\s*(["'`])(\[[^\]]+\][\s\S]*?)\1\s*;?/gi,
+    ];
+    for (const pattern of stringPatterns) {
+        let match;
+        while ((match = pattern.exec(page))) {
+            parseBracketList(match[2] || '');
+        }
+    }
+    const objectPatterns = [
+        /\{\s*(?:file|src|url)\s*:\s*(["'`])([^"'`]+)\1\s*,\s*(?:label|lang|name)\s*:\s*(["'`])([^"'`]+)\3[\s\S]*?\}/gi,
+        /\{\s*(?:label|lang|name)\s*:\s*(["'`])([^"'`]+)\1\s*,\s*(?:file|src|url)\s*:\s*(["'`])([^"'`]+)\3[\s\S]*?\}/gi,
+    ];
+    let objectMatch;
+    while ((objectMatch = objectPatterns[0].exec(page))) {
+        pushAnimeSaltSubtitle(subtitles, seen, objectMatch[4], objectMatch[2], referer);
+    }
+    while ((objectMatch = objectPatterns[1].exec(page))) {
+        pushAnimeSaltSubtitle(subtitles, seen, objectMatch[2], objectMatch[4], referer);
+    }
+    // Last-resort scan: AnimeSalt subtitle URLs are often /p/<token> links on as-cdn hosts.
+    const directUrlPattern = /https?:\\?\/\\?\/[^"'`\s<>]+(?:\/p\/|\.vtt|\.srt|\.ass)[^"'`\s<>]*/gi;
+    let directMatch;
+    while ((directMatch = directUrlPattern.exec(page))) {
+        const url = decodePlayerString(directMatch[0]);
+        if (/\.(?:js|css)(?:\?|$)/i.test(url))
+            continue;
+        pushAnimeSaltSubtitle(subtitles, seen, 'English', url, referer);
+    }
+    return subtitles;
+};
 const routes = async (fastify, options) => {
     // ─── Search ──────────────────────────────────────────────────────────────────
     fastify.get('/:query', async (request, reply) => {
@@ -45,29 +141,33 @@ const routes = async (fastify, options) => {
                 : '';
         try {
             const fetchSearch = async () => {
-                const res = await (0, outboundProxy_1.proxyGet)(`${BASE_URL}/?s=${encodeURIComponent(query)}`, {
-                    headers: { 'User-Agent': UA },
-                    timeout: 3000
-                });
-                const $ = cheerio.load(res.data);
                 const results = [];
-                $('article.movies').each((_, el) => {
-                    const title = $(el).find('h2').text().trim();
-                    const url = $(el).find('a.lnk-blk').attr('href');
-                    const image = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
+                const seenIds = new Set();
+                const pushResult = (scope, href) => {
+                    const url = String(href || '').trim();
+                    if (!url)
+                        return;
                     let id = '';
                     let mediaType = '';
-                    if (url?.includes('/series/')) {
+                    if (url.includes('/series/')) {
                         id = url.split('/series/')[1].split('/')[0];
                         mediaType = 'tv';
                     }
-                    else if (url?.includes('/movies/')) {
+                    else if (url.includes('/movies/')) {
                         id = 'movie:' + url.split('/movies/')[1].split('/')[0];
                         mediaType = 'movie';
                     }
                     if (id && mediaType) {
                         if (requestedType && mediaType !== requestedType)
                             return;
+                        if (seenIds.has(id))
+                            return;
+                        seenIds.add(id);
+                        const title = scope.find('h2, .entry-title').first().text().trim() ||
+                            scope.find('a[title]').first().attr('title')?.trim() ||
+                            scope.find('img[alt]').first().attr('alt')?.replace(/^Image\s+/i, '').trim() ||
+                            id.replace(/^movie:/, '').replace(/-/g, ' ');
+                        const image = scope.find('img').attr('data-src') || scope.find('img').attr('src');
                         results.push({
                             id,
                             title,
@@ -76,7 +176,28 @@ const routes = async (fastify, options) => {
                             image: image?.startsWith('//') ? `https:${image}` : image
                         });
                     }
-                });
+                };
+                for (const searchQuery of buildAnimeSaltSearchQueries(query)) {
+                    const res = await (0, outboundProxy_1.proxyGet)(`${BASE_URL}/?s=${encodeURIComponent(searchQuery)}`, {
+                        headers: { 'User-Agent': UA },
+                        timeout: 3000
+                    });
+                    const $ = cheerio.load(res.data);
+                    $('article, .post, .result, .items article').each((_, el) => {
+                        const scope = $(el);
+                        const href = scope.find('a.lnk-blk').attr('href') ||
+                            scope.find('a[href*="/series/"]').first().attr('href') ||
+                            scope.find('a[href*="/movies/"]').first().attr('href');
+                        pushResult(scope, href);
+                    });
+                    // Fallback for queries where AnimeSalt changes the card wrapper but still
+                    // renders normal series/movie links.
+                    $('a[href*="/series/"], a[href*="/movies/"]').each((_, el) => {
+                        const link = $(el);
+                        const scope = link.closest('article, .post, .item, .result, li, div');
+                        pushResult(scope.length ? scope : link, link.attr('href'));
+                    });
+                }
                 // Add AniList IDs in parallel
                 const anilistPromises = results.map(async (result) => {
                     try {
@@ -108,6 +229,7 @@ const routes = async (fastify, options) => {
     // ─── Info ─────────────────────────────────────────────────────────────────────
     fastify.get('/info', async (request, reply) => {
         const id = request.query.id;
+        const hydrateTitles = String(request.query.hydrateTitles || '').toLowerCase() === 'true';
         try {
             const fetchInfo = async () => {
                 const isMovie = id.startsWith('movie:');
@@ -259,15 +381,17 @@ const routes = async (fastify, options) => {
                     }
                     return fallbackTitle;
                 };
-                const needsHydration = episodes
-                    .filter((ep) => {
-                    const title = String(ep?.title || '').trim();
-                    return !title || /^episode\s*\d+$/i.test(title);
-                })
-                    .filter((ep) => String(ep?.url || '').startsWith(BASE_URL))
-                    // Hard cap to avoid overloading upstream in one request.
-                    .slice(0, 160);
-                if (needsHydration.length > 0) {
+                const needsHydration = hydrateTitles
+                    ? episodes
+                        .filter((ep) => {
+                        const title = String(ep?.title || '').trim();
+                        return !title || /^episode\s*\d+$/i.test(title);
+                    })
+                        .filter((ep) => String(ep?.url || '').startsWith(BASE_URL))
+                        // Hard cap to avoid overloading upstream in one request.
+                        .slice(0, 160)
+                    : [];
+                if (hydrateTitles && needsHydration.length > 0) {
                     const concurrency = 8;
                     const workers = Array.from({ length: Math.min(concurrency, needsHydration.length) }, () => (async () => {
                         while (needsHydration.length > 0) {
@@ -336,8 +460,9 @@ const routes = async (fastify, options) => {
                     anilistId
                 };
             };
+            const infoCacheVersion = hydrateTitles ? 'v5-hydrated' : 'v5-fast';
             const info = main_1.redis
-                ? await cache_1.default.fetch(main_1.redis, `animesalt:info:${id}:v4`, fetchInfo, main_1.REDIS_TTL)
+                ? await cache_1.default.fetch(main_1.redis, `animesalt:info:${id}:${infoCacheVersion}`, fetchInfo, main_1.REDIS_TTL)
                 : await fetchInfo();
             reply.status(200).send(info);
         }
@@ -377,21 +502,7 @@ const routes = async (fastify, options) => {
                     const cookies = pageRes.headers['set-cookie']
                         ?.map((c) => c.split(';')[0])
                         .join('; ') || '';
-                    const subMatch = pageRes.data.match(/var\s+playerjsSubtitle\s*=\s*(["'])(.+?)\1/);
-                    if (subMatch) {
-                        const rawSubtitleStr = subMatch[2];
-                        const parts = rawSubtitleStr.split(',');
-                        for (const part of parts) {
-                            const langMatch = part.match(/^\[(.*?)\](.*)$/);
-                            if (langMatch) {
-                                subtitles.push({
-                                    lang: langMatch[1],
-                                    url: langMatch[2],
-                                    referer: iframe1
-                                });
-                            }
-                        }
-                    }
+                    subtitles.push(...extractAnimeSaltSubtitles(String(pageRes.data || ''), iframe1));
                     // Step 2 – POST to getVideo API for the signed m3u8 URL
                     const apiRes = await (0, outboundProxy_1.proxyPost)(`${origin}/player/index.php?data=${videoId}&do=getVideo`, `hash=${videoId}&r=${encodeURIComponent(BASE_URL)}`, {
                         headers: {

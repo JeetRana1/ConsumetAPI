@@ -553,8 +553,11 @@ const routes = async (fastify, options) => {
                 const shouldProxyManifestUris = (() => {
                     const host = target.hostname.toLowerCase();
                     const ref = referer.toLowerCase();
-                    return (host.includes('sprintcdn') ||
+                    return (/(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(host) ||
+                        host.includes('animesalt') ||
+                        host.includes('sprintcdn') ||
                         host.includes('r66nv9ed') ||
+                        ref.includes('animesalt') ||
                         ref.includes('flixhq') ||
                         ref.includes('vidking') ||
                         ref.includes('megacloud') ||
@@ -671,7 +674,10 @@ const routes = async (fastify, options) => {
                     if (!trimmed)
                         return line;
                     if (trimmed.startsWith('#') && trimmed.includes('URI="')) {
-                        return line.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${rewriteUri(uri)}"`);
+                        return line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${rewriteUri(uri)}"`);
+                    }
+                    if (trimmed.startsWith('#') && trimmed.includes("URI='")) {
+                        return line.replace(/URI='([^']+)'/g, (_m, uri) => `URI='${rewriteUri(uri)}'`);
                     }
                     if (trimmed.startsWith('#'))
                         return line;
@@ -826,9 +832,30 @@ const routes = async (fastify, options) => {
             originForRequest = `${new URL(refererForRequest).protocol}//${new URL(refererForRequest).host}`;
         }
         catch { /* ignore */ }
+        const isAnimeSaltSubtitleHost = /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(target.hostname);
+        const refererCandidates = (() => {
+            const values = [
+                refererForRequest,
+                isAnimeSaltSubtitleHost ? 'https://animesalt.ac/' : '',
+                isAnimeSaltSubtitleHost ? `${target.protocol}//${target.host}/` : '',
+            ].filter(Boolean);
+            return [...new Set(values)];
+        })();
+        const normalizeCueTimestamp = (value) => {
+            const raw = String(value || '').trim().replace(',', '.');
+            const match = raw.match(/^(\d+):(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$/);
+            if (!match)
+                return raw;
+            const hours = String(Number(match[1] || 0)).padStart(2, '0');
+            const minutes = String(Number(match[2] || 0)).padStart(2, '0');
+            const seconds = String(Number(match[3] || 0)).padStart(2, '0');
+            const millis = String(match[4] || '000').padEnd(3, '0').slice(0, 3);
+            return `${hours}:${minutes}:${seconds}.${millis}`;
+        };
+        const normalizeCueTimings = (text) => String(text || '').replace(/(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)\s*-->\s*(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)([^\n\r]*)/g, (_match, start, end, suffix) => `${normalizeCueTimestamp(start)} --> ${normalizeCueTimestamp(end)}${suffix || ''}`);
         const srtToVtt = (text) => {
-            const clean = text.replace(/\r+/g, '').replace(/^\uFEFF/, '');
-            return `WEBVTT\n\n${clean.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')}`;
+            const clean = normalizeCueTimings(text.replace(/\r+/g, '').replace(/^\uFEFF/, ''));
+            return `WEBVTT\n\n${clean}`;
         };
         const assTimeToVtt = (t) => {
             const m = String(t || '').trim().match(/^(\d+):(\d{1,2}):(\d{1,2})[.](\d{1,2})$/);
@@ -882,35 +909,44 @@ const routes = async (fastify, options) => {
             let raw = '';
             let lastErr = null;
             for (const targetRequest of targetRequests) {
-                for (const proxyUrl of chain) {
+                for (const candidateReferer of refererCandidates) {
+                    let candidateOrigin = candidateReferer;
                     try {
-                        const { toAxiosProxyOptions: tap } = await Promise.resolve().then(() => __importStar(require('./outboundProxy')));
-                        const proxyOpts = tap(proxyUrl);
-                        const resp = await axios_1.default.get(targetRequest.requestUrl, {
-                            proxy: false,
-                            ...proxyOpts,
-                            responseType: 'text',
-                            timeout: 15000,
-                            headers: {
-                                Accept: 'text/vtt,text/plain,*/*',
-                                Referer: refererForRequest,
-                                Origin: originForRequest,
-                                'X-Forward-Origin': originForRequest,
-                                'X-Forward-Referer': refererForRequest,
-                                'Sec-Fetch-Dest': 'empty',
-                                'Sec-Fetch-Mode': 'cors',
-                                'Sec-Fetch-Site': 'cross-site',
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                            },
-                            maxRedirects: 5,
-                            validateStatus: (s) => s < 400,
-                        });
-                        raw = String(resp.data || '');
+                        candidateOrigin = `${new URL(candidateReferer).protocol}//${new URL(candidateReferer).host}`;
+                    }
+                    catch { /* ignore */ }
+                    for (const proxyUrl of chain) {
+                        try {
+                            const { toAxiosProxyOptions: tap } = await Promise.resolve().then(() => __importStar(require('./outboundProxy')));
+                            const proxyOpts = tap(proxyUrl);
+                            const resp = await axios_1.default.get(targetRequest.requestUrl, {
+                                proxy: false,
+                                ...proxyOpts,
+                                responseType: 'text',
+                                timeout: 15000,
+                                headers: {
+                                    Accept: 'text/vtt,text/plain,*/*',
+                                    Referer: candidateReferer,
+                                    Origin: candidateOrigin,
+                                    'X-Forward-Origin': candidateOrigin,
+                                    'X-Forward-Referer': candidateReferer,
+                                    'Sec-Fetch-Dest': 'empty',
+                                    'Sec-Fetch-Mode': 'cors',
+                                    'Sec-Fetch-Site': 'cross-site',
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                                },
+                                maxRedirects: 5,
+                                validateStatus: (s) => s < 400,
+                            });
+                            raw = String(resp.data || '');
+                            break;
+                        }
+                        catch (e) {
+                            lastErr = e;
+                        }
+                    }
+                    if (raw)
                         break;
-                    }
-                    catch (e) {
-                        lastErr = e;
-                    }
                 }
                 if (raw)
                     break;
@@ -935,18 +971,18 @@ const routes = async (fastify, options) => {
                 catch { /* ignore */ }
             }
             const hasCue = raw.includes('-->');
-            const hasSrt = /\d{1,2}:\d{2}:\d{2}[.,]\d{2,3}/.test(raw);
+            const hasSrt = /\d+:\d{1,2}:\d{1,2}[.,]\d{1,3}/.test(raw);
             const isAss = /^\s*\[Script Info\]/im.test(raw) || /^\s*\[Events\]/im.test(raw);
-            const isSrt = /^\d{2}:\d{2}:\d{2},\d{3}$/.test(raw.split('\n').find(l => l.includes(',')) || '') || (hasCue && hasSrt && !raw.trim().toLowerCase().startsWith('webvtt'));
+            const isSrt = /^\d+:\d{1,2}:\d{1,2}[,.]\d{1,3}$/.test(raw.split('\n').find(l => l.includes(',')) || '') || (hasCue && hasSrt && !raw.trim().toLowerCase().startsWith('webvtt'));
             const isVtt = raw.trim().toLowerCase().startsWith('webvtt');
             if (isAss)
                 vtt = assToVtt(raw);
             else if (isSrt)
                 vtt = srtToVtt(raw);
             else if (isVtt)
-                vtt = raw.replace(/\r+/g, '').replace(/^\uFEFF/, '');
+                vtt = normalizeCueTimings(raw.replace(/\r+/g, '').replace(/^\uFEFF/, ''));
             else if (hasCue)
-                vtt = `WEBVTT\n\n${raw.replace(/\r+/g, '').replace(/^\uFEFF/, '')}`;
+                vtt = `WEBVTT\n\n${normalizeCueTimings(raw.replace(/\r+/g, '').replace(/^\uFEFF/, ''))}`;
             else
                 vtt = raw;
             reply

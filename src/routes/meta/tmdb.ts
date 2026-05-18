@@ -8,7 +8,6 @@ import { Redis } from 'ioredis';
 import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
-import { VegamoviesProvider } from '../../providers/custom/vegamoviesProvider';
 import axios from 'axios';
 import { google } from 'googleapis';
 
@@ -230,7 +229,6 @@ const chooseOfficialTrailerFromExisting = async (payload: any): Promise<string |
 
 const attachBestTrailer = async (info: any, id: string, type?: string) => {
   if (!info || typeof info !== 'object') return;
-  if (!shouldLookupTrailers) return;
 
   const tmdbTrailer = await fetchTmdbOfficialTrailer(id, type);
   if (tmdbTrailer) {
@@ -245,6 +243,8 @@ const attachBestTrailer = async (info: any, id: string, type?: string) => {
   }
 
   delete info.trailer;
+
+  if (!shouldLookupTrailers) return;
 
   const title = info.title || info.name;
   const year = info.releaseDate || info.firstAirDate;
@@ -415,88 +415,8 @@ const titleMatchScore = (candidateTitle: string, queries: string[]): number => {
   return score;
 };
 
-const normalizeVegamoviesSourceId = (value: string): string => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const withoutQuery = raw.split('?')[0].replace(/\.html$/i, '');
-  return (withoutQuery.split('/').filter(Boolean).pop() || withoutQuery).trim();
-};
-
-const resolveVegamoviesSlugFromTmdb = async (id: string, type?: string): Promise<string> => {
-  const sourceId = normalizeVegamoviesSourceId(id);
-  if (!sourceId) return '';
-
-  if (/^tt\d+$/i.test(sourceId) || !/^\d+$/.test(sourceId)) {
-    return sourceId;
-  }
-
-  const candidateTitles: string[] = [];
-
-  try {
-    if (tmdbApi) {
-      const mediaTypes = Array.from(new Set([
-        type === 'tv' ? 'tv' : 'movie',
-        type === 'tv' ? 'movie' : 'tv',
-      ]));
-
-      for (const mediaType of mediaTypes) {
-        try {
-          const response = await axios.get(
-            `https://api.themoviedb.org/3/${mediaType}/${id}?api_key=${tmdbApi}&language=en-US`,
-          );
-          const data = response?.data;
-          if (data) {
-            candidateTitles.push(...getTitleCandidatesFromMedia(data));
-            if (candidateTitles.length) break;
-          }
-        } catch {
-          // Try the next TMDB media type.
-        }
-      }
-    }
-  } catch {
-    // Fall through to secondary TMDB fetch below.
-  }
-
-  if (!candidateTitles.length) {
-    try {
-      const tmdbClient = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-      const mediaInfo = await tmdbClient.fetchMediaInfo(id, type || 'movie');
-      candidateTitles.push(...getTitleCandidatesFromMedia(mediaInfo));
-    } catch {
-      // Ignore and return empty below.
-    }
-  }
-
-  const normalizedTitles = Array.from(new Set(candidateTitles.map((title) => String(title || '').trim()).filter(Boolean)));
-  if (!normalizedTitles.length) return '';
-
-  let bestSlug = '';
-  let bestScore = -1;
-
-  for (const query of normalizedTitles.slice(0, 3)) {
-    try {
-      const searchRes = await VegamoviesProvider.search(query, 1);
-      const results = Array.isArray(searchRes?.results) ? searchRes.results : [];
-      for (const result of results.slice(0, 10)) {
-        const resultTitle = String(result?.title || '').trim();
-        const score = titleMatchScore(resultTitle, normalizedTitles);
-        if (score > bestScore && result?.id) {
-          bestScore = score;
-          bestSlug = String(result.id).trim();
-        }
-      }
-      if (bestScore >= 700) break;
-    } catch {
-      // Try the next title candidate.
-    }
-  }
-
-  return bestSlug;
-};
-
 const resolveTmdbExternalImdbId = async (id: string, type?: string): Promise<string> => {
-  const sourceId = normalizeVegamoviesSourceId(id);
+  const sourceId = String(id || '').trim();
   if (!sourceId) return '';
   if (/^tt\d+$/i.test(sourceId)) return sourceId;
   if (!/^\d+$/.test(sourceId) || !tmdbApi) return '';
@@ -519,79 +439,6 @@ const resolveTmdbExternalImdbId = async (id: string, type?: string): Promise<str
   }
 
   return '';
-};
-
-const resolveVegamoviesInfo = async (id: string, type?: string) => {
-  const sourceId = await resolveVegamoviesSlugFromTmdb(id, type);
-  const lookupId = sourceId || normalizeVegamoviesSourceId(id);
-  if (!lookupId) throw new Error('Unable to resolve Vegamovies title');
-  return VegamoviesProvider.getInfo(lookupId);
-};
-
-export const resolveVegamoviesWatch = async (id: string, type?: string, season?: number, episode?: number) => {
-  console.log(`[Vegamovies] Resolving watch for id=${id}, type=${type}, s=${season}, e=${episode}`);
-  
-  let title = '';
-  let tmdbId = '';
-
-  // Try to get TMDB info to get a clean title for searching
-  try {
-    if (tmdbApi) {
-      let data: any = null;
-      if (/^tt\d+$/i.test(id)) {
-        // Search by IMDB ID
-        const findRes = await axios.get(`https://api.themoviedb.org/3/find/${id}?api_key=${tmdbApi}&external_source=imdb_id`);
-        const results = findRes.data.movie_results.concat(findRes.data.tv_results);
-        if (results.length) {
-          data = results[0];
-          tmdbId = data.id.toString();
-        }
-      } else if (/^\d+$/.test(id)) {
-        // Search by TMDB ID
-        const mediaType = type === 'tv' ? 'tv' : 'movie';
-        const res = await axios.get(`https://api.themoviedb.org/3/${mediaType}/${id}?api_key=${tmdbApi}`);
-        data = res.data;
-        tmdbId = id;
-      }
-
-      if (data) {
-        title = data.title || data.name || '';
-      }
-    }
-  } catch (err: any) {
-    console.warn(`[Vegamovies] Failed to fetch TMDB info for ${id}:`, err.message);
-  }
-
-  // If we have a title, search Vegamovies for it
-  if (title) {
-    console.log(`[Vegamovies] Searching for title: ${title}`);
-    const searchResults = await VegamoviesProvider.search(title);
-    const movie = searchResults?.results?.find((r: any) => 
-      r.title.toLowerCase().includes(title.toLowerCase()) || 
-      title.toLowerCase().includes(r.title.toLowerCase())
-    );
-    if (movie) {
-      console.log(`[Vegamovies] Found slug via title search: ${movie.id}`);
-      return await VegamoviesProvider.getSources(movie.id, season, episode);
-    }
-  }
-
-  // Fallback to IMDB ID resolution if title search failed or no title found
-  const externalImdbId = await resolveTmdbExternalImdbId(id, type);
-  if (externalImdbId) {
-    console.log(`[Vegamovies] Attempting resolution via IMDB ID: ${externalImdbId}`);
-    try {
-      const sources = await VegamoviesProvider.getSources(externalImdbId, season, episode);
-      if (sources?.sources?.length) return sources;
-    } catch (err: any) {
-      console.warn(`[Vegamovies] Resolution via IMDB ID failed:`, err.message);
-    }
-  }
-
-  // Final fallback: use the provided ID directly
-  const lookupId = normalizeVegamoviesSourceId(id);
-  console.log(`[Vegamovies] Final fallback lookup ID: ${lookupId}`);
-  return await VegamoviesProvider.getSources(lookupId, season, episode);
 };
 
 const isAnimeLikeMovie = (media: any): boolean => {
@@ -778,7 +625,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     };
 
     const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}`, fetchBase, REDIS_TTL)
+      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:trailer-v3`, fetchBase, REDIS_TTL)
       : await fetchBase();
 
     await attachBestTrailer(baseInfo, id, type);
@@ -894,7 +741,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     };
 
     const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}`, fetchBase, REDIS_TTL)
+      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:trailer-v3`, fetchBase, REDIS_TTL)
       : await fetchBase();
 
     await attachBestTrailer(baseInfo, id, type);
@@ -1066,7 +913,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     };
 
     const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:animekai-mapped:v2`, fetchBase, REDIS_TTL)
+      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:animekai-mapped:v3`, fetchBase, REDIS_TTL)
       : await fetchBase();
 
     await attachBestTrailer(baseInfo, id, type);
@@ -1591,7 +1438,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     };
 
     const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:flixhq-mapped:v2`, fetchBase, REDIS_TTL)
+      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:flixhq-mapped:v3`, fetchBase, REDIS_TTL)
       : await fetchBase();
 
     await attachBestTrailer(baseInfo, id, type);
@@ -2094,19 +1941,6 @@ const convertTmdbImagesToUrls = (data: any) => {
       }
     }
 
-    if (providerLower === 'vegamovies') {
-      try {
-        const direct = await getDirectTmdbInfo(id, type as string);
-        if (!direct) throw new Error('Unable to resolve TMDB metadata');
-        await attachBestTrailer(direct, id, type as string);
-        convertTmdbImagesToUrls(direct);
-        return reply.status(200).send(direct);
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ message });
-      }
-    }
-
     if (typeof provider !== 'undefined') {
       const selectedProvider = resolveMovieProvider(provider);
       if (selectedProvider) {
@@ -2142,7 +1976,7 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       let res = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v2`, fetchInfo, REDIS_TTL)
+        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`, fetchInfo, REDIS_TTL)
         : await fetchInfo();
 
       // If title is "Unknown" or missing, try to rescue it directly from TMDB
@@ -2309,7 +2143,7 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       let res = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v2`, fetchInfo, REDIS_TTL)
+        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`, fetchInfo, REDIS_TTL)
         : await fetchInfo();
 
       // If title is "Unknown" or missing, try to rescue it directly from TMDB
@@ -2445,7 +2279,7 @@ const convertTmdbImagesToUrls = (data: any) => {
     console.log(`[tmdb.ts] watch hit: id=${id}, type=${type}, provider=${provider}, providerLower=${providerLower}`);
 
     // Build cache key for watch results (skip caching if server is specified since that changes results)
-    const cacheKey = !server ? `tmdb:watch:v3:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
+    const cacheKey = !server ? `tmdb:watch:v4:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
 
     // Try to return from cache first
     if (cacheKey && redis) {
@@ -2510,52 +2344,13 @@ const convertTmdbImagesToUrls = (data: any) => {
       return reply.redirect(redirectUrl);
     }
 
-    if (providerLower === 'vegamovies') {
-      try {
-        const q = request.query as any;
-        const season = type === 'tv' ? Number(q.season || 1) : (q.season ? Number(q.season) : undefined);
-        const episode = type === 'tv' ? Number(q.episode || 1) : (q.episode ? Number(q.episode) : undefined);
-        const res = await resolveVegamoviesWatch(id, type, season, episode);
-        console.log(`[Vegamovies] Watch resolved successfully: ${res?.sources?.length || 0} sources`);
-        return reply.status(200).send({ ...(res as any), provider: 'vegamovies' });
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[Vegamovies] Watch resolution failed: ${message}`);
-        return reply.status(500).send({ message, error: 'Vegamovies resolution error' });
-      }
-    }
-
     if (type === 'movie' && id && (!providerLower || providerLower === 'flixhq') && !episodeId) {
       // FAST PATH: For movies, skip full episode mapping and go straight to FlixHQ watch
       // This cuts response time by 60-70% compared to full buildFlixhqTmdbInfo
       try {
-        let movieId = String(id).trim();
         let titleForSearch = '';
 
-        // Try direct ID first (sometimes TMDB ID works directly)
-        if (/^\d+$/.test(movieId)) {
-          try {
-            const directRes = await request.server.inject({
-              method: 'GET',
-              url: `/movies/flixhq/watch?episodeId=${encodeURIComponent(movieId)}`,
-            });
-            if (directRes.statusCode < 400) {
-              const payload = safeJsonParse(directRes.body || '{}');
-              if (Array.isArray(payload?.sources) && payload.sources.length > 0) {
-                if (!directOnly || payload.sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
-                  if (cacheKey && redis) {
-                    (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
-                  }
-                  return reply.status(200).send(payload);
-                }
-              }
-            }
-          } catch {
-            // Continue to search path
-          }
-        }
-
-        // If direct ID didn't work, get title and search
+        // TMDB numeric ids are not FlixHQ movie ids. Resolve movies through title search first.
         try {
           const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
           let mediaInfo: any;

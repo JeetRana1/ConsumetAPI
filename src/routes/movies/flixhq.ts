@@ -76,10 +76,16 @@ const sortAndLimitSources = (rawSources: any[]): any[] => {
     .sort((a, b) => {
       const score = (source: any) => {
         const url = String(source?.url || '');
+        const serverLabel = String(source?.server || source?.quality || '').toLowerCase();
         return (
-          (/\.m3u8(?:\?|$)/i.test(url) || source?.isM3U8 ? 50 : 0) +
-          (/\/master\.m3u8(?:\?|$)/i.test(url) || /\/index\.m3u8(?:\?|$)/i.test(url) ? 20 : 0) -
-          (/\.mp4(?:\?|$)/i.test(url) ? 10 : 0)
+          (/\.m3u8(?:\?|$)/i.test(url) || source?.isM3U8 ? 80 : 0) +
+          (/\/master\.m3u8(?:\?|$)/i.test(url) ? 25 : 0) +
+          (/\/index\.m3u8(?:\?|$)/i.test(url) ? 15 : 0) +
+          (/\.mp4(?:\?|$)/i.test(url) ? 20 : 0) +
+          (/hydrogen/.test(serverLabel) ? 35 : 0) +
+          (/lithium/.test(serverLabel) ? 30 : 0) +
+          (/helium/.test(serverLabel) ? 15 : 0) -
+          (/oxygen/.test(serverLabel) ? 40 : 0)
         );
       };
       return score(b) - score(a);
@@ -314,7 +320,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
   fastify.get('/watch', async (request: FastifyRequest, reply: FastifyReply) => {
     const episodeId = (request.query as { episodeId: string }).episodeId;
-    const server = (request.query as { server: string }).server || 'megacloud';
+    const server = (request.query as { server: string }).server || 'vidking';
+    const strictServer = String((request.query as { strictServer?: string }).strictServer || '').toLowerCase() === 'true';
 
     if (typeof episodeId === 'undefined') {
       return reply.status(400).send({ message: 'episodeId is required' });
@@ -326,14 +333,22 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const protocol = request.protocol;
       console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
 
-      let res = redis
-        ? await cache.fetch(
-            redis as Redis,
-            `flixhq:watch:v3:${episodeId}:${server}`,
-            async () => await FlixHQProvider.fetchSources(episodeId, server),
-            REDIS_TTL,
-          )
-        : await FlixHQProvider.fetchSources(episodeId, server);
+      const watchCacheKey = `flixhq:watch:v13:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}`;
+      let res: any = null;
+      if (redis) {
+        try {
+          res = await cache.get(redis as Redis, watchCacheKey);
+        } catch {
+          res = null;
+        }
+      }
+
+      if (!res) {
+        res = await FlixHQProvider.fetchSources(episodeId, server, strictServer);
+        if (redis && Array.isArray(res?.sources) && res.sources.length > 0 && !res?.error) {
+          (redis as Redis).setex(watchCacheKey, REDIS_TTL, JSON.stringify(res)).catch(() => {});
+        }
+      }
 
       if (res && res.sources) {
           res.sources = sortAndLimitSources(res.sources).map((source: any) => {

@@ -40,13 +40,6 @@ export default class Providers {
 
         if (type === 'MOVIES') {
           providers.push({
-            name: 'Vegamovies',
-            class: 'VegamoviesProvider',
-            languages: ['English', 'Hindi', 'Dual Audio'],
-            isDirect: true,
-          });
-
-          providers.push({
             name: 'Vidzen',
             class: 'VidzenProvider',
             languages: ['Multi'],

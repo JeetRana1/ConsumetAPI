@@ -5,10 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const extensions_1 = require("@consumet/extensions");
 const flixhq_1 = __importDefault(require("./flixhq"));
-const vegamovies_1 = __importDefault(require("./vegamovies"));
 const routes = async (fastify, options) => {
     await fastify.register(flixhq_1.default, { prefix: '/flixhq' });
-    await fastify.register(vegamovies_1.default, { prefix: '/vegamovies' });
     fastify.get('/', async (request, reply) => {
         reply.status(200).send('Welcome to Consumet Movies and TV Shows');
     });
@@ -42,8 +40,7 @@ const routes = async (fastify, options) => {
     fastify.get('/:id/:title', async (request, reply) => {
         const { id, title } = request.params;
         // We assume it's a movie if called on /movies/
-        // Prioritize vegamovies as it has the most robust search logic for TMDB IDs now
-        return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=vegamovies`);
+        return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=flixhq`);
     });
 };
 exports.default = routes;
