@@ -507,7 +507,12 @@ export class FlixHQProvider {
     }
   }
 
-  static async fetchSources(episodeId: string, server = 'vidking', strictServer = false): Promise<any> {
+  static async fetchSources(
+    episodeId: string,
+    server = 'vidking',
+    strictServer = false,
+    options: { allowEmbedFallback?: boolean } = {},
+  ): Promise<any> {
     if (episodeId.startsWith('http')) {
       const serverUrl = new URL(episodeId);
       try {
@@ -609,6 +614,18 @@ export class FlixHQProvider {
               .catch(() => [] as any[])
           : Promise.resolve([] as any[]);
 
+      const toEmbedFallback = (selectedServer: any, liveLink: string) => ({
+        headers: { Referer: `${this.baseUrl}/` },
+        sources: [{
+          url: liveLink,
+          quality: 'embed',
+          server: String(selectedServer?.serverName || server || 'embed').toLowerCase(),
+          isM3U8: false,
+          isEmbed: true,
+        }],
+        subtitles: [],
+      });
+
       const tryServer = async (selectedServer: any) => {
         const liveLink = selectedServer.serverUrl || selectedServer.link;
         const serverId = String(selectedServer?.serverId || '').trim();
@@ -634,11 +651,17 @@ export class FlixHQProvider {
           }
 
           if (!hasAjaxServerId) {
+            if (options.allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+              return toEmbedFallback(selectedServer, liveLink);
+            }
             throw new Error(`No playable sources from direct server ${String(selectedServer?.serverName || 'unknown')}`);
           }
         }
 
         if (!hasAjaxServerId) {
+          if (options.allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+            return toEmbedFallback(selectedServer, liveLink);
+          }
           throw new Error(`No AJAX server id for ${String(selectedServer?.serverName || 'unknown')}`);
         }
 
@@ -714,6 +737,10 @@ export class FlixHQProvider {
         if (sourceCount > 0) {
           cache.set(cacheKey, extracted, 1000 * 60); // cache embed extraction 1 minute
           return extracted;
+        }
+
+        if (options.allowEmbedFallback && typeof embedData.link === 'string' && /^https?:\/\//i.test(embedData.link)) {
+          return toEmbedFallback(selectedServer, embedData.link);
         }
 
         throw new Error(`No playable sources from server ${String(selectedServer?.serverName || 'unknown')}`);

@@ -30,6 +30,15 @@ const buildProxyHlsUrl = (request, sourceUrl) => {
     const raw = String(sourceUrl || '').trim();
     if (!raw)
         return raw;
+    const shirnaProxyBase = String(process.env.SHIRNA_PROXY_URL || '').trim();
+    if (shirnaProxyBase && /^https?:\/\//i.test(shirnaProxyBase)) {
+        if (shirnaProxyBase.includes('{url}'))
+            return shirnaProxyBase.replace('{url}', encodeURIComponent(raw));
+        if (/[?&](src|url)=$/i.test(shirnaProxyBase))
+            return `${shirnaProxyBase}${encodeURIComponent(raw)}`;
+        const joiner = shirnaProxyBase.includes('?') ? '&' : '?';
+        return `${shirnaProxyBase}${joiner}src=${encodeURIComponent(raw)}`;
+    }
     if (/^\/proxy\/hls\//i.test(raw)) {
         let host = String(request.headers.host || '').trim();
         if (!host)
@@ -241,6 +250,8 @@ const routes = async (fastify, options) => {
         const episodeId = request.query.episodeId;
         const server = request.query.server || 'vidking';
         const strictServer = String(request.query.strictServer || '').toLowerCase() === 'true';
+        const directOnlyRaw = String(request.query.directOnly || '').toLowerCase();
+        const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
         if (typeof episodeId === 'undefined') {
             return reply.status(400).send({ message: 'episodeId is required' });
         }
@@ -249,7 +260,7 @@ const routes = async (fastify, options) => {
             const hostHeader = String(request.headers.host || '').trim();
             const protocol = request.protocol;
             console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
-            const watchCacheKey = `flixhq:watch:v13:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}`;
+            const watchCacheKey = `flixhq:watch:v14:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${directOnly ? 'direct' : 'embed-ok'}`;
             let res = null;
             if (main_1.redis) {
                 try {
@@ -260,7 +271,7 @@ const routes = async (fastify, options) => {
                 }
             }
             if (!res) {
-                res = await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server, strictServer);
+                res = await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server, strictServer, { allowEmbedFallback: !directOnly });
                 if (main_1.redis && Array.isArray(res?.sources) && res.sources.length > 0 && !res?.error) {
                     main_1.redis.setex(watchCacheKey, main_1.REDIS_TTL, JSON.stringify(res)).catch(() => { });
                 }

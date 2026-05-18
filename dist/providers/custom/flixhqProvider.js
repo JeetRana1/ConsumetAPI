@@ -493,7 +493,7 @@ class FlixHQProvider {
             return { error: error.message };
         }
     }
-    static async fetchSources(episodeId, server = 'vidking', strictServer = false) {
+    static async fetchSources(episodeId, server = 'vidking', strictServer = false, options = {}) {
         if (episodeId.startsWith('http')) {
             const serverUrl = new URL(episodeId);
             try {
@@ -579,6 +579,17 @@ class FlixHQProvider {
                     .then((playback) => this.normalizeSubtitles(playback.subtitles || []))
                     .catch(() => [])
                 : Promise.resolve([]);
+            const toEmbedFallback = (selectedServer, liveLink) => ({
+                headers: { Referer: `${this.baseUrl}/` },
+                sources: [{
+                        url: liveLink,
+                        quality: 'embed',
+                        server: String(selectedServer?.serverName || server || 'embed').toLowerCase(),
+                        isM3U8: false,
+                        isEmbed: true,
+                    }],
+                subtitles: [],
+            });
             const tryServer = async (selectedServer) => {
                 const liveLink = selectedServer.serverUrl || selectedServer.link;
                 const serverId = String(selectedServer?.serverId || '').trim();
@@ -603,10 +614,16 @@ class FlixHQProvider {
                         console.log(`[FlixHQ] Direct liveLink extraction failed: ${directErr}`);
                     }
                     if (!hasAjaxServerId) {
+                        if (options.allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+                            return toEmbedFallback(selectedServer, liveLink);
+                        }
                         throw new Error(`No playable sources from direct server ${String(selectedServer?.serverName || 'unknown')}`);
                     }
                 }
                 if (!hasAjaxServerId) {
+                    if (options.allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+                        return toEmbedFallback(selectedServer, liveLink);
+                    }
                     throw new Error(`No AJAX server id for ${String(selectedServer?.serverName || 'unknown')}`);
                 }
                 const refererCandidates = [
@@ -673,6 +690,9 @@ class FlixHQProvider {
                 if (sourceCount > 0) {
                     cache.set(cacheKey, extracted, 1000 * 60); // cache embed extraction 1 minute
                     return extracted;
+                }
+                if (options.allowEmbedFallback && typeof embedData.link === 'string' && /^https?:\/\//i.test(embedData.link)) {
+                    return toEmbedFallback(selectedServer, embedData.link);
                 }
                 throw new Error(`No playable sources from server ${String(selectedServer?.serverName || 'unknown')}`);
             };
