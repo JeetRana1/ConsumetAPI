@@ -765,12 +765,19 @@ export class FlixHQProvider {
 
       // Wrapper to enforce timeout on each server attempt
       const tryServerWithTimeout = (selectedServer: any, timeoutMs: number = 25000): Promise<any> => {
+        const liveLink = selectedServer?.serverUrl || selectedServer?.link;
         return Promise.race([
           tryServer(selectedServer),
           new Promise((_, reject) => 
             setTimeout(() => reject(new Error(`Server ${selectedServer?.serverName} extraction timeout after ${timeoutMs}ms`)), timeoutMs)
           ),
-        ]);
+        ]).catch((error) => {
+          if (allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+            console.log(`[FlixHQ] ${error.message}; falling back to embed for ${selectedServer?.serverName}`);
+            return toEmbedFallback(selectedServer, liveLink);
+          }
+          throw error;
+        });
       };
 
       const serverExtractionTimeoutMs = Math.max(

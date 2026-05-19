@@ -7,7 +7,10 @@ module.exports = {
     cron_restart: '0 0 * * *',
     env: {
       PORT: 3000,
-      NODE_ENV: 'production'
+      NODE_ENV: 'production',
+      PLAYWRIGHT_DEBUG: 'true',
+      FLIXHQ_SERVER_EXTRACTION_TIMEOUT_MS: '45000',
+      FLIXHQ_SERVER_EXTRACTION_PARALLELISM: '1'
     },
     max_memory_restart: '850M',
     autorestart: true,
