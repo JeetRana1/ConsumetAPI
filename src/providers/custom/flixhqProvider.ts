@@ -751,7 +751,13 @@ export class FlixHQProvider {
         throw new Error(`No playable sources from server ${String(selectedServer?.serverName || 'unknown')}`);
       };
 
-      const parallelism = Math.min(2, prioritizedServers.length); // Race the top choices so one slow server does not block playback.
+      const parallelism = Math.max(
+        1,
+        Math.min(
+          Number(process.env.FLIXHQ_SERVER_EXTRACTION_PARALLELISM || 1),
+          prioritizedServers.length,
+        ),
+      );
       const chunks: any[] = [];
       for (let i = 0; i < prioritizedServers.length; i += parallelism) {
         chunks.push(prioritizedServers.slice(i, i + parallelism));
@@ -768,8 +774,8 @@ export class FlixHQProvider {
       };
 
       const serverExtractionTimeoutMs = Math.max(
-        16000,
-        Number(process.env.FLIXHQ_SERVER_EXTRACTION_TIMEOUT_MS || 45000),
+        8000,
+        Number(process.env.FLIXHQ_SERVER_EXTRACTION_TIMEOUT_MS || 18000),
       );
 
       const firstSuccessful = async (chunk: any[]) => {
