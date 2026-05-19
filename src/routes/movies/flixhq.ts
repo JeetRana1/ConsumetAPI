@@ -332,6 +332,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const strictServer = String((request.query as { strictServer?: string }).strictServer || '').toLowerCase() === 'true';
     const directOnlyRaw = String((request.query as { directOnly?: string }).directOnly || '').toLowerCase();
     const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
+    const disableEmbedFallback =
+      ['1', 'true', 'yes'].includes(String(process.env.FLIXHQ_DISABLE_EMBED_FALLBACK || '').toLowerCase());
+    const allowEmbedFallback = !directOnly && !disableEmbedFallback;
 
     if (typeof episodeId === 'undefined') {
       return reply.status(400).send({ message: 'episodeId is required' });
@@ -343,7 +346,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const protocol = request.protocol;
       console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
 
-      const watchCacheKey = `flixhq:watch:v14:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${directOnly ? 'direct' : 'embed-ok'}`;
+      const watchCacheKey = `flixhq:watch:v15:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${allowEmbedFallback ? 'embed-ok' : 'direct'}`;
       let res: any = null;
       if (redis) {
         try {
@@ -354,7 +357,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
 
       if (!res) {
-        res = await FlixHQProvider.fetchSources(episodeId, server, strictServer, { allowEmbedFallback: !directOnly });
+        res = await FlixHQProvider.fetchSources(episodeId, server, strictServer, { allowEmbedFallback });
         if (redis && Array.isArray(res?.sources) && res.sources.length > 0 && !res?.error) {
           (redis as Redis).setex(watchCacheKey, REDIS_TTL, JSON.stringify(res)).catch(() => {});
         }

@@ -33,6 +33,7 @@ COPY --chown=nodejs:nodejs package*.json ./
 
 # install dependencies here, for better reuse of layers
 RUN npm install && npm update && npm cache clean --force
+RUN npx playwright install --with-deps chromium
 
 # copy all sources in the container (exclusions in .dockerignore file)
 COPY --chown=nodejs:nodejs . .

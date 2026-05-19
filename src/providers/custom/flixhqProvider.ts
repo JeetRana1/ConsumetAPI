@@ -614,6 +614,7 @@ export class FlixHQProvider {
               .catch(() => [] as any[])
           : Promise.resolve([] as any[]);
 
+      const allowEmbedFallback = options.allowEmbedFallback !== false;
       const toEmbedFallback = (selectedServer: any, liveLink: string) => ({
         headers: { Referer: `${this.baseUrl}/` },
         sources: [{
@@ -634,16 +635,14 @@ export class FlixHQProvider {
         
         // If direct URL to a known player page, try extracting sources quickly (cached)
         if (typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
-          if (options.allowEmbedFallback && !strictServer) {
-            return toEmbedFallback(selectedServer, liveLink);
-          }
-
           try {
             const cacheKey = `flixhq:source:v4:${liveLink}`;
             const cached = cache.get(cacheKey);
             if (cached) return cached;
 
-            const extracted = await this.fetchSources(liveLink, selectedServer.serverName || server, strictServer);
+            const extracted = await this.fetchSources(liveLink, selectedServer.serverName || server, strictServer, {
+              allowEmbedFallback: false,
+            });
             const sourceCount = Array.isArray(extracted?.sources) ? extracted.sources.length : 0;
             console.log(`[FlixHQ] Direct liveLink extraction: ${sourceCount} sources found`);
             if (sourceCount > 0) {
@@ -655,7 +654,7 @@ export class FlixHQProvider {
           }
 
           if (!hasAjaxServerId) {
-            if (options.allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+            if (allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
               return toEmbedFallback(selectedServer, liveLink);
             }
             throw new Error(`No playable sources from direct server ${String(selectedServer?.serverName || 'unknown')}`);
@@ -663,7 +662,7 @@ export class FlixHQProvider {
         }
 
         if (!hasAjaxServerId) {
-          if (options.allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
+          if (allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
             return toEmbedFallback(selectedServer, liveLink);
           }
           throw new Error(`No AJAX server id for ${String(selectedServer?.serverName || 'unknown')}`);
@@ -736,14 +735,16 @@ export class FlixHQProvider {
         const cachedEmbed = cache.get(cacheKey);
         if (cachedEmbed) return cachedEmbed;
 
-        const extracted = await this.fetchSources(embedData.link, selectedServer.serverName || server, strictServer);
+        const extracted = await this.fetchSources(embedData.link, selectedServer.serverName || server, strictServer, {
+          allowEmbedFallback: false,
+        });
         const sourceCount = Array.isArray(extracted?.sources) ? extracted.sources.length : 0;
         if (sourceCount > 0) {
           cache.set(cacheKey, extracted, 1000 * 60); // cache embed extraction 1 minute
           return extracted;
         }
 
-        if (options.allowEmbedFallback && typeof embedData.link === 'string' && /^https?:\/\//i.test(embedData.link)) {
+        if (allowEmbedFallback && typeof embedData.link === 'string' && /^https?:\/\//i.test(embedData.link)) {
           return toEmbedFallback(selectedServer, embedData.link);
         }
 
