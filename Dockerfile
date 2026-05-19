@@ -5,6 +5,7 @@ LABEL description="Consumet API (fastify) Docker Image"
 
 # update packages, to reduce risk of vulnerabilities
 RUN apt-get update && apt-get upgrade -y && apt-get autoclean -y && apt-get autoremove -y
+RUN npx playwright install-deps chromium
 
 # set a non privileged user to use when running this image
 RUN groupadd -r nodejs && useradd -g nodejs -s /bin/bash -d /home/nodejs -m nodejs
@@ -33,7 +34,7 @@ COPY --chown=nodejs:nodejs package*.json ./
 
 # install dependencies here, for better reuse of layers
 RUN npm install && npm update && npm cache clean --force
-RUN npx playwright install --with-deps chromium
+RUN npx playwright install chromium
 
 # copy all sources in the container (exclusions in .dockerignore file)
 COPY --chown=nodejs:nodejs . .
