@@ -1709,8 +1709,10 @@ const convertTmdbImagesToUrls = (data: any) => {
       const res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
       if (res.data && Array.isArray(res.data.results)) {
         return {
-          results: res.data.results.map((item: any) => ({
-            id: item.id.toString(),
+          results: res.data.results
+          .filter((item: any) => item?.id !== undefined && item?.id !== null)
+          .map((item: any) => ({
+            id: String(item.id),
             title: item.title || item.name || 'Unknown',
             image: item.poster_path ? `https://image.tmdb.org/t/p/original${item.poster_path}` : null,
             type: item.media_type === 'tv' ? 'tv' : 'movie',
@@ -1744,7 +1746,7 @@ const convertTmdbImagesToUrls = (data: any) => {
         const normalizedRuntime = movieRuntime > 0 ? movieRuntime : tvEpisodeRuntime;
         let seasons = Array.isArray(res.data.seasons)
           ? res.data.seasons.map((s: any) => ({
-              id: s.id.toString(),
+              id: s?.id !== undefined && s?.id !== null ? String(s.id) : `${id}-season-${s?.season_number ?? ''}`,
               name: s.name,
               season: s.season_number,
               image: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
@@ -1796,7 +1798,7 @@ const convertTmdbImagesToUrls = (data: any) => {
         }
 
         return {
-          id: res.data.id.toString(),
+          id: res.data?.id !== undefined && res.data?.id !== null ? String(res.data.id) : String(id),
           title: res.data.title || res.data.name || 'Unknown',
           type: type,
           media_type: type,
@@ -2196,23 +2198,14 @@ const convertTmdbImagesToUrls = (data: any) => {
       });
     }
 
-    const tmdb = createTmdbClient(configureProvider(new MOVIES.FlixHQ()));
-    if (!tmdb) {
-      return reply.status(200).send({
-        results: [],
-        page,
-        message: 'TMDB client could not be initialized.',
-      });
-    }
-
     try {
-      let res = await tmdb.fetchTrending(type, timePeriod, page);
+      let res = await getDirectTmdbTrending(type, timePeriod, page);
       
-      // If results are empty or missing, try direct rescue
+      // If direct TMDB is empty, fall back to the extension provider.
       if (!res || !Array.isArray(res.results) || res.results.length === 0) {
-        const rescued = await getDirectTmdbTrending(type, timePeriod, page);
-        if (rescued && rescued.results.length > 0) {
-          res = { ...rescued, message: 'Trending rescued via direct fetch' };
+        const tmdb = createTmdbClient(configureProvider(new MOVIES.FlixHQ()));
+        if (tmdb) {
+          res = await tmdb.fetchTrending(type, timePeriod, page);
         }
       }
 
@@ -2241,8 +2234,10 @@ const convertTmdbImagesToUrls = (data: any) => {
       const res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
       if (res.data && Array.isArray(res.data.results)) {
         return {
-          results: res.data.results.map((item: any) => ({
-            id: item.id.toString(),
+          results: res.data.results
+          .filter((item: any) => item?.id !== undefined && item?.id !== null)
+          .map((item: any) => ({
+            id: String(item.id),
             title: item.title || item.name || 'Unknown',
             image: item.poster_path ? `https://image.tmdb.org/t/p/original${item.poster_path}` : null,
             type: item.media_type || (type === 'all' ? 'movie' : type),
