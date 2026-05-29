@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const cache_1 = __importDefault(require("../../utils/cache"));
 const main_1 = require("../../main");
 const flixhqProvider_1 = require("../../providers/custom/flixhqProvider");
-const isDirectMediaUrl = (value) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || '')) || /\/m3u8-proxy\?/i.test(String(value || ''));
+const isDirectMediaUrl = (value) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || ''));
 const isUsableSourceUrl = (value) => {
     const raw = String(value || '').trim();
     if (!raw || /^blob:/i.test(raw))
@@ -24,44 +24,6 @@ const isUsableSourceUrl = (value) => {
     }
     catch {
         return false;
-    }
-};
-const buildProxyHlsUrl = (request, sourceUrl) => {
-    const raw = String(sourceUrl || '').trim();
-    if (!raw)
-        return raw;
-    const shirnaProxyBase = String(process.env.SHIRNA_PROXY_URL || '').trim();
-    if (shirnaProxyBase && /^https?:\/\//i.test(shirnaProxyBase)) {
-        if (shirnaProxyBase.includes('{url}'))
-            return shirnaProxyBase.replace('{url}', encodeURIComponent(raw));
-        if (/[?&](src|url)=$/i.test(shirnaProxyBase))
-            return `${shirnaProxyBase}${encodeURIComponent(raw)}`;
-        const joiner = shirnaProxyBase.includes('?') ? '&' : '?';
-        return `${shirnaProxyBase}${joiner}src=${encodeURIComponent(raw)}`;
-    }
-    if (/^\/proxy\/hls\//i.test(raw)) {
-        let host = String(request.headers.host || '').trim();
-        if (!host)
-            return raw;
-        // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
-        if (host === 'localhost:80' || host === 'localhost') {
-            host = '127.0.0.1:3000';
-        }
-        return `${request.protocol}://${host}${raw}`;
-    }
-    try {
-        const parsed = new URL(raw);
-        let host = String(request.headers.host || '').trim();
-        if (!host)
-            return raw;
-        // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
-        if (host === 'localhost:80' || host === 'localhost') {
-            host = '127.0.0.1:3000';
-        }
-        return `${request.protocol}://${host}/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
-    }
-    catch {
-        return raw;
     }
 };
 const sortAndLimitSources = (rawSources) => {
@@ -250,10 +212,7 @@ const routes = async (fastify, options) => {
         const episodeId = request.query.episodeId;
         const server = request.query.server || 'vidking';
         const strictServer = String(request.query.strictServer || '').toLowerCase() === 'true';
-        const directOnlyRaw = String(request.query.directOnly || '').toLowerCase();
-        const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
-        const disableEmbedFallback = ['1', 'true', 'yes'].includes(String(process.env.FLIXHQ_DISABLE_EMBED_FALLBACK || '').toLowerCase());
-        const allowEmbedFallback = !directOnly && !disableEmbedFallback;
+        const allowEmbedFallback = false;
         if (typeof episodeId === 'undefined') {
             return reply.status(400).send({ message: 'episodeId is required' });
         }
@@ -279,17 +238,11 @@ const routes = async (fastify, options) => {
                 }
             }
             if (res && res.sources) {
-                res.sources = sortAndLimitSources(res.sources).map((source) => {
-                    const url = String(source?.url || '');
-                    const shouldProxy = /\.(m3u8|mpd)(\?|$)/i.test(url) || Boolean(source?.isM3U8);
-                    if (!shouldProxy)
-                        return source;
-                    return {
-                        ...source,
-                        url: buildProxyHlsUrl(request, url),
-                        requiresProxy: false,
-                    };
-                });
+                res.sources = sortAndLimitSources(res.sources).map((source) => ({
+                    ...source,
+                    url: String(source?.url || '').trim(),
+                    requiresProxy: false,
+                }));
             }
             reply.status(200).send(res);
         }

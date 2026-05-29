@@ -173,7 +173,8 @@ export class FlixHQProvider {
   }
 
   private static isDirectMediaUrl(value?: string): boolean {
-    return /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || '')) || /\/m3u8-proxy\?/i.test(String(value || ''));
+    const normalized = String(value || '');
+    return /\.(m3u8|mp4|mpd)(\?|$)/i.test(normalized) && !/\/m3u8-proxy\?|\/utils\/proxy\?/i.test(normalized);
   }
 
   private static normalizeSources(sources: any[] = []) {

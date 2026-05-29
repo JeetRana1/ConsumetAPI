@@ -1,14 +1,12 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
-import { StreamingServers } from '@consumet/extensions/dist/models';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import { Redis } from 'ioredis';
 import { FlixHQProvider } from '../../providers/custom/flixhqProvider';
-import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
 
 const isDirectMediaUrl = (value: string): boolean =>
-  /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || '')) || /\/m3u8-proxy\?/i.test(String(value || ''));
+  /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(value || ''));
 
 const isUsableSourceUrl = (value: string): boolean => {
   const raw = String(value || '').trim();
@@ -22,41 +20,6 @@ const isUsableSourceUrl = (value: string): boolean => {
     return true;
   } catch {
     return false;
-  }
-};
-
-const buildProxyHlsUrl = (request: FastifyRequest, sourceUrl: string): string => {
-  const raw = String(sourceUrl || '').trim();
-  if (!raw) return raw;
-  const shirnaProxyBase = String(process.env.SHIRNA_PROXY_URL || '').trim();
-  if (shirnaProxyBase && /^https?:\/\//i.test(shirnaProxyBase)) {
-    if (shirnaProxyBase.includes('{url}')) return shirnaProxyBase.replace('{url}', encodeURIComponent(raw));
-    if (/[?&](src|url)=$/i.test(shirnaProxyBase)) return `${shirnaProxyBase}${encodeURIComponent(raw)}`;
-    const joiner = shirnaProxyBase.includes('?') ? '&' : '?';
-    return `${shirnaProxyBase}${joiner}src=${encodeURIComponent(raw)}`;
-  }
-
-  if (/^\/proxy\/hls\//i.test(raw)) {
-    let host = String(request.headers.host || '').trim();
-    if (!host) return raw;
-    // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
-    if (host === 'localhost:80' || host === 'localhost') {
-      host = '127.0.0.1:3000';
-    }
-    return `${request.protocol}://${host}${raw}`;
-  }
-
-  try {
-    const parsed = new URL(raw);
-    let host = String(request.headers.host || '').trim();
-    if (!host) return raw;
-    // Normalize localhost:80 to 127.0.0.1:3000 for internal calls
-    if (host === 'localhost:80' || host === 'localhost') {
-      host = '127.0.0.1:3000';
-    }
-    return `${request.protocol}://${host}/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
-  } catch {
-    return raw;
   }
 };
 
@@ -330,11 +293,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const episodeId = (request.query as { episodeId: string }).episodeId;
     const server = (request.query as { server: string }).server || 'vidking';
     const strictServer = String((request.query as { strictServer?: string }).strictServer || '').toLowerCase() === 'true';
-    const directOnlyRaw = String((request.query as { directOnly?: string }).directOnly || '').toLowerCase();
-    const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
-    const disableEmbedFallback =
-      ['1', 'true', 'yes'].includes(String(process.env.FLIXHQ_DISABLE_EMBED_FALLBACK || '').toLowerCase());
-    const allowEmbedFallback = !directOnly && !disableEmbedFallback;
+    const allowEmbedFallback = false;
 
     if (typeof episodeId === 'undefined') {
       return reply.status(400).send({ message: 'episodeId is required' });
@@ -364,17 +323,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
 
       if (res && res.sources) {
-          res.sources = sortAndLimitSources(res.sources).map((source: any) => {
-            const url = String(source?.url || '');
-            const shouldProxy = /\.(m3u8|mpd)(\?|$)/i.test(url) || Boolean(source?.isM3U8);
-            if (!shouldProxy) return source;
-
-            return {
-              ...source,
-              url: buildProxyHlsUrl(request, url),
-              requiresProxy: false,
-            };
-          });
+        res.sources = sortAndLimitSources(res.sources).map((source: any) => ({
+          ...source,
+          url: String(source?.url || '').trim(),
+          requiresProxy: false,
+        }));
       }
 
       reply.status(200).send(res);
