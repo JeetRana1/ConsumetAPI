@@ -370,10 +370,13 @@ const routes = async (fastify, options) => {
             const looksLikeMediaSegment = /\.(ts|m4s|m4v|mp4|aac|mp3)(\?|$)/i.test(pathLower) ||
                 queryLower.includes('.m4s') ||
                 queryLower.includes('.ts');
+            const isSwiftstreamOppaiMedia = /(^|\.)swiftstream\.top$/i.test(target.hostname) &&
+                /\/proxy\/oppai\//i.test(target.pathname);
+            const upstreamRange = incomingRange || (isSwiftstreamOppaiMedia ? 'bytes=0-' : '');
             const refererForRequest = referer || `${target.protocol}//${target.host}/`;
             const baseRequestConfig = {
                 responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
-                timeout: looksLikeM3u8 ? 20000 : (looksLikeMediaSegment ? 25000 : 30000),
+                timeout: looksLikeM3u8 ? 20000 : ((looksLikeMediaSegment || isSwiftstreamOppaiMedia) ? 25000 : 30000),
                 headers: {
                     Referer: refererForRequest,
                     Origin: (() => {
@@ -386,7 +389,7 @@ const routes = async (fastify, options) => {
                         }
                     })(),
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                    ...(incomingRange ? { Range: incomingRange } : {}),
+                    ...(upstreamRange ? { Range: upstreamRange } : {}),
                 },
                 maxRedirects: 5,
                 validateStatus: (status) => status < 400,
@@ -406,6 +409,7 @@ const routes = async (fastify, options) => {
                 const forceDirectOnly = /(^|\.)net20\.cc$/.test(host) ||
                     /(^|\.)nm-cdn\d+\.top$/.test(host) ||
                     host.includes('animesalt') ||
+                    host.includes('swiftstream') ||
                     host.includes('sprintcdn') ||
                     host.includes('r66nv9ed');
                 const sticky = proxyAffinityByHost.get(host);
@@ -555,8 +559,11 @@ const routes = async (fastify, options) => {
                     const ref = referer.toLowerCase();
                     return (/(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(host) ||
                         host.includes('animesalt') ||
+                        host.includes('swiftstream') ||
                         host.includes('sprintcdn') ||
                         host.includes('r66nv9ed') ||
+                        ref.includes('animetsu') ||
+                        ref.includes('swiftstream') ||
                         ref.includes('animesalt') ||
                         ref.includes('flixhq') ||
                         ref.includes('vidking') ||

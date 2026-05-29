@@ -306,6 +306,7 @@ const ANIME_PROVIDER_ROUTES = {
     justanime: '/anime/justanime',
     animesalt: '/anime/animesalt',
     animekai: '/anime/animekai',
+    animetsu: '/anime/animetsu',
 };
 const resolveMovieProvider = (provider) => {
     if (!provider)
@@ -751,6 +752,184 @@ const buildAnimesaltTmdbInfo = async (request, id, type) => {
     catch {
         // ignore mapping errors
     }
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+};
+const buildAnimetsuTmdbInfo = async (request, id, type) => {
+    const baseTmdb = new extensions_1.META.TMDB(main_1.tmdbApi, (0, provider_1.configureProvider)(new extensions_2.MOVIES.FlixHQ()));
+    const fetchBase = async () => {
+        try {
+            const res = await baseTmdb.fetchMediaInfo(id, type);
+            if (res && typeof res === 'object') {
+                delete res.cast;
+                delete res.characters;
+                delete res.recommendations;
+                delete res.similar;
+            }
+            return res;
+        }
+        catch {
+            if (!main_1.tmdbApi)
+                throw new Error('Failed to fetch TMDB base info for Animetsu mapping');
+            const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+            const directUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${main_1.tmdbApi}&language=en-US`;
+            const directRes = await axios_1.default.get(directUrl);
+            const raw = directRes?.data || {};
+            const direct = {
+                id: raw.id,
+                title: raw.title || raw.name || 'Unknown',
+                name: raw.name || raw.title || 'Unknown',
+                releaseDate: raw.release_date || raw.first_air_date || null,
+                firstAirDate: raw.first_air_date || null,
+                image: raw.poster_path || null,
+                cover: raw.backdrop_path || null,
+                description: raw.overview || '',
+                genres: Array.isArray(raw.genres) ? raw.genres : [],
+                seasons: [],
+                episodes: [],
+            };
+            if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
+                const seasonRows = raw.seasons
+                    .filter((season) => Number(season?.season_number || 0) > 0)
+                    .sort((a, b) => Number(a?.season_number || 0) - Number(b?.season_number || 0));
+                const seasonDetails = await Promise.all(seasonRows.map(async (season) => {
+                    const seasonNo = Number(season?.season_number || 0);
+                    try {
+                        const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${main_1.tmdbApi}&language=en-US`;
+                        const seasonRes = await axios_1.default.get(seasonUrl);
+                        const eps = Array.isArray(seasonRes?.data?.episodes)
+                            ? seasonRes.data.episodes.map((ep) => ({
+                                id: '',
+                                episode: Number(ep?.episode_number || 0),
+                                number: Number(ep?.episode_number || 0),
+                                title: ep?.name || `Episode ${ep?.episode_number || 0}`,
+                            }))
+                            : [];
+                        return {
+                            season: seasonNo,
+                            number: seasonNo,
+                            name: season?.name || `Season ${seasonNo}`,
+                            episodes: eps,
+                        };
+                    }
+                    catch {
+                        return {
+                            season: seasonNo,
+                            number: seasonNo,
+                            name: season?.name || `Season ${seasonNo}`,
+                            episodes: [],
+                        };
+                    }
+                }));
+                direct.seasons = seasonDetails;
+            }
+            return direct;
+        }
+    };
+    const baseInfo = main_1.redis
+        ? await cache_1.default.fetch(main_1.redis, `tmdb:info:${type}:${id}:trailer-v3`, fetchBase, main_1.REDIS_TTL)
+        : await fetchBase();
+    await attachBestTrailer(baseInfo, id, type);
+    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+    if (!titleCandidates.length)
+        return baseInfo;
+    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
+    let pick = null;
+    const searchTerms = Array.from(new Set([
+        ...titleCandidates.slice(0, 2),
+        ...titleCandidates.slice(0, 2).map((title) => String(title || '').replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()),
+        ...(Number.isFinite(yearGuess) && yearGuess > 1900
+            ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
+            : []),
+    ].filter(Boolean)));
+    for (const term of searchTerms.slice(0, 6)) {
+        try {
+            const searchRes = await request.server.inject({
+                method: 'GET',
+                url: `/anime/animetsu/search/${encodeURIComponent(term)}`,
+            });
+            if (searchRes.statusCode >= 400)
+                continue;
+            const payload = safeJsonParse(searchRes.body || '{}');
+            const results = Array.isArray(payload?.results) ? payload.results : [];
+            const scored = results
+                .map((item) => {
+                let score = titleMatchScore(String(item?.title || item?.name || ''), titleCandidates);
+                if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+                    const itemYear = Number(String(item?.releaseDate || item?.year || '').slice(0, 4));
+                    if (itemYear === yearGuess)
+                        score += 50;
+                    else if (Number.isFinite(itemYear) && Math.abs(itemYear - yearGuess) <= 1)
+                        score += 20;
+                }
+                return { item, score };
+            })
+                .sort((a, b) => b.score - a.score);
+            const candidate = scored[0];
+            if (candidate?.item?.id && (!pick || candidate.score > pick.score)) {
+                pick = { ...candidate.item, score: candidate.score };
+            }
+        }
+        catch {
+            continue;
+        }
+    }
+    const providerId = String(pick?.id || '').trim();
+    if (!providerId) {
+        convertTmdbImagesToUrls(baseInfo);
+        return baseInfo;
+    }
+    let providerEpisodes = [];
+    try {
+        const infoRes = await request.server.inject({
+            method: 'GET',
+            url: `/anime/animetsu/info?id=${encodeURIComponent(providerId)}`,
+        });
+        if (infoRes.statusCode < 400) {
+            const infoPayload = safeJsonParse(infoRes.body || '{}');
+            providerEpisodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
+            if (Array.isArray(infoPayload?.seasons) && infoPayload.seasons.length) {
+                baseInfo.providerSeasons = infoPayload.seasons;
+            }
+        }
+    }
+    catch {
+        providerEpisodes = [];
+    }
+    const sortedProviderEpisodes = [...providerEpisodes].sort((a, b) => Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0));
+    if (Array.isArray(baseInfo.seasons)) {
+        baseInfo.seasons = baseInfo.seasons.map((season) => {
+            if (!Array.isArray(season.episodes))
+                return season;
+            return {
+                ...season,
+                id: providerId,
+                providerAnimeId: providerId,
+                episodes: season.episodes.map((ep, idx) => {
+                    const epNo = Number(ep?.episode || ep?.number || idx + 1) || (idx + 1);
+                    const mapped = sortedProviderEpisodes.find((row) => Number(row?.number || row?.episode || 0) === epNo);
+                    return {
+                        ...ep,
+                        id: mapped?.id || `${providerId}$episode$${epNo}`,
+                    };
+                }),
+            };
+        });
+    }
+    else if (Array.isArray(baseInfo.episodes)) {
+        baseInfo.episodes = baseInfo.episodes.map((ep, idx) => {
+            const mapped = sortedProviderEpisodes[idx] || sortedProviderEpisodes[Number(ep?.episode || ep?.number || idx + 1) - 1];
+            return {
+                ...ep,
+                id: mapped?.id || `${providerId}$episode$${ep.episode || ep.number || idx + 1}`,
+            };
+        });
+    }
+    baseInfo.id = providerId;
+    if (pick?.anilistId)
+        baseInfo.anilistId = String(pick.anilistId);
+    if (pick?.malId)
+        baseInfo.malId = String(pick.malId);
     convertTmdbImagesToUrls(baseInfo);
     return baseInfo;
 };
@@ -1838,6 +2017,16 @@ const routes = async (fastify, options) => {
                 return reply.status(500).send({ message });
             }
         }
+        if (providerLower === 'animetsu') {
+            try {
+                const res = await buildAnimetsuTmdbInfo(request, id, type);
+                return reply.status(200).send(res);
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return reply.status(500).send({ message });
+            }
+        }
         if (providerLower === 'flixhq') {
             try {
                 const res = await buildFlixhqTmdbInfo(request, id, type);
@@ -2151,9 +2340,14 @@ const routes = async (fastify, options) => {
         const server = request.query.server;
         const directOnlyRaw = String(request.query.directOnly || '').toLowerCase();
         const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
+        const sourceType = String(request.query.source_type || request.query.category || '').toLowerCase();
+        const requestedSeasonForCache = String(request.query.season || '');
+        const requestedEpisodeForCache = String(request.query.episode || '');
         console.log(`[tmdb.ts] watch hit: id=${id}, type=${type}, provider=${provider}, providerLower=${providerLower}`);
         // Build cache key for watch results (skip caching if server is specified since that changes results)
-        const cacheKey = !server ? `tmdb:watch:v4:${type}:${id}:${provider || 'default'}:${directOnly}` : null;
+        const cacheKey = !server
+            ? `tmdb:watch:v5:${type}:${id}:${provider || 'default'}:${requestedSeasonForCache}:${requestedEpisodeForCache}:${episodeId || ''}:${directOnly}:${sourceType}`
+            : null;
         // Try to return from cache first
         if (cacheKey && main_1.redis) {
             try {
@@ -2171,13 +2365,15 @@ const routes = async (fastify, options) => {
         if (providerLower && ANIME_PROVIDER_ROUTES[providerLower]) {
             let resolvedEpisodeId = episodeId;
             // Attempt to resolve episodeId from season/episode if it's a provider-specific mapping provider
-            if ((providerLower === 'justanime' || providerLower === 'animesalt' || providerLower === 'animekai') && (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))) {
+            if ((providerLower === 'justanime' || providerLower === 'animesalt' || providerLower === 'animekai' || providerLower === 'animetsu') && (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))) {
                 try {
                     const info = providerLower === 'justanime'
                         ? await buildJustanimeTmdbInfo(request, id, type || 'tv')
                         : providerLower === 'animesalt'
                             ? await buildAnimesaltTmdbInfo(request, id, type || 'tv')
-                            : await buildAnimekaiTmdbInfo(request, id, type || 'tv');
+                            : providerLower === 'animetsu'
+                                ? await buildAnimetsuTmdbInfo(request, id, type || 'tv')
+                                : await buildAnimekaiTmdbInfo(request, id, type || 'tv');
                     const requestedSeason = Number(request.query.season || 1);
                     const requestedEpisode = Number(request.query.episode || 1);
                     const seasonMatch = Array.isArray(info?.seasons)
@@ -2205,6 +2401,9 @@ const routes = async (fastify, options) => {
             }
             if (providerLower === 'hianime')
                 queryParts.push('category=both');
+            if (providerLower === 'animetsu' && (sourceType === 'dub' || sourceType === 'sub')) {
+                queryParts.push(`source_type=${encodeURIComponent(sourceType)}`);
+            }
             if (directOnly)
                 queryParts.push('directOnly=true');
             const queryString = queryParts.length ? `?${queryParts.join('&')}` : '';
