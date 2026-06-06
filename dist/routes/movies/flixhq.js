@@ -211,8 +211,11 @@ const routes = async (fastify, options) => {
     fastify.get('/watch', async (request, reply) => {
         const episodeId = request.query.episodeId;
         const server = request.query.server || 'vidking';
-        const strictServer = String(request.query.strictServer || '').toLowerCase() === 'true';
-        const allowEmbedFallback = false;
+        const hasExplicitServer = typeof request.query.server !== 'undefined';
+        const strictServer = String(request.query.strictServer || '').toLowerCase() === 'true' || hasExplicitServer;
+        const allowEmbedFallback = String(request.query.allowEmbedFallback || '').toLowerCase() === 'true';
+        const extractionTimeoutMs = Number(request.query.extractionTimeoutMs);
+        const requestedExtractionTimeoutMs = Number.isFinite(extractionTimeoutMs) && extractionTimeoutMs > 0 ? extractionTimeoutMs : undefined;
         if (typeof episodeId === 'undefined') {
             return reply.status(400).send({ message: 'episodeId is required' });
         }
@@ -221,7 +224,7 @@ const routes = async (fastify, options) => {
             const hostHeader = String(request.headers.host || '').trim();
             const protocol = request.protocol;
             console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
-            const watchCacheKey = `flixhq:watch:v15:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${allowEmbedFallback ? 'embed-ok' : 'direct'}`;
+            const watchCacheKey = `flixhq:watch:v19:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${allowEmbedFallback ? 'embed-ok' : 'direct'}:${requestedExtractionTimeoutMs || 'default'}`;
             let res = null;
             if (main_1.redis) {
                 try {
@@ -232,7 +235,10 @@ const routes = async (fastify, options) => {
                 }
             }
             if (!res) {
-                res = await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server, strictServer, { allowEmbedFallback });
+                res = await flixhqProvider_1.FlixHQProvider.fetchSources(episodeId, server, strictServer, {
+                    allowEmbedFallback,
+                    extractionTimeoutMs: requestedExtractionTimeoutMs,
+                });
                 if (main_1.redis && Array.isArray(res?.sources) && res.sources.length > 0 && !res?.error) {
                     main_1.redis.setex(watchCacheKey, main_1.REDIS_TTL, JSON.stringify(res)).catch(() => { });
                 }

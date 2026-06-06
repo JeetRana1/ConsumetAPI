@@ -2454,8 +2454,12 @@ const routes = async (fastify, options) => {
                                 const queryParts = [`episodeId=${encodeURIComponent(movieMatch.id)}`];
                                 if (server)
                                     queryParts.push(`server=${encodeURIComponent(server)}`);
+                                if (server)
+                                    queryParts.push('strictServer=true');
                                 if (directOnly)
                                     queryParts.push('directOnly=true');
+                                if (!directOnly)
+                                    queryParts.push('allowEmbedFallback=true');
                                 const watchRes = await request.server.inject({
                                     method: 'GET',
                                     url: `/movies/flixhq/watch?${queryParts.join('&')}`,
@@ -2484,18 +2488,73 @@ const routes = async (fastify, options) => {
                 // Fall through to normal path
             }
         }
-        if (!episodeId && type === 'tv' && id && (!providerLower || providerLower === 'flixhq')) {
-            try {
-                const info = await buildFlixhqTmdbInfo(request, id, type);
-                const requestedSeason = Number(request.query.season || 1);
-                const requestedEpisode = Number(request.query.episode || 1);
+        const resolveFlixhqTvEpisodeId = async () => {
+            const requestedSeason = Number(request.query.season || 1);
+            const requestedEpisode = Number(request.query.episode || 1);
+            const pickEpisodeId = (info) => {
                 const seasonMatch = Array.isArray(info?.seasons)
-                    ? info.seasons.find((s) => Number(s?.season || 1) === requestedSeason)
+                    ? info.seasons.find((s) => Number(s?.season || s?.number || 1) === requestedSeason)
                     : undefined;
                 const epMatch = Array.isArray(seasonMatch?.episodes)
-                    ? seasonMatch.episodes.find((ep) => Number(ep?.episode || ep?.number || 0) === requestedEpisode)
+                    ? seasonMatch.episodes.find((ep) => Number(ep?.episode || ep?.number || ep?.episodeNumber || 0) === requestedEpisode)
                     : undefined;
-                episodeId = epMatch?.id || epMatch?.url || episodeId;
+                const providerEpisodeMatch = Array.isArray(info?.providerEpisodes)
+                    ? info.providerEpisodes.find((ep) => Number(ep?.seasonNumber || ep?.season || 1) === requestedSeason &&
+                        Number(ep?.episodeNumber || ep?.episode || ep?.number || 0) === requestedEpisode)
+                    : undefined;
+                return String(epMatch?.id ||
+                    epMatch?.episodeId ||
+                    epMatch?.url ||
+                    providerEpisodeMatch?.episodeId ||
+                    providerEpisodeMatch?.id ||
+                    providerEpisodeMatch?.url ||
+                    '').trim();
+            };
+            try {
+                const info = await buildFlixhqTmdbInfo(request, String(id || ''), String(type || 'tv'));
+                const mapped = pickEpisodeId(info);
+                if (mapped)
+                    return mapped;
+            }
+            catch {
+                // Try title search fallback below.
+            }
+            const mediaInfo = await getDirectTmdbInfo(String(id || ''), String(type || 'tv'));
+            const title = String(mediaInfo?.title || mediaInfo?.name || '').trim();
+            if (!title)
+                return '';
+            const searchRes = await request.server.inject({
+                method: 'GET',
+                url: `/movies/flixhq/${encodeURIComponent(title)}`,
+            });
+            if (searchRes.statusCode >= 400)
+                return '';
+            const searchPayload = safeJsonParse(searchRes.body || '{}');
+            const results = Array.isArray(searchPayload?.data) ? searchPayload.data : [];
+            const yearGuess = Number(String(mediaInfo?.releaseDate || mediaInfo?.firstAirDate || '').slice(0, 4));
+            const scored = results
+                .filter((row) => String(row?.id || '').trim())
+                .map((row) => ({
+                row,
+                score: titleMatchScore(String(row?.name || row?.title || ''), [title]) +
+                    (Number(String(row?.releaseDate || '').slice(0, 4)) === yearGuess ? 50 : 0) +
+                    (String(row?.type || '').toLowerCase().includes('tv') ? 20 : 0),
+            }))
+                .sort((a, b) => b.score - a.score);
+            const flixId = String(scored[0]?.row?.id || '').trim();
+            if (!flixId)
+                return '';
+            const infoRes = await request.server.inject({
+                method: 'GET',
+                url: `/movies/flixhq/info?id=${encodeURIComponent(flixId)}&type=tv`,
+            });
+            if (infoRes.statusCode >= 400)
+                return '';
+            return pickEpisodeId(safeJsonParse(infoRes.body || '{}'));
+        };
+        if (!episodeId && type === 'tv' && id && (!providerLower || providerLower === 'flixhq')) {
+            try {
+                episodeId = await resolveFlixhqTvEpisodeId() || episodeId;
             }
             catch {
                 // Ignore mapping fallback failures and allow normal flow to return extraction errors.
@@ -2601,6 +2660,12 @@ const routes = async (fastify, options) => {
                     const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
                     if (server)
                         queryParts.push(`server=${encodeURIComponent(server)}`);
+                    if (server)
+                        queryParts.push('strictServer=true');
+                    if (directOnly)
+                        queryParts.push('directOnly=true');
+                    if (!directOnly)
+                        queryParts.push('allowEmbedFallback=true');
                     const delegated = await request.server.inject({
                         method: 'GET',
                         url: `/movies/flixhq/watch?${queryParts.join('&')}`,
@@ -2642,6 +2707,12 @@ const routes = async (fastify, options) => {
                     const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
                     if (server)
                         queryParts.push(`server=${encodeURIComponent(server)}`);
+                    if (server)
+                        queryParts.push('strictServer=true');
+                    if (directOnly)
+                        queryParts.push('directOnly=true');
+                    if (!directOnly)
+                        queryParts.push('allowEmbedFallback=true');
                     const delegated = await request.server.inject({
                         method: 'GET',
                         url: `/movies/flixhq/watch?${queryParts.join('&')}`,

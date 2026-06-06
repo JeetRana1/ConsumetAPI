@@ -579,7 +579,16 @@ const routes = async (fastify, options) => {
                 const rewriteUri = (candidate) => {
                     try {
                         const normalized = normalizeManifestUri(candidate);
-                        const abs = new URL(normalized, base).toString();
+                        let abs = new URL(normalized, base).toString();
+                        for (let i = 0; i < 4; i += 1) {
+                            const nested = new URL(abs);
+                            if (!/\/utils\/proxy$/i.test(nested.pathname))
+                                break;
+                            const innerUrl = nested.searchParams.get('url');
+                            if (!innerUrl)
+                                break;
+                            abs = innerUrl;
+                        }
                         if (shouldProxyManifestUris) {
                             const ref = refererForRequest ? `&referer=${encodeURIComponent(refererForRequest)}` : '';
                             return `${proxyOrigin}/utils/proxy?url=${encodeURIComponent(abs)}${ref}`;

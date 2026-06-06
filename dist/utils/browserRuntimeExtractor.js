@@ -56,9 +56,13 @@ const isUsableMediaUrl = (value) => {
         const host = parsed.hostname.toLowerCase();
         if (host === 'example.com' || host.endsWith('.example.com'))
             return false;
+        if (host === 'voorbeeld.com' || host.endsWith('.voorbeeld.com'))
+            return false;
         if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0')
             return false;
         if (host.includes('placeholder') || host.includes('dummy'))
+            return false;
+        if (/\/video\.mp4$/i.test(parsed.pathname) && /voorbeeld|sample|placeholder|dummy/i.test(normalized))
             return false;
     }
     catch {
@@ -198,7 +202,7 @@ const parseSubtitlesFromText = (text) => {
     }
     return [...found.values()];
 };
-const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12000) => {
+const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12000, options = {}) => {
     const normalizedEmbed = normalizeUrl(embedUrl);
     if (!normalizedEmbed)
         return { sources: [], subtitles: [] };
@@ -216,6 +220,7 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
     const isVidkingEmbed = /vidking/i.test(normalizedEmbed);
     const isVideasyEmbed = /videasy/i.test(normalizedEmbed);
     const wantsSubtitles = /[?&]sub\.info=/i.test(normalizedEmbed);
+    const preferredMirror = String(options.preferredMirror || '').trim();
     let activeMirrorLabel = '';
     const addDiscovered = (url, label) => {
         const normalized = normalizeUrl(url);
@@ -282,25 +287,34 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
         });
         await page.goto(normalizedEmbed, { waitUntil: 'domcontentloaded', timeout });
         // Trigger player/network activity in common embed pages.
-        if (!isVidkingEmbed && !isVideasyEmbed)
-            await page.evaluate(() => {
-                const clickables = Array.from(document.querySelectorAll('#adv, .adblock, .rek, button, .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'));
-                for (const el of clickables) {
-                    try {
-                        el.click();
-                    }
-                    catch {
-                        // ignore
-                    }
+        const triggerPlayerActivity = async () => page.evaluate(() => {
+            const clickables = Array.from(document.querySelectorAll('#adv, .adblock, .rek, button, [role="button"], .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'));
+            for (const el of clickables) {
+                try {
+                    el.click();
                 }
-                const video = document.querySelector('video');
-                if (video) {
-                    video.muted = true;
-                    video.play().catch(() => undefined);
+                catch {
+                    // ignore
                 }
-            }).catch(() => undefined);
+            }
+            const video = document.querySelector('video');
+            if (video) {
+                video.muted = true;
+                video.play().catch(() => undefined);
+            }
+        }).catch(() => undefined);
+        if (!isVidkingEmbed)
+            await triggerPlayerActivity();
         if (isVidkingEmbed || isVideasyEmbed) {
-            const mirrors = ['Hydrogen', 'Lithium', 'Helium', 'Oxygen'];
+            const defaultMirrors = isVideasyEmbed
+                ? ['Yoru', 'Cypher', 'Sage', 'Breach', 'Vyse', 'Killjoy', 'Fade', 'Omen', 'Raze']
+                : ['Hydrogen', 'Lithium', 'Helium', 'Oxygen'];
+            const mirrors = preferredMirror
+                ? [
+                    ...defaultMirrors.filter((mirror) => mirror.toLowerCase() === preferredMirror.toLowerCase()),
+                    ...defaultMirrors.filter((mirror) => mirror.toLowerCase() !== preferredMirror.toLowerCase()),
+                ]
+                : defaultMirrors;
             for (const mirror of mirrors) {
                 activeMirrorLabel = mirror;
                 await page
@@ -338,16 +352,22 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
                     return true;
                 }, mirror)
                     .catch(() => false);
-                await page.waitForTimeout(isVideasyEmbed ? 2500 : 1600).catch(() => undefined);
-                if (discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
+                await triggerPlayerActivity();
+                await page.waitForTimeout(isVideasyEmbed ? 2400 : 1600).catch(() => undefined);
+                if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
                     break;
             }
             activeMirrorLabel = '';
         }
         const startedAt = Date.now();
-        while (Date.now() - startedAt < Math.min(4500, Math.max(1800, timeout - 2000))) {
-            if (discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
+        const finalWaitMs = isVideasyEmbed
+            ? Math.min(7000, Math.max(3500, timeout - 2000))
+            : Math.min(4500, Math.max(1800, timeout - 2000));
+        while (Date.now() - startedAt < finalWaitMs) {
+            if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
                 break;
+            if (isVideasyEmbed && Date.now() - startedAt > 1200)
+                await triggerPlayerActivity();
             await page.waitForTimeout(250);
         }
         await context.close();
@@ -374,6 +394,10 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
                 (/\/master\.m3u8(?:\?|$)/i.test(url) ? 25 : 0) +
                 (/\/index\.m3u8(?:\?|$)/i.test(url) ? 15 : 0) +
                 (/\.mp4(?:\?|$)/i.test(url) ? 20 : 0) +
+                (/yoru/.test(label) ? 45 : 0) +
+                (/neon/.test(label) ? 40 : 0) +
+                (/cypher/.test(label) ? 30 : 0) +
+                (/sage/.test(label) ? 20 : 0) +
                 (/hydrogen/.test(label) ? 35 : 0) +
                 (/lithium/.test(label) ? 30 : 0) +
                 (/helium/.test(label) ? 15 : 0) -

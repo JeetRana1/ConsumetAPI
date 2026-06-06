@@ -27,8 +27,10 @@ const isUsableMediaUrl = (value: string): boolean => {
     const parsed = new URL(normalized.startsWith('//') ? `https:${normalized}` : normalized);
     const host = parsed.hostname.toLowerCase();
     if (host === 'example.com' || host.endsWith('.example.com')) return false;
+    if (host === 'voorbeeld.com' || host.endsWith('.voorbeeld.com')) return false;
     if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') return false;
     if (host.includes('placeholder') || host.includes('dummy')) return false;
+    if (/\/video\.mp4$/i.test(parsed.pathname) && /voorbeeld|sample|placeholder|dummy/i.test(normalized)) return false;
   } catch {
     return false;
   }
@@ -175,6 +177,7 @@ export const extractPlaybackWithPlaywright = async (
   embedUrl: string,
   referer?: string,
   timeoutMs = 12000,
+  options: { preferredMirror?: string } = {},
 ): Promise<{
   sources: Array<{ url: string; quality: string; isM3U8: boolean; isEmbed: false }>;
   subtitles: Array<{ url: string; lang: string; kind?: string; default?: boolean }>;
@@ -196,6 +199,7 @@ export const extractPlaybackWithPlaywright = async (
   const isVidkingEmbed = /vidking/i.test(normalizedEmbed);
   const isVideasyEmbed = /videasy/i.test(normalizedEmbed);
   const wantsSubtitles = /[?&]sub\.info=/i.test(normalizedEmbed);
+  const preferredMirror = String(options.preferredMirror || '').trim();
   let activeMirrorLabel = '';
 
   const addDiscovered = (url?: string, label?: string) => {
@@ -265,9 +269,9 @@ export const extractPlaybackWithPlaywright = async (
     await page.goto(normalizedEmbed, { waitUntil: 'domcontentloaded', timeout });
 
     // Trigger player/network activity in common embed pages.
-    if (!isVidkingEmbed && !isVideasyEmbed) await page.evaluate(() => {
+    const triggerPlayerActivity = async () => page.evaluate(() => {
       const clickables = Array.from(
-        document.querySelectorAll('#adv, .adblock, .rek, button, .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'),
+        document.querySelectorAll('#adv, .adblock, .rek, button, [role="button"], .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'),
       ) as HTMLElement[];
       for (const el of clickables) {
         try {
@@ -284,8 +288,18 @@ export const extractPlaybackWithPlaywright = async (
       }
     }).catch(() => undefined);
 
+    if (!isVidkingEmbed) await triggerPlayerActivity();
+
     if (isVidkingEmbed || isVideasyEmbed) {
-      const mirrors = ['Hydrogen', 'Lithium', 'Helium', 'Oxygen'];
+      const defaultMirrors = isVideasyEmbed
+        ? ['Yoru', 'Cypher', 'Sage', 'Breach', 'Vyse', 'Killjoy', 'Fade', 'Omen', 'Raze']
+        : ['Hydrogen', 'Lithium', 'Helium', 'Oxygen'];
+      const mirrors = preferredMirror
+        ? [
+            ...defaultMirrors.filter((mirror) => mirror.toLowerCase() === preferredMirror.toLowerCase()),
+            ...defaultMirrors.filter((mirror) => mirror.toLowerCase() !== preferredMirror.toLowerCase()),
+          ]
+        : defaultMirrors;
       for (const mirror of mirrors) {
         activeMirrorLabel = mirror;
         await page
@@ -320,15 +334,20 @@ export const extractPlaybackWithPlaywright = async (
             return true;
           }, mirror)
           .catch(() => false);
-        await page.waitForTimeout(isVideasyEmbed ? 2500 : 1600).catch(() => undefined);
-        if (discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0)) break;
+        await triggerPlayerActivity();
+        await page.waitForTimeout(isVideasyEmbed ? 2400 : 1600).catch(() => undefined);
+        if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0)) break;
       }
       activeMirrorLabel = '';
     }
 
     const startedAt = Date.now();
-    while (Date.now() - startedAt < Math.min(4500, Math.max(1800, timeout - 2000))) {
-      if (discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0)) break;
+    const finalWaitMs = isVideasyEmbed
+      ? Math.min(7000, Math.max(3500, timeout - 2000))
+      : Math.min(4500, Math.max(1800, timeout - 2000));
+    while (Date.now() - startedAt < finalWaitMs) {
+      if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0)) break;
+      if (isVideasyEmbed && Date.now() - startedAt > 1200) await triggerPlayerActivity();
       await page.waitForTimeout(250);
     }
     await context.close();
@@ -354,6 +373,10 @@ export const extractPlaybackWithPlaywright = async (
           (/\/master\.m3u8(?:\?|$)/i.test(url) ? 25 : 0) +
           (/\/index\.m3u8(?:\?|$)/i.test(url) ? 15 : 0) +
           (/\.mp4(?:\?|$)/i.test(url) ? 20 : 0) +
+          (/yoru/.test(label) ? 45 : 0) +
+          (/neon/.test(label) ? 40 : 0) +
+          (/cypher/.test(label) ? 30 : 0) +
+          (/sage/.test(label) ? 20 : 0) +
           (/hydrogen/.test(label) ? 35 : 0) +
           (/lithium/.test(label) ? 30 : 0) +
           (/helium/.test(label) ? 15 : 0) -

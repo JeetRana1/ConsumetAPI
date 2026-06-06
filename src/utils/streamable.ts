@@ -5,9 +5,21 @@ const STREAMABLE_URL_REGEX =
 
 const normalizeUrl = (url?: string): string | undefined => {
   if (!url) return undefined;
-  const trimmed = url.trim();
+  let trimmed = url.trim();
   if (!trimmed) return undefined;
   if (trimmed.startsWith('//')) return `https:${trimmed}`;
+  for (let i = 0; i < 4; i += 1) {
+    try {
+      const parsed = new URL(trimmed);
+      if (!/\/utils\/proxy$/i.test(parsed.pathname)) break;
+      const innerUrl = parsed.searchParams.get('url');
+      if (!innerUrl) break;
+      trimmed = innerUrl.trim();
+      if (trimmed.startsWith('//')) trimmed = `https:${trimmed}`;
+    } catch {
+      break;
+    }
+  }
   return trimmed;
 };
 
