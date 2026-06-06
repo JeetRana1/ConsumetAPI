@@ -72,6 +72,10 @@ const getServerExtractionTimeoutMs = (serverName) => {
         return Math.max(8000, envTimeout);
     return server === 'videasy' ? 70000 : 45000;
 };
+const shouldUseVidking = () => {
+    const raw = String(process.env.FLIXHQ_ENABLE_VIDKING || '').trim().toLowerCase();
+    return raw === '1' || raw === 'true' || raw === 'yes';
+};
 class FlixHQProvider {
     static createSlug(text) {
         return text
@@ -569,16 +573,19 @@ class FlixHQProvider {
             if (!servers.length)
                 throw new Error('No supported server found');
             const requestedServer = requestedServerRaw;
-            const requestedFlixhqServer = requestedVidkingMirror ? 'vidking' : requestedServer;
+            const vidkingEnabled = shouldUseVidking();
+            const requestedFlixhqServer = requestedVidkingMirror
+                ? (vidkingEnabled ? 'vidking' : 'flixhq')
+                : (requestedServer === 'vidking' && !vidkingEnabled ? 'flixhq' : requestedServer);
             const availableServerNames = new Set(servers.map((s) => String(s?.serverName || '').toLowerCase()));
             const priorityOrder = Array.from(new Set([
                 availableServerNames.has(requestedFlixhqServer) ? requestedFlixhqServer : '',
-                'vidking',
+                vidkingEnabled ? 'vidking' : '',
+                'flixhq',
                 'videasy',
                 'megacloud',
                 'vidcloud',
                 'upcloud',
-                'flixhq',
                 'rabbitstream',
             ].filter(Boolean)));
             const prioritizedServers = strictServer && requestedServer
@@ -607,11 +614,18 @@ class FlixHQProvider {
             const primaryServerName = String(prioritizedServers[0]?.serverName || '').toLowerCase();
             const flixhqServer = servers.find((s) => String(s?.serverName || '').toLowerCase() === 'flixhq');
             const flixhqLink = flixhqServer?.serverUrl || flixhqServer?.link;
-            const fallbackSubtitlesPromise = primaryServerName !== 'flixhq' && typeof flixhqLink === 'string' && /^https?:\/\//i.test(flixhqLink)
-                ? (0, browserRuntimeExtractor_1.extractPlaybackWithPlaywright)(flixhqLink, `${this.baseUrl}/`, Math.min(15000, getEmbedExtractionTimeoutMs('flixhq')))
-                    .then((playback) => this.normalizeSubtitles(playback.subtitles || []))
-                    .catch(() => [])
-                : Promise.resolve([]);
+            let fallbackSubtitlesPromise = null;
+            const getFallbackSubtitles = () => {
+                if (primaryServerName === 'flixhq' || typeof flixhqLink !== 'string' || !/^https?:\/\//i.test(flixhqLink)) {
+                    return Promise.resolve([]);
+                }
+                if (!fallbackSubtitlesPromise) {
+                    fallbackSubtitlesPromise = (0, browserRuntimeExtractor_1.extractPlaybackWithPlaywright)(flixhqLink, `${this.baseUrl}/`, Math.min(15000, getEmbedExtractionTimeoutMs('flixhq')))
+                        .then((playback) => this.normalizeSubtitles(playback.subtitles || []))
+                        .catch(() => []);
+                }
+                return fallbackSubtitlesPromise;
+            };
             const allowEmbedFallback = options.allowEmbedFallback !== false;
             const toEmbedFallback = (selectedServer, liveLink) => ({
                 headers: { Referer: `${this.baseUrl}/` },
@@ -783,7 +797,7 @@ class FlixHQProvider {
                 try {
                     const extracted = await firstSuccessful(chunk);
                     const extractedSubtitles = this.normalizeSubtitles(Array.isArray(extracted?.subtitles) ? extracted.subtitles : []);
-                    const fallbackSubtitles = extractedSubtitles.length ? [] : await fallbackSubtitlesPromise;
+                    const fallbackSubtitles = extractedSubtitles.length ? [] : await getFallbackSubtitles();
                     const subtitles = this.normalizeSubtitles([...extractedSubtitles, ...fallbackSubtitles]);
                     return { ...extracted, subtitles };
                 }
