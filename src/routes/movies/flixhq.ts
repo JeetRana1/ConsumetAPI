@@ -292,7 +292,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/watch', async (request: FastifyRequest, reply: FastifyReply) => {
     const episodeId = (request.query as { episodeId: string }).episodeId;
     const server = (request.query as { server: string }).server || 'vidking';
-    const hasExplicitServer = typeof (request.query as { server?: string }).server !== 'undefined';
+    const serverName = String(server || '').trim().toLowerCase();
+    const hasExplicitServer =
+      typeof (request.query as { server?: string }).server !== 'undefined' &&
+      serverName !== 'auto';
     const strictServer = String((request.query as { strictServer?: string }).strictServer || '').toLowerCase() === 'true' || hasExplicitServer;
     const allowEmbedFallback =
       String((request.query as { allowEmbedFallback?: string }).allowEmbedFallback || '').toLowerCase() === 'true';
@@ -310,7 +313,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const protocol = request.protocol;
       console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
 
-      const watchCacheKey = `flixhq:watch:v19:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${allowEmbedFallback ? 'embed-ok' : 'direct'}:${requestedExtractionTimeoutMs || 'default'}`;
+      const watchCacheKey = `flixhq:watch:v22:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${allowEmbedFallback ? 'embed-ok' : 'direct'}:${requestedExtractionTimeoutMs || 'default'}`;
       let res: any = null;
       if (redis) {
         try {

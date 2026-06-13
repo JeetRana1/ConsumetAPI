@@ -119,15 +119,40 @@ const setCachedSubtitleText = (url: string, value: string) => {
 const parseUrlsFromText = (text: string): string[] => {
   const found = new Set<string>();
   let match: RegExpExecArray | null;
+  DIRECT_MEDIA_REGEX.lastIndex = 0;
   while ((match = DIRECT_MEDIA_REGEX.exec(text)) !== null) {
     const url = normalizeUrl(match[1]);
     if (url && isDirectMediaUrl(url)) found.add(url);
   }
 
+  HLS_PROXY_REGEX.lastIndex = 0;
   while ((match = HLS_PROXY_REGEX.exec(text)) !== null) {
     const url = normalizeUrl(match[1]);
     if (url && isDirectMediaUrl(url)) found.add(url);
   }
+
+  return [...found];
+};
+
+const extractSubtitleInfoUrls = (value: string): string[] => {
+  const found = new Set<string>();
+  const addCandidate = (candidate?: string | null) => {
+    const decoded = normalizeUrl(candidate ? decodeURIComponent(String(candidate)) : '');
+    if (decoded && /^https?:\/\//i.test(decoded)) found.add(decoded);
+  };
+
+  try {
+    const parsed = new URL(value);
+    addCandidate(parsed.searchParams.get('sub.info'));
+    addCandidate(parsed.searchParams.get('sub'));
+    addCandidate(parsed.searchParams.get('subtitles'));
+  } catch {
+    // Fall through to regex parsing.
+  }
+
+  const regex = /[?&](?:sub\.info|subtitles?|tracks?)=([^&"'<>]+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(value)) !== null) addCandidate(match[1]);
 
   return [...found];
 };
@@ -151,21 +176,40 @@ const parseSubtitlesFromText = (text: string): Array<{ url: string; lang: string
 
   try {
     const parsed = JSON.parse(text);
-    const list = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed?.tracks)
-        ? parsed.tracks
-        : Array.isArray(parsed?.subtitles)
-          ? parsed.subtitles
-          : [];
-    for (const item of list) {
-      add(item?.file || item?.url || item?.src, item?.label || item?.lang || item?.language, item?.kind, item?.default);
-    }
+    const visit = (value: any, depth = 0) => {
+      if (!value || depth > 4) return;
+      if (Array.isArray(value)) {
+        for (const item of value) visit(item, depth + 1);
+        return;
+      }
+      if (typeof value === 'string') {
+        add(value);
+        return;
+      }
+      if (typeof value !== 'object') return;
+
+      const url = value.file || value.url || value.src || value.link;
+      const kind = String(value.kind || value.type || '').toLowerCase();
+      if (url && (!kind || ['caption', 'captions', 'subtitle', 'subtitles', 'sub'].includes(kind))) {
+        add(url, value.label || value.lang || value.language || value.name || value.title, value.kind, value.default);
+      }
+
+      visit(value.tracks, depth + 1);
+      visit(value.subtitles, depth + 1);
+      visit(value.captions, depth + 1);
+      visit(value.cc, depth + 1);
+      visit(value.closedCaptions, depth + 1);
+      visit(value.closed_captions, depth + 1);
+      visit(value.data, depth + 1);
+      visit(value.result, depth + 1);
+    };
+    visit(parsed);
   } catch {
     // Fall back to regex parsing below.
   }
 
   let match: RegExpExecArray | null;
+  SUBTITLE_REGEX.lastIndex = 0;
   while ((match = SUBTITLE_REGEX.exec(text)) !== null) {
     add(match[1]);
   }
@@ -194,6 +238,7 @@ export const extractPlaybackWithPlaywright = async (
 
   const discovered = new Map<string, string>();
   const subtitles = new Map<string, { url: string; lang: string; kind?: string; default?: boolean }>();
+  const subtitleInfoUrls = new Set<string>(extractSubtitleInfoUrls(normalizedEmbed));
   let browser: any;
   const timeout = Math.max(4000, timeoutMs);
   const isVidkingEmbed = /vidking/i.test(normalizedEmbed);
@@ -211,6 +256,10 @@ export const extractPlaybackWithPlaywright = async (
 
   const addSubtitles = (items: Array<{ url: string; lang: string; kind?: string; default?: boolean }>) => {
     for (const item of items) subtitles.set(item.url, item);
+  };
+
+  const collectSubtitleInfoUrls = (value?: string) => {
+    for (const url of extractSubtitleInfoUrls(String(value || ''))) subtitleInfoUrls.add(url);
   };
 
   try {
@@ -243,13 +292,16 @@ export const extractPlaybackWithPlaywright = async (
     }
 
     page.on('request', (request: any) => {
-      addDiscovered(request.url());
+      const url = request.url();
+      addDiscovered(url);
+      collectSubtitleInfoUrls(url);
     });
 
     page.on('response', async (response: any) => {
       try {
         const u = normalizeUrl(response.url());
         addDiscovered(u);
+        collectSubtitleInfoUrls(u);
 
         const headers = response.headers() || {};
         const contentType = String(headers['content-type'] || '').toLowerCase();
@@ -350,6 +402,51 @@ export const extractPlaybackWithPlaywright = async (
       if (isVideasyEmbed && Date.now() - startedAt > 1200) await triggerPlayerActivity();
       await page.waitForTimeout(250);
     }
+
+    for (const subtitleInfoUrl of [...subtitleInfoUrls]) {
+      if (subtitles.size > 0) break;
+      try {
+        const response = await context.request.get(subtitleInfoUrl, {
+          headers: {
+            Referer: normalizedEmbed,
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          },
+          timeout: Math.min(6000, Math.max(2500, timeout - (Date.now() - startedAt))),
+        });
+        if (!response.ok()) continue;
+        const body = await response.text();
+        addSubtitles(parseSubtitlesFromText(body));
+        if (/\.(vtt|srt|ass)(\?|$)/i.test(subtitleInfoUrl) && body.trim()) {
+          setCachedSubtitleText(subtitleInfoUrl, body);
+        }
+      } catch {
+        // Subtitle manifests are best-effort; playback should not depend on them.
+      }
+    }
+
+    for (const subtitleInfoUrl of [...subtitleInfoUrls]) {
+      if (subtitles.size > 0) break;
+      let subtitlePage: any;
+      try {
+        subtitlePage = await context.newPage();
+        await subtitlePage.goto(subtitleInfoUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: Math.min(9000, Math.max(4000, timeout - (Date.now() - startedAt))),
+        });
+        await subtitlePage.waitForTimeout(1500).catch(() => undefined);
+        const body = await subtitlePage.evaluate(() => document.body?.innerText || document.documentElement?.textContent || '');
+        addSubtitles(parseSubtitlesFromText(String(body || '')));
+        if (/\.(vtt|srt|ass)(\?|$)/i.test(subtitleInfoUrl) && String(body || '').trim()) {
+          setCachedSubtitleText(subtitleInfoUrl, String(body || ''));
+        }
+      } catch {
+        // Some subtitle token hosts require challenges we cannot always solve server-side.
+      } finally {
+        if (subtitlePage) await subtitlePage.close().catch(() => undefined);
+      }
+    }
+
     await context.close();
   } catch (err) {
     console.error(`[Playwright extractor failed] ${normalizedEmbed}`, err);

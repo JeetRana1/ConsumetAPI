@@ -495,7 +495,19 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
 
       if (!upstream) {
-        upstream = await fetchWithChain(target.toString(), baseRequestConfig);
+        const maxFetchAttempts = looksLikeMediaSegment ? 3 : 1;
+        let lastFetchError: any = null;
+        for (let attempt = 1; attempt <= maxFetchAttempts; attempt += 1) {
+          try {
+            upstream = await fetchWithChain(target.toString(), baseRequestConfig);
+            break;
+          } catch (error: any) {
+            lastFetchError = error;
+            if (attempt >= maxFetchAttempts) break;
+            await new Promise((resolve) => setTimeout(resolve, 180 * attempt));
+          }
+        }
+        if (!upstream && lastFetchError) throw lastFetchError;
       }
 
       if (upstream.status >= 400) {

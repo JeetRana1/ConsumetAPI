@@ -22,6 +22,8 @@ class SimpleCache<T> {
 }
 
 const cache = new SimpleCache<any>();
+const FLIXHQ_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const readPositiveNumber = (value: unknown): number | undefined => {
   const parsed = Number(value);
@@ -30,7 +32,7 @@ const readPositiveNumber = (value: unknown): number | undefined => {
 
 const getEmbedExtractionTimeoutMs = (serverName?: string, requestedTimeoutMs?: number): number => {
   const requested = readPositiveNumber(requestedTimeoutMs);
-  if (requested) return Math.max(12000, requested);
+  if (requested) return Math.max(3000, requested);
 
   const server = String(serverName || '').toLowerCase();
   const envTimeout = readPositiveNumber(
@@ -38,21 +40,49 @@ const getEmbedExtractionTimeoutMs = (serverName?: string, requestedTimeoutMs?: n
       ? process.env.FLIXHQ_VIDEASY_EXTRACTION_TIMEOUT_MS
       : process.env.FLIXHQ_PLAYWRIGHT_TIMEOUT_MS || process.env.FLIXHQ_EXTRACTION_TIMEOUT_MS,
   );
-  if (envTimeout) return Math.max(12000, envTimeout);
+  if (envTimeout) return Math.max(1000, envTimeout);
 
-  return server === 'videasy' ? 60000 : 30000;
+  return 3000;
 };
 
-const getServerExtractionTimeoutMs = (serverName?: string): number => {
-  const server = String(serverName || '').toLowerCase();
+const getServerExtractionTimeoutMs = (serverName?: string, requestedTimeoutMs?: number): number => {
+  const requested = readPositiveNumber(requestedTimeoutMs);
+  if (requested) return Math.max(1000, requested);
+
   const envTimeout = readPositiveNumber(process.env.FLIXHQ_SERVER_EXTRACTION_TIMEOUT_MS);
-  if (envTimeout) return Math.max(8000, envTimeout);
-  return server === 'videasy' ? 70000 : 45000;
+  if (envTimeout) return Math.max(1000, envTimeout);
+  return 3000;
 };
 
-const shouldUseVidking = (): boolean => {
-  const raw = String(process.env.FLIXHQ_ENABLE_VIDKING || '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes';
+const getAutoRaceTimeoutMs = (requestedTimeoutMs?: number): number => {
+  const envTimeout = readPositiveNumber(process.env.FLIXHQ_AUTO_RACE_TIMEOUT_MS);
+  const requested = readPositiveNumber(requestedTimeoutMs);
+  return Math.min(envTimeout || 3000, requested || 3000);
+};
+
+const getAutoServerTimeoutMs = (serverName: string, requestedTimeoutMs?: number): number => {
+  const normalized = String(serverName || '').toLowerCase();
+  if (normalized === 'vidking') {
+    const envTimeout = readPositiveNumber(process.env.FLIXHQ_VIDKING_RACE_TIMEOUT_MS);
+    return Math.max(8000, envTimeout || 9000);
+  }
+  return getAutoRaceTimeoutMs(requestedTimeoutMs);
+};
+
+const normalizeServerName = (server: any): string =>
+  String(server?.serverName || server?.name || '').trim().toLowerCase();
+
+const getServerLink = (server: any): string =>
+  String(server?.serverUrl || server?.link || server?.url || server?.src || '').trim();
+
+const isKnownDeadFlixhqServer = (server: any): boolean => {
+  const serverName = normalizeServerName(server);
+  const link = getServerLink(server).toLowerCase();
+  if (serverName === 'videasy') return true;
+  return [
+    'player.videasy.net',
+    'videasy.net',
+  ].some((pattern) => link.includes(pattern));
 };
 
 export class FlixHQProvider {
@@ -190,6 +220,41 @@ export class FlixHQProvider {
     return servers.length ? servers : null;
   }
 
+  private static parseServerButtons($: cheerio.CheerioAPI) {
+    const servers: any[] = [];
+    const seen = new Set<string>();
+
+    $('[data-id], [data-server], [data-link], [data-url], [data-src], .server-item, .nav-link, button, a').each((index, element) => {
+      const el = $(element);
+      const attrs = ((element as any).attribs || {}) as Record<string, string>;
+      const dataAttrs = Object.entries(attrs).reduce((acc, [key, value]) => {
+        if (key.startsWith('data-') && value != null) acc[key] = String(value).trim();
+        return acc;
+      }, {} as Record<string, string>);
+      const serverId = dataAttrs['data-id'] || dataAttrs['data-server'] || dataAttrs['data-key'] || dataAttrs['data-token'] || '';
+      const link = dataAttrs['data-link'] || dataAttrs['data-url'] || dataAttrs['data-src'] || attrs.href || '';
+      const name = (
+        dataAttrs['data-name'] ||
+        dataAttrs['data-server-name'] ||
+        dataAttrs['data-server'] ||
+        el.text() ||
+        `Server ${index + 1}`
+      ).trim();
+      const identity = `${name}|${serverId}|${link}`;
+      if ((!serverId && !link) || seen.has(identity)) return;
+      seen.add(identity);
+      servers.push({
+        serverId: serverId || link,
+        serverName: name.toLowerCase().replace(/^server\s*/i, '').trim(),
+        serverUrl: link,
+        link,
+        dataAttrs,
+      });
+    });
+
+    return servers.length ? servers : null;
+  }
+
   private static isUsableSourceUrl(value?: string): boolean {
     const raw = String(value || '').trim();
     if (!raw || /^blob:/i.test(raw)) return false;
@@ -236,6 +301,17 @@ export class FlixHQProvider {
         const base = url.replace(/\/index-[^/]+\.m3u8(?:\?.*)?$/i, '');
         return !hasMasterForBase.has(base) || /\/master\.m3u8(?:\?|$)/i.test(url);
       })
+      .map((source) => {
+        const referer = String(source?.referer || source?.headers?.Referer || source?.headers?.referer || this.baseUrl + '/');
+        return {
+          ...source,
+          headers: {
+            ...(source?.headers || {}),
+            Referer: referer,
+            'User-Agent': String(source?.headers?.['User-Agent'] || source?.headers?.['user-agent'] || FLIXHQ_USER_AGENT),
+          },
+        };
+      })
       .sort((a, b) => {
         const score = (source: any) => {
           const url = String(source?.url || '');
@@ -274,6 +350,22 @@ export class FlixHQProvider {
         seen.add(subtitle.url);
         return true;
       });
+  }
+
+  private static applySourceHeaders(result: any) {
+    if (!result || !Array.isArray(result.sources)) return result;
+    const responseHeaders = result.headers || {};
+    return {
+      ...result,
+      sources: result.sources.map((source: any) => ({
+        ...source,
+        headers: {
+          ...(source?.headers || {}),
+          ...responseHeaders,
+          'User-Agent': responseHeaders['User-Agent'] || source?.headers?.['User-Agent'] || FLIXHQ_USER_AGENT,
+        },
+      })),
+    };
   }
 
   static async fetchHome() {
@@ -481,6 +573,7 @@ export class FlixHQProvider {
 
       const $ = cheerio.load(pageData.text);
       const token =
+        $('#main-wrapper').attr('data-token') ||
         $('#series-player').attr('data-token') ||
         $('.w_b-player[data-token]').attr('data-token') ||
         $('.watch_block[data-token]').attr('data-token') ||
@@ -518,7 +611,11 @@ export class FlixHQProvider {
 
       console.log(`[FlixHQ] AJAX response: ${res.text.substring(0, 300)}`);
 
-      const parsedServers = this.parseServerJson(res.text) || parser.parseServers(cheerio.load(res.text));
+      const playersDom = cheerio.load(res.text);
+      const parsedServers =
+        this.parseServerJson(res.text) ||
+        this.parseServerButtons(playersDom) ||
+        parser.parseServers(playersDom);
       console.log(`[FlixHQ] Parsed servers: ${Array.isArray(parsedServers) ? parsedServers.length : 0} servers`);
       if (Array.isArray(parsedServers) && parsedServers.length > 0) {
         console.log(`[FlixHQ] Server names: ${parsedServers.map((s: any) => s?.serverName).join(', ')}`);
@@ -554,7 +651,17 @@ export class FlixHQProvider {
       ? requestedServerRaw
       : String(options.preferredMirror || '').toLowerCase();
 
-    if (episodeId.startsWith('http')) {
+    const isFlixhqWatchUrl = (() => {
+      if (!/^https?:\/\//i.test(episodeId)) return false;
+      try {
+        const parsed = new URL(episodeId);
+        return /(^|\.)flixhq\.one$/i.test(parsed.hostname) && /^\/watch-(?:movie|series)\//i.test(parsed.pathname);
+      } catch {
+        return false;
+      }
+    })();
+
+    if (episodeId.startsWith('http') && !isFlixhqWatchUrl) {
       const serverUrl = new URL(episodeId);
       try {
         let sources: any = null;
@@ -581,14 +688,14 @@ export class FlixHQProvider {
 
         if (!normalizedSources.length) {
           return {
-            headers: { Referer: `${serverUrl.origin}/` },
+            headers: { Referer: `${serverUrl.origin}/`, 'User-Agent': FLIXHQ_USER_AGENT },
             sources: [],
             subtitles: normalizedSubtitles,
           };
         }
 
         return {
-          headers: { Referer: `${serverUrl.origin}/` },
+          headers: { Referer: `${serverUrl.origin}/`, 'User-Agent': FLIXHQ_USER_AGENT },
           sources: normalizedSources,
           subtitles: normalizedSubtitles,
         };
@@ -603,17 +710,25 @@ export class FlixHQProvider {
       const servers = Array.isArray(serversRes.data) ? (serversRes.data as any[]) : [];
       if (!servers.length) throw new Error('No supported server found');
 
-      const requestedServer = requestedServerRaw;
-      const vidkingEnabled = shouldUseVidking();
+      const vidkingFirstServers = [...servers].sort((a, b) => {
+        const aName = normalizeServerName(a);
+        const bName = normalizeServerName(b);
+        if (aName === 'vidking' && bName !== 'vidking') return -1;
+        if (bName === 'vidking' && aName !== 'vidking') return 1;
+        return 0;
+      });
+
+      const requestedServer = requestedServerRaw === 'auto' ? '' : requestedServerRaw;
       const requestedFlixhqServer = requestedVidkingMirror
-        ? (vidkingEnabled ? 'vidking' : 'flixhq')
-        : (requestedServer === 'vidking' && !vidkingEnabled ? 'flixhq' : requestedServer);
-      const availableServerNames = new Set(servers.map((s) => String(s?.serverName || '').toLowerCase()));
+        ? 'vidking'
+        : requestedServer;
+      const availableServerNames = new Set(vidkingFirstServers.map((s) => normalizeServerName(s)));
+      const raceTargets = ['vidking', 'flixhq', 'videasy'];
       const priorityOrder = Array.from(
         new Set(
           [
             availableServerNames.has(requestedFlixhqServer) ? requestedFlixhqServer : '',
-            vidkingEnabled ? 'vidking' : '',
+            ...raceTargets,
             'flixhq',
             'videasy',
             'megacloud',
@@ -624,49 +739,63 @@ export class FlixHQProvider {
         ),
       );
 
-      const prioritizedServers = strictServer && requestedServer
-        ? servers.filter((s) => String(s?.serverName || '').toLowerCase() === requestedFlixhqServer)
+      const orderedServers = strictServer && requestedServer
+        ? vidkingFirstServers.filter((s) => normalizeServerName(s) === requestedFlixhqServer)
         : [
             ...priorityOrder
-              .map((name) => servers.find((s) => String(s?.serverName || '').toLowerCase() === name))
+              .map((name) => vidkingFirstServers.find((s) => normalizeServerName(s) === name))
               .filter(Boolean),
-            ...servers.filter(
-              (s) => !priorityOrder.includes(String(s?.serverName || '').toLowerCase()),
+            ...vidkingFirstServers.filter(
+              (s) => !priorityOrder.includes(normalizeServerName(s)),
             ),
           ];
+      const primaryServers = strictServer
+        ? orderedServers
+        : orderedServers.filter((s) => !isKnownDeadFlixhqServer(s));
+      const fallbackServers = strictServer
+        ? []
+        : orderedServers.filter((s) => isKnownDeadFlixhqServer(s));
+      const prioritizedServers = primaryServers.length ? primaryServers : fallbackServers;
 
       if (!prioritizedServers.length) {
         throw new Error(`Requested server ${requestedServer || server} not found`);
       }
 
+      const skippedServers = strictServer
+        ? []
+        : fallbackServers.map((s) => normalizeServerName(s));
+      if (skippedServers.length) {
+        console.log(`[FlixHQ] fallback-only server profiles: ${Array.from(new Set(skippedServers)).join(', ')}`);
+      }
+
       const resolvedKind = String(serversRes?.kind || '').toLowerCase() === 'movie' ? 'movie' : 'tv';
+      const currentWatchPageUrl = this.buildWatchPageUrl(episodeId).pageUrl;
 
       const refererPath = resolvedKind === 'movie'
-        ? (episodeId.includes('-') ? `${this.baseUrl}/${episodeId.replace('-', '/')}` : `${this.baseUrl}/movie`)
+        ? (/^https?:\/\//i.test(episodeId) ? currentWatchPageUrl : (episodeId.includes('-') ? `${this.baseUrl}/${episodeId.replace('-', '/')}` : `${this.baseUrl}/movie`))
         : (episodeId.includes('-episode-')
           ? `${this.baseUrl}/${episodeId.split('-episode-').at(0)?.replace('-', '/')}`
           : `${this.baseUrl}/tv-show`);
 
       const watchRefererPath = resolvedKind === 'movie'
-        ? (episodeId.includes('-') ? `${this.baseUrl}/watch-${episodeId.replace('-', '/')}` : `${this.baseUrl}/watch-movie`)
+        ? (/^https?:\/\//i.test(episodeId) ? currentWatchPageUrl : (episodeId.includes('-') ? `${this.baseUrl}/watch-${episodeId.replace('-', '/')}` : `${this.baseUrl}/watch-movie`))
         : (episodeId.includes('-episode-')
           ? `${this.baseUrl}/watch-${episodeId.split('-episode-').at(0)?.replace('-', '/')}`
           : `${this.baseUrl}/watch-tv-show`);
 
       // Try servers in parallel (limited) to find the first working extraction faster.
-      const primaryServerName = String(prioritizedServers[0]?.serverName || '').toLowerCase();
       const flixhqServer = servers.find((s) => String(s?.serverName || '').toLowerCase() === 'flixhq');
       const flixhqLink = flixhqServer?.serverUrl || flixhqServer?.link;
       let fallbackSubtitlesPromise: Promise<any[]> | null = null;
       const getFallbackSubtitles = () => {
-        if (primaryServerName === 'flixhq' || typeof flixhqLink !== 'string' || !/^https?:\/\//i.test(flixhqLink)) {
+        if (typeof flixhqLink !== 'string' || !/^https?:\/\//i.test(flixhqLink)) {
           return Promise.resolve([] as any[]);
         }
         if (!fallbackSubtitlesPromise) {
           fallbackSubtitlesPromise = extractPlaybackWithPlaywright(
             flixhqLink,
             `${this.baseUrl}/`,
-            Math.min(15000, getEmbedExtractionTimeoutMs('flixhq')),
+            Math.min(15000, getEmbedExtractionTimeoutMs('flixhq', options.extractionTimeoutMs)),
           )
               .then((playback) => this.normalizeSubtitles(playback.subtitles || []))
               .catch(() => [] as any[]);
@@ -676,13 +805,14 @@ export class FlixHQProvider {
 
       const allowEmbedFallback = options.allowEmbedFallback !== false;
       const toEmbedFallback = (selectedServer: any, liveLink: string) => ({
-        headers: { Referer: `${this.baseUrl}/` },
+        headers: { Referer: `${this.baseUrl}/`, 'User-Agent': FLIXHQ_USER_AGENT },
         sources: [{
           url: liveLink,
           quality: 'embed',
           server: String(selectedServer?.serverName || server || 'embed').toLowerCase(),
           isM3U8: false,
           isEmbed: true,
+          headers: { Referer: `${this.baseUrl}/`, 'User-Agent': FLIXHQ_USER_AGENT },
         }],
         subtitles: [],
       });
@@ -701,16 +831,20 @@ export class FlixHQProvider {
             if (cached) return cached;
 
             const selectedServerName = String(selectedServer?.serverName || server || '').toLowerCase();
+            const selectedTimeoutMs = strictServer
+              ? getEmbedExtractionTimeoutMs(selectedServerName, options.extractionTimeoutMs)
+              : getAutoServerTimeoutMs(selectedServerName, options.extractionTimeoutMs);
             const extracted = await this.fetchSources(liveLink, requestedVidkingMirror || selectedServer.serverName || server, strictServer, {
               allowEmbedFallback: false,
-              extractionTimeoutMs: getEmbedExtractionTimeoutMs(selectedServerName, options.extractionTimeoutMs),
+              extractionTimeoutMs: selectedTimeoutMs,
               preferredMirror: requestedVidkingMirror,
             });
             const sourceCount = Array.isArray(extracted?.sources) ? extracted.sources.length : 0;
             console.log(`[FlixHQ] Direct liveLink extraction: ${sourceCount} sources found`);
             if (sourceCount > 0) {
-              cache.set(cacheKey, extracted, 1000 * 60); // cache 1 minute
-              return extracted;
+              const normalizedExtracted = this.applySourceHeaders(extracted);
+              cache.set(cacheKey, normalizedExtracted, 1000 * 60); // cache 1 minute
+              return normalizedExtracted;
             }
           } catch (directErr) {
             console.log(`[FlixHQ] Direct liveLink extraction failed: ${directErr}`);
@@ -799,15 +933,19 @@ export class FlixHQProvider {
         if (cachedEmbed) return cachedEmbed;
 
         const selectedServerName = String(selectedServer?.serverName || server || '').toLowerCase();
+        const selectedTimeoutMs = strictServer
+          ? getEmbedExtractionTimeoutMs(selectedServerName, options.extractionTimeoutMs)
+          : getAutoServerTimeoutMs(selectedServerName, options.extractionTimeoutMs);
         const extracted = await this.fetchSources(embedData.link, requestedVidkingMirror || selectedServer.serverName || server, strictServer, {
           allowEmbedFallback: false,
-          extractionTimeoutMs: getEmbedExtractionTimeoutMs(selectedServerName, options.extractionTimeoutMs),
+          extractionTimeoutMs: selectedTimeoutMs,
           preferredMirror: requestedVidkingMirror,
         });
         const sourceCount = Array.isArray(extracted?.sources) ? extracted.sources.length : 0;
         if (sourceCount > 0) {
-          cache.set(cacheKey, extracted, 1000 * 60); // cache embed extraction 1 minute
-          return extracted;
+          const normalizedExtracted = this.applySourceHeaders(extracted);
+          cache.set(cacheKey, normalizedExtracted, 1000 * 60); // cache embed extraction 1 minute
+          return normalizedExtracted;
         }
 
         if (allowEmbedFallback && typeof embedData.link === 'string' && /^https?:\/\//i.test(embedData.link)) {
@@ -817,27 +955,25 @@ export class FlixHQProvider {
         throw new Error(`No playable sources from server ${String(selectedServer?.serverName || 'unknown')}`);
       };
 
-      const parallelism = Math.max(
-        1,
-        Math.min(
-          Number(process.env.FLIXHQ_SERVER_EXTRACTION_PARALLELISM || 1),
-          prioritizedServers.length,
-        ),
-      );
-      const chunks: any[] = [];
-      for (let i = 0; i < prioritizedServers.length; i += parallelism) {
-        chunks.push(prioritizedServers.slice(i, i + parallelism));
-      }
-
-      // Wrapper to enforce timeout on each server attempt
+      // Wrapper to enforce timeout on each server attempt and log latency.
       const tryServerWithTimeout = (selectedServer: any, timeoutMs: number = 25000): Promise<any> => {
         const liveLink = selectedServer?.serverUrl || selectedServer?.link;
+        const serverName = String(selectedServer?.serverName || 'unknown').toLowerCase();
+        const startedAt = Date.now();
+        console.log(`[FlixHQ] extraction started: server=${serverName}`);
+        let timeoutHandle: NodeJS.Timeout | undefined;
         return Promise.race([
           tryServer(selectedServer),
           new Promise((_, reject) => 
-            setTimeout(() => reject(new Error(`Server ${selectedServer?.serverName} extraction timeout after ${timeoutMs}ms`)), timeoutMs)
+            timeoutHandle = setTimeout(() => reject(new Error(`Server ${serverName} extraction timeout after ${timeoutMs}ms`)), timeoutMs)
           ),
-        ]).catch((error) => {
+        ]).then((result) => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          console.log(`[FlixHQ] extraction completed: server=${serverName} durationMs=${Date.now() - startedAt}`);
+          return result;
+        }).catch((error) => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          console.log(`[FlixHQ] extraction failed: server=${serverName} durationMs=${Date.now() - startedAt} error=${error.message}`);
           if (allowEmbedFallback && typeof liveLink === 'string' && /^https?:\/\//i.test(liveLink)) {
             console.log(`[FlixHQ] ${error.message}; falling back to embed for ${selectedServer?.serverName}`);
             return toEmbedFallback(selectedServer, liveLink);
@@ -846,17 +982,29 @@ export class FlixHQProvider {
         });
       };
 
-      const requestedServerForTimeout = String(server || '').toLowerCase();
-      const serverExtractionTimeoutMs = getServerExtractionTimeoutMs(requestedServerForTimeout);
-
-      const firstSuccessful = async (chunk: any[]) => {
+      const firstSuccessful = async (candidates: any[]) => {
         return new Promise<any>((resolve, reject) => {
-          let pending = chunk.length;
+          let pending = candidates.length;
           let lastError: any = null;
-          for (const s of chunk) {
-            tryServerWithTimeout(s, serverExtractionTimeoutMs)
-              .then(resolve)
+          let settled = false;
+          for (const s of candidates) {
+            const candidateName = normalizeServerName(s);
+            const candidateTimeoutMs = getServerExtractionTimeoutMs(
+              candidateName,
+              strictServer ? options.extractionTimeoutMs : getAutoServerTimeoutMs(candidateName, options.extractionTimeoutMs),
+            );
+            tryServerWithTimeout(s, candidateTimeoutMs)
+              .then((result) => {
+                if (settled) return;
+                const sources = Array.isArray(result?.sources) ? result.sources : [];
+                if (!sources.length) {
+                  throw new Error(`Server ${s?.serverName || 'unknown'} returned no playable sources`);
+                }
+                settled = true;
+                resolve(result);
+              })
               .catch((e) => {
+                if (settled) return;
                 console.error(`[FlixHQ] Server ${s?.serverName} failed:`, e.message);
                 lastError = e;
                 pending -= 1;
@@ -866,20 +1014,20 @@ export class FlixHQProvider {
         });
       };
 
-      let lastErr: any = null;
-      for (const chunk of chunks) {
-        try {
-          const extracted = await firstSuccessful(chunk);
-          const extractedSubtitles = this.normalizeSubtitles(Array.isArray(extracted?.subtitles) ? extracted.subtitles : []);
-          const fallbackSubtitles = extractedSubtitles.length ? [] : await getFallbackSubtitles();
-          const subtitles = this.normalizeSubtitles([...extractedSubtitles, ...fallbackSubtitles]);
-          return { ...extracted, subtitles };
-        } catch (error) {
-          lastErr = error;
+      let extracted: any;
+      try {
+        extracted = await firstSuccessful(prioritizedServers);
+      } catch (primaryError: any) {
+        if (!fallbackServers.length || prioritizedServers === fallbackServers) {
+          throw primaryError;
         }
+        console.log(`[FlixHQ] primary servers failed; trying fallback-only profiles: ${fallbackServers.map((s) => normalizeServerName(s)).join(', ')}`);
+        extracted = await firstSuccessful(fallbackServers);
       }
-
-      throw lastErr || new Error('No playable source extracted');
+      const extractedSubtitles = this.normalizeSubtitles(Array.isArray(extracted?.subtitles) ? extracted.subtitles : []);
+      const fallbackSubtitles = extractedSubtitles.length ? [] : await getFallbackSubtitles();
+      const subtitles = this.normalizeSubtitles([...extractedSubtitles, ...fallbackSubtitles]);
+      return { ...extracted, subtitles };
     } catch (error: any) {
       return { error: error.message };
     }
