@@ -87,7 +87,7 @@ const getWarmRetryTimeoutMs = (serverName) => {
     const normalized = String(serverName || '').toLowerCase();
     if (normalized === 'vidking') {
         const envTimeout = readPositiveNumber(process.env.FLIXHQ_VIDKING_WARM_RETRY_TIMEOUT_MS);
-        return Math.max(8000, envTimeout || 9000);
+        return Math.max(12000, envTimeout || 15000);
     }
     const envTimeout = readPositiveNumber(process.env.FLIXHQ_WARM_RETRY_TIMEOUT_MS);
     return Math.max(5000, envTimeout || 6500);
