@@ -162,26 +162,34 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   await fastify.register(news, { prefix: '/news' });
   await fastify.register(Utils, { prefix: '/utils' });
 
-  const buildProxyPath = (targetUrl: string): string => {
+  const appendRefererParam = (path: string, referer?: string): string => {
+    const safeReferer = String(referer || '').trim();
+    if (!safeReferer) return path;
+
+    const joiner = path.includes('?') ? '&' : '?';
+    return `${path}${joiner}referer=${encodeURIComponent(safeReferer)}`;
+  };
+
+  const buildProxyPath = (targetUrl: string, referer?: string): string => {
     const raw = String(targetUrl || '').trim();
     if (!raw) return raw;
-    if (/^\/proxy\/hls\//i.test(raw)) return raw;
+    if (/^\/proxy\/hls\//i.test(raw)) return appendRefererParam(raw, referer);
 
     try {
       const parsed = new URL(raw);
-      return `/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
+      return appendRefererParam(`/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`, referer);
     } catch {
       return raw;
     }
   };
 
-  const rewriteHlsManifest = (manifest: string, manifestUrl: string): string => {
+  const rewriteHlsManifest = (manifest: string, manifestUrl: string, referer?: string): string => {
     const resolveAndProxy = (value: string): string => {
       const trimmed = String(value || '').trim();
       if (!trimmed) return trimmed;
 
       try {
-        return buildProxyPath(new URL(trimmed, manifestUrl).toString());
+        return buildProxyPath(new URL(trimmed, manifestUrl).toString(), referer);
       } catch {
         return trimmed;
       }
@@ -255,29 +263,38 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
   // HLS Proxy to work around CORS issues
   fastify.get('/proxy/hls/*', async (request, reply) => {
-    const url = request.url.replace('/proxy/hls/', 'https://');
+    const rawRequestUrl = String(request.url || '');
+    const [rawPath, rawQuery = ''] = rawRequestUrl.split('?');
+    const wildcardPath = decodeURIComponent(rawPath.replace(/^\/proxy\/hls\//i, '')).trim();
+    const refererParam = String(new URLSearchParams(rawQuery).get('referer') || '').trim();
+    const passthroughQuery = rawQuery
+      .split('&')
+      .filter((part) => part && !/^referer=/i.test(part))
+      .join('&');
+
+    const url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ''}`;
     const isManifest = url.includes('.m3u8');
     const incomingRange = String(request.headers.range || '');
     const incomingReferer = String(request.headers.referer || request.headers.referrer || '').trim();
-    const requestReferer = incomingReferer || 'https://streameeeeee.site/';
+    const requestReferer = refererParam || incomingReferer || 'https://streameeeeee.site/';
     
     try {
       const response = await fetchHlsResource(url, isManifest, incomingRange, requestReferer);
 
       // If it's an M3U8 manifest, rewrite relative URLs to absolute
       if (isManifest) {
-        const content = rewriteHlsManifest(String(response.data || ''), url);
+        const content = rewriteHlsManifest(String(response.data || ''), url, requestReferer);
 
         reply.header('Content-Type', 'application/vnd.apple.mpegurl');
         reply.header('Access-Control-Allow-Origin', '*');
-        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
         reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
         return reply.send(content);
       }
 
       // For other content (segments, etc.), proxy as-is
       reply.header('Access-Control-Allow-Origin', '*');
-      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
       reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
       reply.header('Content-Type', response.headers['content-type'] || 'application/octet-stream');
       if (response.headers['content-length']) reply.header('Content-Length', response.headers['content-length']);

@@ -81,23 +81,28 @@ const getAutoRaceTimeoutMs = (requestedTimeoutMs) => {
     return Math.min(envTimeout || 3000, requested || 3000);
 };
 const getAutoServerTimeoutMs = (serverName, requestedTimeoutMs) => {
+    return getAutoRaceTimeoutMs(requestedTimeoutMs);
+};
+const getWarmRetryTimeoutMs = (serverName) => {
     const normalized = String(serverName || '').toLowerCase();
     if (normalized === 'vidking') {
-        const envTimeout = readPositiveNumber(process.env.FLIXHQ_VIDKING_RACE_TIMEOUT_MS);
+        const envTimeout = readPositiveNumber(process.env.FLIXHQ_VIDKING_WARM_RETRY_TIMEOUT_MS);
         return Math.max(8000, envTimeout || 9000);
     }
-    return getAutoRaceTimeoutMs(requestedTimeoutMs);
+    const envTimeout = readPositiveNumber(process.env.FLIXHQ_WARM_RETRY_TIMEOUT_MS);
+    return Math.max(5000, envTimeout || 6500);
 };
 const normalizeServerName = (server) => String(server?.serverName || server?.name || '').trim().toLowerCase();
 const getServerLink = (server) => String(server?.serverUrl || server?.link || server?.url || server?.src || '').trim();
 const isKnownDeadFlixhqServer = (server) => {
     const serverName = normalizeServerName(server);
     const link = getServerLink(server).toLowerCase();
-    if (serverName === 'videasy')
+    if (serverName === 'flixhq' || serverName === 'videasy')
         return true;
     return [
         'player.videasy.net',
         'videasy.net',
+        'sb1254w9megshle.org',
     ].some((pattern) => link.includes(pattern));
 };
 class FlixHQProvider {
@@ -303,7 +308,7 @@ class FlixHQProvider {
             return !hasMasterForBase.has(base) || /\/master\.m3u8(?:\?|$)/i.test(url);
         })
             .map((source) => {
-            const referer = String(source?.referer || source?.headers?.Referer || source?.headers?.referer || this.baseUrl + '/');
+            const referer = `${this.baseUrl}/`;
             return {
                 ...source,
                 headers: {
@@ -362,6 +367,7 @@ class FlixHQProvider {
                 headers: {
                     ...(source?.headers || {}),
                     ...responseHeaders,
+                    Referer: `${this.baseUrl}/`,
                     'User-Agent': responseHeaders['User-Agent'] || source?.headers?.['User-Agent'] || FLIXHQ_USER_AGENT,
                 },
             })),
@@ -695,29 +701,22 @@ class FlixHQProvider {
                 'upcloud',
                 'rabbitstream',
             ].filter(Boolean)));
-            const orderedServers = strictServer && requestedServer
+            const prioritizedServers = strictServer && requestedServer
                 ? vidkingFirstServers.filter((s) => normalizeServerName(s) === requestedFlixhqServer)
                 : [
                     ...priorityOrder
                         .map((name) => vidkingFirstServers.find((s) => normalizeServerName(s) === name))
                         .filter(Boolean),
                     ...vidkingFirstServers.filter((s) => !priorityOrder.includes(normalizeServerName(s))),
-                ];
-            const primaryServers = strictServer
-                ? orderedServers
-                : orderedServers.filter((s) => !isKnownDeadFlixhqServer(s));
-            const fallbackServers = strictServer
-                ? []
-                : orderedServers.filter((s) => isKnownDeadFlixhqServer(s));
-            const prioritizedServers = primaryServers.length ? primaryServers : fallbackServers;
+                ].filter((s) => !isKnownDeadFlixhqServer(s));
             if (!prioritizedServers.length) {
                 throw new Error(`Requested server ${requestedServer || server} not found`);
             }
             const skippedServers = strictServer
                 ? []
-                : fallbackServers.map((s) => normalizeServerName(s));
+                : vidkingFirstServers.filter((s) => isKnownDeadFlixhqServer(s)).map((s) => normalizeServerName(s));
             if (skippedServers.length) {
-                console.log(`[FlixHQ] fallback-only server profiles: ${Array.from(new Set(skippedServers)).join(', ')}`);
+                console.log(`[FlixHQ] skipped dead server profiles: ${Array.from(new Set(skippedServers)).join(', ')}`);
             }
             const resolvedKind = String(serversRes?.kind || '').toLowerCase() === 'movie' ? 'movie' : 'tv';
             const currentWatchPageUrl = this.buildWatchPageUrl(episodeId).pageUrl;
@@ -759,7 +758,7 @@ class FlixHQProvider {
                     }],
                 subtitles: [],
             });
-            const tryServer = async (selectedServer) => {
+            const tryServer = async (selectedServer, extractionTimeoutOverrideMs) => {
                 const liveLink = selectedServer.serverUrl || selectedServer.link;
                 const serverId = String(selectedServer?.serverId || '').trim();
                 const hasAjaxServerId = Boolean(serverId) && !/^https?:\/\//i.test(serverId);
@@ -774,7 +773,7 @@ class FlixHQProvider {
                         const selectedServerName = String(selectedServer?.serverName || server || '').toLowerCase();
                         const selectedTimeoutMs = strictServer
                             ? getEmbedExtractionTimeoutMs(selectedServerName, options.extractionTimeoutMs)
-                            : getAutoServerTimeoutMs(selectedServerName, options.extractionTimeoutMs);
+                            : (extractionTimeoutOverrideMs || getAutoServerTimeoutMs(selectedServerName, options.extractionTimeoutMs));
                         const extracted = await this.fetchSources(liveLink, requestedVidkingMirror || selectedServer.serverName || server, strictServer, {
                             allowEmbedFallback: false,
                             extractionTimeoutMs: selectedTimeoutMs,
@@ -866,7 +865,7 @@ class FlixHQProvider {
                 const selectedServerName = String(selectedServer?.serverName || server || '').toLowerCase();
                 const selectedTimeoutMs = strictServer
                     ? getEmbedExtractionTimeoutMs(selectedServerName, options.extractionTimeoutMs)
-                    : getAutoServerTimeoutMs(selectedServerName, options.extractionTimeoutMs);
+                    : (extractionTimeoutOverrideMs || getAutoServerTimeoutMs(selectedServerName, options.extractionTimeoutMs));
                 const extracted = await this.fetchSources(embedData.link, requestedVidkingMirror || selectedServer.serverName || server, strictServer, {
                     allowEmbedFallback: false,
                     extractionTimeoutMs: selectedTimeoutMs,
@@ -891,7 +890,7 @@ class FlixHQProvider {
                 console.log(`[FlixHQ] extraction started: server=${serverName}`);
                 let timeoutHandle;
                 return Promise.race([
-                    tryServer(selectedServer),
+                    tryServer(selectedServer, timeoutMs),
                     new Promise((_, reject) => timeoutHandle = setTimeout(() => reject(new Error(`Server ${serverName} extraction timeout after ${timeoutMs}ms`)), timeoutMs)),
                 ]).then((result) => {
                     if (timeoutHandle)
@@ -944,12 +943,39 @@ class FlixHQProvider {
             try {
                 extracted = await firstSuccessful(prioritizedServers);
             }
-            catch (primaryError) {
-                if (!fallbackServers.length || prioritizedServers === fallbackServers) {
-                    throw primaryError;
+            catch (fastError) {
+                const retryServers = prioritizedServers.filter((s) => normalizeServerName(s) === 'vidking');
+                if (!retryServers.length || strictServer) {
+                    throw fastError;
                 }
-                console.log(`[FlixHQ] primary servers failed; trying fallback-only profiles: ${fallbackServers.map((s) => normalizeServerName(s)).join(', ')}`);
-                extracted = await firstSuccessful(fallbackServers);
+                console.log('[FlixHQ] fast race missed; retrying VidKing warm path');
+                extracted = await new Promise((resolve, reject) => {
+                    let pending = retryServers.length;
+                    let lastError = fastError;
+                    let settled = false;
+                    for (const s of retryServers) {
+                        const candidateName = normalizeServerName(s);
+                        tryServerWithTimeout(s, getWarmRetryTimeoutMs(candidateName))
+                            .then((result) => {
+                            if (settled)
+                                return;
+                            const sources = Array.isArray(result?.sources) ? result.sources : [];
+                            if (!sources.length) {
+                                throw new Error(`Server ${s?.serverName || 'unknown'} returned no playable sources`);
+                            }
+                            settled = true;
+                            resolve(result);
+                        })
+                            .catch((e) => {
+                            if (settled)
+                                return;
+                            lastError = e;
+                            pending -= 1;
+                            if (pending === 0)
+                                reject(lastError || fastError);
+                        });
+                    }
+                });
             }
             const extractedSubtitles = this.normalizeSubtitles(Array.isArray(extracted?.subtitles) ? extracted.subtitles : []);
             const fallbackSubtitles = extractedSubtitles.length ? [] : await getFallbackSubtitles();

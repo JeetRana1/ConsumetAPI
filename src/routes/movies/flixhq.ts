@@ -313,7 +313,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const protocol = request.protocol;
       console.log('[FlixHQ Watch] Request host:', hostHeader, 'protocol:', protocol);
 
-      const watchCacheKey = `flixhq:watch:v22:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${allowEmbedFallback ? 'embed-ok' : 'direct'}:${requestedExtractionTimeoutMs || 'default'}`;
+      const watchCacheKey = `flixhq:watch:v24:${episodeId}:${server}:${strictServer ? 'strict' : 'fallback'}:${allowEmbedFallback ? 'embed-ok' : 'direct'}:${requestedExtractionTimeoutMs || 'default'}`;
       let res: any = null;
       if (redis) {
         try {
