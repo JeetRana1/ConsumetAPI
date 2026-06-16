@@ -880,23 +880,124 @@ const buildAnimetsuTmdbInfo = async (request, id, type) => {
         return baseInfo;
     }
     let providerEpisodes = [];
+    let providerInfoPayload = null;
     try {
         const infoRes = await request.server.inject({
             method: 'GET',
             url: `/anime/animetsu/info?id=${encodeURIComponent(providerId)}`,
         });
         if (infoRes.statusCode < 400) {
-            const infoPayload = safeJsonParse(infoRes.body || '{}');
-            providerEpisodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
-            if (Array.isArray(infoPayload?.seasons) && infoPayload.seasons.length) {
-                baseInfo.providerSeasons = infoPayload.seasons;
-            }
+            providerInfoPayload = safeJsonParse(infoRes.body || '{}');
+            providerEpisodes = Array.isArray(providerInfoPayload?.episodes) ? providerInfoPayload.episodes : [];
         }
     }
     catch {
         providerEpisodes = [];
     }
     const sortedProviderEpisodes = [...providerEpisodes].sort((a, b) => Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0));
+    const buildAnimetsuSiteSeasons = async () => {
+        if (!providerInfoPayload || typeof providerInfoPayload !== 'object')
+            return [];
+        const relatedEntries = Array.isArray(providerInfoPayload?.relatedSeasons)
+            ? providerInfoPayload.relatedSeasons
+            : Array.isArray(providerInfoPayload?.providerSeasons)
+                ? providerInfoPayload.providerSeasons
+                : [];
+        const rawEntries = relatedEntries.length ? [...relatedEntries] : [providerInfoPayload];
+        if (!rawEntries.some((entry) => String(entry?.id || '').trim() === providerId)) {
+            rawEntries.unshift(providerInfoPayload);
+        }
+        const seenIds = new Set();
+        const entries = rawEntries
+            .map((entry) => {
+            const entryId = String(entry?.id || '').trim();
+            return entryId ? { ...entry, id: entryId } : null;
+        })
+            .filter(Boolean)
+            .filter((entry) => {
+            const entryId = String(entry?.id || '').trim();
+            if (!entryId || seenIds.has(entryId))
+                return false;
+            seenIds.add(entryId);
+            const format = String(entry?.format || '').toUpperCase();
+            const relation = String(entry?.relation || entry?.relation_type || '').toLowerCase();
+            const titleText = String(typeof entry?.title === 'string'
+                ? entry.title
+                : entry?.title?.english || entry?.title?.romaji || entry?.name || '').toLowerCase();
+            if (format && format !== 'TV')
+                return false;
+            if (/movie|special|ova|ona|pv|recap/i.test(`${format} ${relation} ${titleText}`))
+                return false;
+            return true;
+        });
+        const details = await Promise.all(entries.map(async (entry, index) => {
+            let info = String(entry?.id || '') === providerId ? providerInfoPayload : null;
+            if (!info || !Array.isArray(info?.episodes)) {
+                try {
+                    const res = await request.server.inject({
+                        method: 'GET',
+                        url: `/anime/animetsu/info?id=${encodeURIComponent(String(entry.id))}`,
+                    });
+                    if (res.statusCode < 400)
+                        info = safeJsonParse(res.body || '{}');
+                }
+                catch {
+                    info = null;
+                }
+            }
+            const episodes = (Array.isArray(info?.episodes) ? info.episodes : [])
+                .map((ep, epIndex) => {
+                const episodeNo = Number(ep?.episode || ep?.number || ep?.episodeNum || epIndex + 1) || epIndex + 1;
+                return {
+                    id: String(ep?.id || `${entry.id}$episode$${episodeNo}`).trim(),
+                    episode: episodeNo,
+                    number: episodeNo,
+                    episodeNum: episodeNo,
+                    title: String(ep?.title || `Episode ${episodeNo}`),
+                    image: ep?.image,
+                    description: ep?.description,
+                    isFiller: ep?.isFiller === true || ep?.is_filler === true,
+                };
+            })
+                .sort((a, b) => Number(a.episode || 0) - Number(b.episode || 0));
+            if (!episodes.length)
+                return null;
+            const relationLabel = String(entry?.relation || '').trim();
+            const titleLabel = String(relationLabel ||
+                (typeof entry?.title === 'string'
+                    ? entry.title
+                    : entry?.title?.english || entry?.title?.romaji || entry?.name || info?.title || '')).trim();
+            const seasonNo = index + 1;
+            return {
+                season: seasonNo,
+                number: seasonNo,
+                seasonNo,
+                seasonNumber: seasonNo,
+                name: titleLabel || `Season ${seasonNo}`,
+                title: titleLabel || `Season ${seasonNo}`,
+                id: String(entry.id),
+                providerAnimeId: String(entry.id),
+                image: entry?.image || entry?.cover_image?.large || info?.image,
+                cover: entry?.cover || entry?.banner || info?.cover,
+                releaseDate: entry?.releaseDate || entry?.year || info?.releaseDate,
+                episodes,
+            };
+        }));
+        return details.filter(Boolean);
+    };
+    const animetsuSiteSeasons = await buildAnimetsuSiteSeasons();
+    if (animetsuSiteSeasons.length) {
+        baseInfo.seasons = animetsuSiteSeasons;
+        baseInfo.providerSeasons = animetsuSiteSeasons;
+        baseInfo.episodes = [];
+        baseInfo.id = providerId;
+        if (pick?.anilistId)
+            baseInfo.anilistId = String(pick.anilistId);
+        if (pick?.malId)
+            baseInfo.malId = String(pick.malId);
+        convertTmdbImagesToUrls(baseInfo);
+        return baseInfo;
+    }
     if (Array.isArray(baseInfo.seasons)) {
         baseInfo.seasons = baseInfo.seasons.map((season) => {
             if (!Array.isArray(season.episodes))
@@ -2182,6 +2283,16 @@ const routes = async (fastify, options) => {
         if (providerLower === 'animekai') {
             try {
                 const res = await buildAnimekaiTmdbInfo(request, id, type);
+                return reply.status(200).send(res);
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return reply.status(500).send({ message });
+            }
+        }
+        if (providerLower === 'animetsu') {
+            try {
+                const res = await buildAnimetsuTmdbInfo(request, id, type);
                 return reply.status(200).send(res);
             }
             catch (err) {

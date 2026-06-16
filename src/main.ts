@@ -24,6 +24,7 @@ import news from './routes/news';
 import chalk from 'chalk';
 import Utils from './utils';
 import { normalizeStreamLinks } from './utils/streamable';
+import { registerWatchTogether } from './utils/watchTogether';
 
 export const redis =
   process.env.REDIS_HOST &&
@@ -161,35 +162,44 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   await fastify.register(meta, { prefix: '/meta' });
   await fastify.register(news, { prefix: '/news' });
   await fastify.register(Utils, { prefix: '/utils' });
+  registerWatchTogether(fastify);
+
+  const appendQueryParam = (path: string, key: string, value?: string): string => {
+    const safeValue = String(value || '').trim();
+    if (!safeValue) return path;
+
+    const joiner = path.includes('?') ? '&' : '?';
+    return `${path}${joiner}${encodeURIComponent(key)}=${encodeURIComponent(safeValue)}`;
+  };
 
   const appendRefererParam = (path: string, referer?: string): string => {
     const safeReferer = String(referer || '').trim();
-    if (!safeReferer) return path;
-
-    const joiner = path.includes('?') ? '&' : '?';
-    return `${path}${joiner}referer=${encodeURIComponent(safeReferer)}`;
+    return appendQueryParam(path, 'referer', safeReferer);
   };
 
-  const buildProxyPath = (targetUrl: string, referer?: string): string => {
+  const buildProxyPath = (targetUrl: string, referer?: string, isSegment = false): string => {
     const raw = String(targetUrl || '').trim();
     if (!raw) return raw;
     if (/^\/proxy\/hls\//i.test(raw)) return appendRefererParam(raw, referer);
 
     try {
       const parsed = new URL(raw);
-      return appendRefererParam(`/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`, referer);
+      let path = `/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
+      path = appendRefererParam(path, referer);
+      path = appendQueryParam(path, 'segment', isSegment ? '1' : '');
+      return path;
     } catch {
       return raw;
     }
   };
 
   const rewriteHlsManifest = (manifest: string, manifestUrl: string, referer?: string): string => {
-    const resolveAndProxy = (value: string): string => {
+    const resolveAndProxy = (value: string, isSegment = false): string => {
       const trimmed = String(value || '').trim();
       if (!trimmed) return trimmed;
 
       try {
-        return buildProxyPath(new URL(trimmed, manifestUrl).toString(), referer);
+        return buildProxyPath(new URL(trimmed, manifestUrl).toString(), referer, isSegment);
       } catch {
         return trimmed;
       }
@@ -200,13 +210,20 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     output = output.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${resolveAndProxy(uri)}"`);
     output = output.replace(/URI='([^']+)'/g, (_match, uri) => `URI='${resolveAndProxy(uri)}'`);
 
+    let previousTag = '';
     output = output
       .split('\n')
       .map((line) => {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) return line;
+        if (!trimmed) return line;
+        if (trimmed.startsWith('#')) {
+          previousTag = trimmed;
+          return line;
+        }
         if (/^(data:|blob:)/i.test(trimmed)) return line;
-        return resolveAndProxy(trimmed);
+        const isSegment = /^#EXTINF\b/i.test(previousTag);
+        previousTag = '';
+        return resolveAndProxy(trimmed, isSegment);
       })
       .join('\n');
 
@@ -222,6 +239,12 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     }
 
     return /^#EXTM3U\b/m.test(text);
+  };
+
+  const shouldTreatAsManifestRequest = (url: string, incomingRange: string): boolean => {
+    if (/\.m3u8(?:$|\?)/i.test(url)) return true;
+    if (incomingRange) return false;
+    return /\/(?:hls|oppai)\//i.test(url);
   };
 
   const fetchHlsResource = async (url: string, isManifest: boolean, incomingRange: string, referer: string) => {
@@ -267,23 +290,39 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const [rawPath, rawQuery = ''] = rawRequestUrl.split('?');
     const wildcardPath = decodeURIComponent(rawPath.replace(/^\/proxy\/hls\//i, '')).trim();
     const refererParam = String(new URLSearchParams(rawQuery).get('referer') || '').trim();
+    const segmentParam = String(new URLSearchParams(rawQuery).get('segment') || '').trim() === '1';
     const passthroughQuery = rawQuery
       .split('&')
-      .filter((part) => part && !/^referer=/i.test(part))
+      .filter((part) => part && !/^(referer|segment)=/i.test(part))
       .join('&');
 
     const url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ''}`;
-    const isManifest = url.includes('.m3u8');
     const incomingRange = String(request.headers.range || '');
+    const isManifest = !segmentParam && shouldTreatAsManifestRequest(url, incomingRange);
     const incomingReferer = String(request.headers.referer || request.headers.referrer || '').trim();
     const requestReferer = refererParam || incomingReferer || 'https://streameeeeee.site/';
     
     try {
       const response = await fetchHlsResource(url, isManifest, incomingRange, requestReferer);
 
-      // If it's an M3U8 manifest, rewrite relative URLs to absolute
-      if (isManifest) {
-        const content = rewriteHlsManifest(String(response.data || ''), url, requestReferer);
+      const responseContentType = String(response.headers['content-type'] || '');
+      const responseBuffer = Buffer.isBuffer(response.data)
+        ? response.data
+        : response.data instanceof ArrayBuffer
+          ? Buffer.from(response.data)
+          : ArrayBuffer.isView(response.data)
+            ? Buffer.from(response.data.buffer, response.data.byteOffset, response.data.byteLength)
+            : null;
+      const responseText = responseBuffer
+        ? responseBuffer.toString('utf8')
+        : String(response.data || '');
+      const responseIsManifest = isManifest || isLikelyHlsManifest(responseText, responseContentType);
+
+      // If it's an M3U8 manifest, rewrite relative URLs to absolute/proxied URLs.
+      // Some AnimeSalt variant playlists are extensionless /hls/<token> URLs, so
+      // content sniffing is required instead of relying only on ".m3u8".
+      if (responseIsManifest) {
+        const content = rewriteHlsManifest(responseText, url, requestReferer);
 
         reply.header('Content-Type', 'application/vnd.apple.mpegurl');
         reply.header('Access-Control-Allow-Origin', '*');
