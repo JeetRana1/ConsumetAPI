@@ -4,6 +4,7 @@ import { TvType, IMovieInfo, ISource, IEpisodeServer } from '@consumet/extension
 
 type DeepProbeResult = {
   canonicalEventDate: string;
+  eventStartUtcMs: number;
   countdownSeconds: number;
   hasActiveStream: boolean;
   isLive: boolean;
@@ -107,6 +108,82 @@ export class BuffStreams extends MovieParser {
     }
 
     return this.stripUnneededHtml(output);
+  }
+
+  private async fetchRawHtml(url: string, referer = this.homeUrl, options: { maxBytes?: number; stopWhen?: (text: string) => boolean } = {}): Promise<string> {
+    const headers = {
+      ...this.buildHeaders(referer),
+      Accept: 'text/html,application/xhtml+xml',
+      Range: `bytes=0-${Math.max(0, (options.maxBytes || 512 * 1024) - 1)}`,
+    };
+    const response = await fetch(url, { headers });
+    if (!response.ok && response.status !== 206) throw new Error(`HTTP error! status: ${response.status}`);
+
+    const maxBytes = options.maxBytes || 512 * 1024;
+    if (!response.body || typeof response.body.getReader !== 'function') {
+      const text = await response.text();
+      return text.slice(0, maxBytes);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let received = 0;
+    let output = '';
+
+    try {
+      while (received < maxBytes) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        output += decoder.decode(value, { stream: true });
+        if (typeof options.stopWhen === 'function' && options.stopWhen(output)) break;
+      }
+      output += decoder.decode();
+    } finally {
+      try { await reader.cancel(); } catch { /* */ }
+    }
+
+    return output;
+  }
+
+  private extractCountdownFromScripts(rawHtml: string): { h: number; m: number; s: number } | null {
+    if (!rawHtml) return null;
+    const scriptBlocks = rawHtml.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+    for (const block of scriptBlocks) {
+      const inner = block.replace(/<script[^>]*>/i, '').replace(/<\/script>/i, '');
+      const explicitCountdown = inner.match(/["']?(?:countdown|countdownSeconds|countdownLeft|timeLeft|timeRemaining|secondsLeft|secondsRemaining)["']?\s*[:=]\s*(\d{3,6})\b/i);
+      if (explicitCountdown) {
+        const totalSeconds = parseInt(explicitCountdown[1], 10);
+        if (totalSeconds > 60 && totalSeconds < 86400) {
+          return {
+            h: Math.floor(totalSeconds / 3600),
+            m: Math.floor((totalSeconds % 3600) / 60),
+            s: totalSeconds % 60,
+          };
+        }
+      }
+      const explicitHms = inner.match(/["']?(?:countdown|countdownSeconds|countdownLeft|timeLeft|timeRemaining)["']?\s*[:=]\s*["']?(\d{1,2})\s*[:\-,/]\s*(\d{1,2})\s*[:\-,/]\s*(\d{1,2})["']?/i);
+      if (explicitHms) {
+        const h = parseInt(explicitHms[1], 10);
+        const m = parseInt(explicitHms[2], 10);
+        const s = parseInt(explicitHms[3], 10);
+        if (h < 48 && m < 60 && s < 60 && (h * 3600 + m * 60 + s) > 60) return { h, m, s };
+      }
+      const timestampCountdown = inner.match(/["']?(?:startAt|eventStart|startTime|eventStartUtc|countdownTarget)["']?\s*[:=]\s*(\d{10,13})\b/i);
+      if (timestampCountdown) {
+        const ts = parseInt(timestampCountdown[1], 10);
+        const diffMs = (ts > 1e12 ? ts : ts * 1000) - Date.now();
+        if (diffMs > 60000 && diffMs < 86400000) {
+          const totalSeconds = Math.floor(diffMs / 1000);
+          return {
+            h: Math.floor(totalSeconds / 3600),
+            m: Math.floor((totalSeconds % 3600) / 60),
+            s: totalSeconds % 60,
+          };
+        }
+      }
+    }
+    return null;
   }
 
   private extractLiveState(title = '', statusText = '', rowHtml = ''): { isLive: boolean; periodText: string; exactTime: string } {
@@ -290,7 +367,7 @@ export class BuffStreams extends MovieParser {
 
   async deepProbeStream(streamUrl: string): Promise<DeepProbeResult> {
     const probeId = String(streamUrl || '').trim();
-    if (!probeId) return { canonicalEventDate: '', countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: '' };
+    if (!probeId) return { canonicalEventDate: '', eventStartUtcMs: 0, countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: '' };
 
     const cached = this.getDeepProbeCache(probeId);
     if (cached) return cached;
@@ -299,19 +376,36 @@ export class BuffStreams extends MovieParser {
 
     const promise = (async (): Promise<DeepProbeResult> => {
       try {
-        const html = await this.fetchLeanHtml(probeId, this.homeUrl, {
+        const rawHtml = await this.fetchRawHtml(probeId, this.homeUrl, {
           maxBytes: 256 * 1024,
           stopWhen: (text: string) => /<\/html>/i.test(text) || /<iframe[^>]+src=["'][^"']+["']/i.test(text),
         });
+        const html = this.stripUnneededHtml(rawHtml);
 
-        const result: DeepProbeResult = { canonicalEventDate: '', countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: '' };
+        const result: DeepProbeResult = { canonicalEventDate: '', eventStartUtcMs: 0, countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: '' };
 
         const dateText = html.match(/<img[^>]+>\s*<span[^>]*>(\d{4}-\d{2}-\d{2})<\/span>/i)
           || html.match(/<[^>]*class=["'][^"']*date[^"']*["'][^>]*>([^<]*\d{4}-\d{2}-\d{2}[^<]*)<\/[^>]*>/i)
           || html.match(/>(\d{4}-\d{2}-\d{2})</i);
         if (dateText?.[1]) result.canonicalEventDate = dateText[1].trim();
 
-        const countdownMatch = html.match(/\b(\d{2}):(\d{2}):(\d{2})\b/);
+        const epochMatch = html.match(/var\s+countDownDate\s*=\s*(\d{10,13})\s*\*\s*1000/i)
+          || html.match(/(?:countDownDate|countdownTarget|eventStart|startAt|startTime|eventStartUtc)["']?\s*[:=]\s*["']?(\d{10,13})\b/i)
+          || html.match(/(?:countDownDate|countdownTarget|eventStart|startAt|startTime|eventStartUtc)["']?\s*[:=]\s*["']?(\d{10,13})\s*\*\s*1000/i);
+        if (epochMatch?.[1]) {
+          const rawTs = parseInt(epochMatch[1], 10);
+          const tsMs = rawTs < 1e12 ? rawTs * 1000 : rawTs;
+          const diffMs = tsMs - Date.now();
+          if (diffMs > 0 && diffMs < 7 * 24 * 60 * 60 * 1000) {
+            result.eventStartUtcMs = tsMs;
+            result.countdownSeconds = Math.floor(diffMs / 1000);
+            result.isLocked = true;
+            result.lockReason = 'countdown-timer';
+          }
+        }
+
+        const countdownFromScripts = result.eventStartUtcMs > 0 ? null : this.extractCountdownFromScripts(rawHtml);
+        const countdownMatch = result.eventStartUtcMs > 0 ? null : (countdownFromScripts ? ['', String(countdownFromScripts.h), String(countdownFromScripts.m), String(countdownFromScripts.s)] : html.match(/\b(\d{2}):(\d{2}):(\d{2})\b/));
         if (countdownMatch) {
           const h = parseInt(countdownMatch[1], 10);
           const m = parseInt(countdownMatch[2], 10);
@@ -338,7 +432,7 @@ export class BuffStreams extends MovieParser {
         return result;
       } catch (err: any) {
         console.warn(`[BuffStreams] Deep probe failed for ${probeId}:`, err?.message || err);
-        return { canonicalEventDate: '', countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: 'probe-error' };
+        return { canonicalEventDate: '', eventStartUtcMs: 0, countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: 'probe-error' };
       } finally {
         this.probeInFlight.delete(probeId);
       }
@@ -362,6 +456,7 @@ export class BuffStreams extends MovieParser {
       if (!probe) return stream;
       const enriched = { ...stream };
       if (probe.canonicalEventDate) enriched.canonicalEventDate = probe.canonicalEventDate;
+      if (Number.isFinite(probe.eventStartUtcMs) && probe.eventStartUtcMs > 0) enriched.eventStartUtcMs = probe.eventStartUtcMs;
       if (Number.isFinite(probe.countdownSeconds) && probe.countdownSeconds >= 0) {
         enriched.countdownSeconds = probe.countdownSeconds;
       }
@@ -421,10 +516,11 @@ export class BuffStreams extends MovieParser {
   override async fetchMediaInfo(mediaId: string): Promise<IMovieInfo> {
     const url = this.toAbsoluteUrl(mediaId) || mediaId;
     try {
-      const html = await this.fetchLeanHtml(url, this.homeUrl, {
+      const rawHtml = await this.fetchRawHtml(url, this.homeUrl, {
         maxBytes: 700 * 1024,
         stopWhen: (text: string) => /<\/html>/i.test(text),
       });
+      const html = this.stripUnneededHtml(rawHtml);
 
       const titleMatch = html.match(/<title>(.*?)<\/title>/i);
       const title = titleMatch?.[1]?.replace(/\s*-\s*Buffstreams\s*$/i, '').trim() || 'BuffStreams Event';
@@ -437,9 +533,27 @@ export class BuffStreams extends MovieParser {
         || html.match(/>(\d{4}-\d{2}-\d{2})</i);
       if (dateText?.[1]) canonicalEventDate = dateText[1].trim();
 
+      let eventStartUtcMs = 0;
+      const epochMatch = html.match(/var\s+countDownDate\s*=\s*(\d{10,13})\s*\*\s*1000/i)
+        || html.match(/(?:countDownDate|countdownTarget|eventStart|startAt|startTime|eventStartUtc)["']?\s*[:=]\s*["']?(\d{10,13})\b/i)
+        || html.match(/(?:countDownDate|countdownTarget|eventStart|startAt|startTime|eventStartUtc)["']?\s*[:=]\s*["']?(\d{10,13})\s*\*\s*1000/i);
+      if (epochMatch?.[1]) {
+        const rawTs = parseInt(epochMatch[1], 10);
+        const tsMs = rawTs < 1e12 ? rawTs * 1000 : rawTs;
+        const diffMs = tsMs - Date.now();
+        if (diffMs > 0 && diffMs < 7 * 24 * 60 * 60 * 1000) {
+          eventStartUtcMs = tsMs;
+        }
+      }
+
       let countdownSeconds = -1;
       let lockReason = '';
-      const countdownMatch = html.match(/\b(\d{2}):(\d{2}):(\d{2})\b/);
+      if (eventStartUtcMs > 0) {
+        countdownSeconds = Math.floor((eventStartUtcMs - Date.now()) / 1000);
+        lockReason = 'countdown-timer';
+      }
+      const countdownFromScripts = eventStartUtcMs > 0 ? null : this.extractCountdownFromScripts(rawHtml);
+      const countdownMatch = eventStartUtcMs > 0 ? null : (countdownFromScripts ? ['', String(countdownFromScripts.h), String(countdownFromScripts.m), String(countdownFromScripts.s)] : html.match(/\b(\d{2}):(\d{2}):(\d{2})\b/));
       if (countdownMatch) {
         countdownSeconds = (parseInt(countdownMatch[1], 10) * 3600) + (parseInt(countdownMatch[2], 10) * 60) + parseInt(countdownMatch[3], 10);
         lockReason = 'countdown-timer';
@@ -463,6 +577,7 @@ export class BuffStreams extends MovieParser {
         embedUrl: embedUrl || undefined,
         sport: this.inferType(url, title),
         eventDate: canonicalEventDate || undefined,
+        eventStartUtcMs: eventStartUtcMs || undefined,
         status: liveState.periodText || (hasActiveStream ? 'LIVE' : 'UPCOMING'),
         teams: [],
         scores: [],
