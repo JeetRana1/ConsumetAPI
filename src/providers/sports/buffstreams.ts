@@ -1,0 +1,588 @@
+import * as cheerio from 'cheerio';
+import { MovieParser } from '@consumet/extensions/dist/models';
+import { TvType, IMovieInfo, ISource, IEpisodeServer } from '@consumet/extensions';
+
+type DeepProbeResult = {
+  canonicalEventDate: string;
+  countdownSeconds: number;
+  hasActiveStream: boolean;
+  isLive: boolean;
+  isLocked: boolean;
+  lockReason: string;
+};
+
+export class BuffStreams extends MovieParser {
+  override readonly name = 'BuffStreams';
+  override readonly baseUrl = 'https://buffstreams.plus';
+  override readonly logo = 'https://buffstreams.plus/images/mlb.webp?v3e32';
+  override readonly classPath = 'SPORTS.BuffStreams';
+  override readonly supportedTypes = new Set([TvType.MOVIE, TvType.TVSERIES]);
+
+  private readonly homeUrl = `${this.baseUrl}/index7`;
+  private readonly index18Url = `${this.baseUrl}/index18`;
+  private readonly userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  private readonly REQUEST_TIMEOUT_MS = 8000;
+  private readonly DEEP_PROBE_CONCURRENCY = 4;
+  private readonly DEEP_PROBE_TTL_MS = 5 * 60 * 1000;
+
+  private deepProbeCache = new Map<string, DeepProbeResult & { probedAt: number }>();
+  private probeInFlight = new Map<string, Promise<DeepProbeResult>>();
+
+  private categoryPages: Record<string, string> = {
+    nfl: `${this.baseUrl}/nflstreams2`,
+    soccer: `${this.baseUrl}/soccer-live-streams`,
+    mma: `${this.baseUrl}/mmastreams2`,
+    boxing: `${this.baseUrl}/boxingstreams2`,
+    f1: `${this.baseUrl}/f1streams2`,
+    nba: `${this.baseUrl}/nbastreams2`,
+    nhl: `${this.baseUrl}/nhlstreams2`,
+    mlb: `${this.baseUrl}/mlb-live-streams`,
+    ncaa: `${this.baseUrl}/ncaastreams`,
+  };
+
+  private buildHeaders(referer: string): Record<string, string> {
+    const origin = (() => {
+      try { return new URL(referer).origin; } catch { return this.baseUrl; }
+    })();
+    return { 'User-Agent': this.userAgent, Referer: referer, Origin: origin };
+  }
+
+  private cleanText(value: string): string {
+    return String(value || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&#039;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private toAbsoluteUrl(value: string, fallbackBase = this.baseUrl): string | null {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    try { return new URL(raw, fallbackBase).toString(); } catch { return null; }
+  }
+
+  private stripUnneededHtml(value: string): string {
+    return String(value || '')
+      .replace(/<svg\b[\s\S]*?<\/svg>/gi, '')
+      .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+      .replace(/<footer\b[\s\S]*?<\/footer>/gi, '')
+      .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, '');
+  }
+
+  private async fetchLeanHtml(url: string, referer = this.homeUrl, options: { maxBytes?: number; stopWhen?: (text: string) => boolean } = {}): Promise<string> {
+    const headers = {
+      ...this.buildHeaders(referer),
+      Accept: 'text/html,application/xhtml+xml',
+    };
+    const response = await fetch(url, { headers });
+    if (!response.ok && response.status !== 206) throw new Error(`HTTP error! status: ${response.status}`);
+
+    const maxBytes = options.maxBytes || 512 * 1024;
+    if (!response.body || typeof response.body.getReader !== 'function') {
+      const text = await response.text();
+      return this.stripUnneededHtml(text.slice(0, maxBytes));
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let received = 0;
+    let output = '';
+
+    try {
+      while (received < maxBytes) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        output += decoder.decode(value, { stream: true });
+        output = this.stripUnneededHtml(output);
+        if (typeof options.stopWhen === 'function' && options.stopWhen(output)) break;
+      }
+      output += decoder.decode();
+    } finally {
+      try { await reader.cancel(); } catch { /* */ }
+    }
+
+    return this.stripUnneededHtml(output);
+  }
+
+  private extractLiveState(title = '', statusText = '', rowHtml = ''): { isLive: boolean; periodText: string; exactTime: string } {
+    try {
+      const normalize = (value: string) => this.cleanText(value)
+        .replace(/\blive streams?(?:\s+links)?\b/ig, ' ')
+        .replace(/\bwatch(?:\s+live)?\b/ig, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const haystack = [statusText, title, normalize(rowHtml)].map(normalize).filter(Boolean).join(' ');
+      const exactTimeMatch = haystack.match(/\b(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM)?(?:\s*[A-Z]{2,4})?\b/i);
+      const periodPatterns = [
+        /\bIN\s*PROGRESS\b/i,
+        /\b(?:1ST|2ND)\s*HALF\b/i,
+        /\bHALF\s*TIME\b|\bHALFTIME\b/i,
+        /\b(?:1ST|2ND|3RD|4TH)\s*QUARTER\b/i,
+        /\bQ[1-4]\b/i,
+        /\b(?:1ST|2ND|3RD)\s*PERIOD\b/i,
+        /\bOVERTIME\b|\bOT\b/i,
+        /\bTOP\s+\d+(?:ST|ND|RD|TH)?\b|\bBOTTOM\s+\d+(?:ST|ND|RD|TH)?\b/i,
+        /\bLIVE\b/i,
+      ];
+      const periodMatch = periodPatterns.map((p) => haystack.match(p)).find(Boolean);
+      const periodText = (periodMatch?.[0] || '').replace(/\s+/g, ' ').trim().toUpperCase();
+      const isLive = Boolean(periodText && !/\bNOT\s*STARTED\b|\bUPCOMING\b/i.test(periodText));
+      return { isLive, periodText, exactTime: exactTimeMatch ? exactTimeMatch[0].replace(/\s+/g, ' ').trim() : '' };
+    } catch {
+      return { isLive: false, periodText: '', exactTime: '' };
+    }
+  }
+
+  private inferType(url: string, sectionTitle = ''): string {
+    const lower = `${url || ''} ${sectionTitle || ''}`.toLowerCase();
+    if (lower.includes('/wnba/') || lower.includes('wnba')) return 'wnba';
+    if (lower.includes('/wwe/') || lower.includes('wwe')) return 'wwe';
+    if (lower.includes('/nba/') || lower.includes('nba')) return 'nba';
+    if (lower.includes('/nhl/') || lower.includes('nhl')) return 'nhl';
+    if (lower.includes('/mlb/') || lower.includes('baseball') || lower.includes('mlb')) return 'mlb';
+    if (lower.includes('/nfl/') || lower.includes('nfl')) return 'nfl';
+    if (lower.includes('/boxing/') || lower.includes('boxing')) return 'boxing';
+    if (lower.includes('/mma/') || lower.includes('mma') || lower.includes('ufc')) return 'mma';
+    if (lower.includes('/soccer') || lower.includes('/football') || lower.includes('soccer')) return 'soccer';
+    if (lower.includes('/f1/') || lower.includes('formula 1') || lower.includes('f1') || lower.includes('nascar')) return 'f1';
+    if (lower.includes('/ncaa/') || lower.includes('ncaa')) return 'ncaa';
+    return 'sports';
+  }
+
+  private inferLiveState(title: string, statusText: string, sectionTitle: string): boolean {
+    const liveState = this.extractLiveState(title, statusText);
+    if (liveState.isLive) return true;
+    const haystack = `${statusText || ''} ${title || ''} ${sectionTitle || ''}`.toLowerCase();
+    return /\bin progress\b|\blive\b|\b1st half\b|\b2nd half\b|\bhalftime\b|\bquarter\b|\bq[1-4]\b|\bperiod\b|\bovertime\b|\binnings?\b|\btop \d+|\bbottom \d+|\bpractice\b|\bqualifying\b|\bsprint\b|\brace\b/i.test(haystack);
+  }
+
+  private parseCompetitionItem(itemHtml: string, fallbackImage: string, sectionTitle: string): any | null {
+    const hrefMatch = itemHtml.match(/<a[^>]+href=["']([^"']+)["']/i);
+    const url = this.toAbsoluteUrl(hrefMatch?.[1] || '');
+    if (!url) return null;
+
+    const anchorHtml = itemHtml.match(/<a[^>]*>([\s\S]*?)<\/a>/i)?.[1] || itemHtml;
+    const type = this.inferType(url, sectionTitle);
+
+    const compactTitle = this.cleanText(anchorHtml.match(/<div[^>]*>([\s\S]*?)<\/div>/i)?.[1] || '');
+    const compactMeta = this.cleanText(anchorHtml.match(/<small[^>]*>([\s\S]*?)<\/small>/i)?.[1] || '');
+
+    if (compactTitle) {
+      const liveState = this.extractLiveState(compactTitle, compactMeta, itemHtml);
+      return {
+        id: url,
+        title: compactTitle,
+        url,
+        type,
+        image: fallbackImage,
+        categoryImage: fallbackImage,
+        statusText: compactMeta,
+        liveState,
+        isLive: liveState.isLive || this.inferLiveState(compactTitle, compactMeta, sectionTitle),
+      };
+    }
+
+    const nameMatches = [...anchorHtml.matchAll(/<span[^>]*class=["'][^"']*name[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi)]
+      .map((m) => this.cleanText(m[1]))
+      .filter(Boolean);
+    const statusMatch = anchorHtml.match(/<(?:time|span)[^>]*class=["'][^"']*competition-cell-status[^"']*["'][^>]*>([\s\S]*?)<\/(?:time|span)>/i);
+    const status = this.cleanText(statusMatch?.[1] || '');
+    const sideA = nameMatches[0] || '';
+    const sideB = nameMatches[1] || '';
+    const title = [sideA, status, sideB].filter(Boolean).join(' ').trim() || this.cleanText(url);
+    const liveState = this.extractLiveState(title, status, itemHtml);
+
+    return {
+      id: url,
+      title,
+      url,
+      type,
+      image: fallbackImage,
+      categoryImage: fallbackImage,
+      statusText: status,
+      liveState,
+      isLive: liveState.isLive || this.inferLiveState(title, status, sectionTitle),
+    };
+  }
+
+  private parseStreamsFromHTML(html: string): any[] {
+    const sections: any[] = [];
+    const seen = new Set<string>();
+    const tournamentRegex = /<div\b[^>]*class=["'][^"']*top-tournament[^"']*["'][^>]*>/gi;
+    const starts = [...html.matchAll(tournamentRegex)].map((m) => m.index).filter((i) => Number.isFinite(i));
+
+    for (let i = 0; i < starts.length; i += 1) {
+      const block = html.slice(starts[i], starts[i + 1] || html.length);
+      const listOpenMatch = block.match(/<ul\b[^>]*class=["'][^"']*competitions[^"']*["'][^>]*>/i);
+      if (!listOpenMatch) continue;
+      const listStart = (listOpenMatch.index || 0) + listOpenMatch[0].length;
+      const listEnd = block.indexOf('</ul>', listStart);
+      const listBlock = listEnd >= 0 ? block.slice(listStart, listEnd) : block.slice(listStart);
+
+      const headingBlock = block.slice(0, listOpenMatch.index || 0);
+      const imageMatch = headingBlock.match(/<img[^>]+src=["']([^"']+)["']/i);
+      const titleMatch = headingBlock.match(/<h2[^>]*class=["'][^"']*league-name[^"']*["'][^>]*>([\s\S]*?)<\/h2>/i)
+        || headingBlock.match(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/i);
+      const sectionImage = this.toAbsoluteUrl(imageMatch?.[1] || '') || '';
+      const sectionTitle = this.cleanText(titleMatch?.[1] || 'Live Streams');
+
+      const itemMatches = [...listBlock.matchAll(/<li\b[\s\S]*?<\/li>/gi)];
+      for (const match of itemMatches) {
+        const parsed = this.parseCompetitionItem(match[0], sectionImage, sectionTitle);
+        if (!parsed) continue;
+        if (seen.has(parsed.url)) continue;
+        seen.add(parsed.url);
+        sections.push({ ...parsed, sectionTitle, tournamentImage: sectionImage });
+      }
+    }
+    return sections;
+  }
+
+  private async fetchCategoryStreams(url: string): Promise<any[]> {
+    const response = await fetch(url, { headers: this.buildHeaders(url) });
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    const html = await this.fetchLeanHtml(url, this.homeUrl, {
+      maxBytes: 900 * 1024,
+      stopWhen: (text: string) => /<\/html>/i.test(text),
+    });
+    return this.parseStreamsFromHTML(html);
+  }
+
+  private async fetchAllStreams(): Promise<any[]> {
+    const urls = [this.homeUrl, this.index18Url];
+    const results = await Promise.allSettled(urls.map((url) => this.fetchCategoryStreams(url)));
+    const fulfilled = results.filter((r) => r.status === 'fulfilled').map((r) => (r as PromiseFulfilledResult<any[]>).value);
+    return this.mergeStreams(fulfilled);
+  }
+
+  private mergeStreams(streamGroups: any[][]): any[] {
+    const merged: any[] = [];
+    const seen = new Set<string>();
+    for (const group of streamGroups) {
+      for (const stream of group) {
+        const key = stream.url || stream.id;
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push(stream);
+      }
+    }
+    return merged;
+  }
+
+  private getDeepProbeCache(streamId: string): (DeepProbeResult & { probedAt: number }) | null {
+    const cached = this.deepProbeCache.get(streamId);
+    if (!cached) return null;
+    if (Date.now() - cached.probedAt > this.DEEP_PROBE_TTL_MS) {
+      this.deepProbeCache.delete(streamId);
+      return null;
+    }
+    return cached;
+  }
+
+  private setDeepProbeCache(streamId: string, data: DeepProbeResult): void {
+    this.deepProbeCache.set(streamId, { ...data, probedAt: Date.now() });
+  }
+
+  async deepProbeStream(streamUrl: string): Promise<DeepProbeResult> {
+    const probeId = String(streamUrl || '').trim();
+    if (!probeId) return { canonicalEventDate: '', countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: '' };
+
+    const cached = this.getDeepProbeCache(probeId);
+    if (cached) return cached;
+
+    if (this.probeInFlight.has(probeId)) return this.probeInFlight.get(probeId)!;
+
+    const promise = (async (): Promise<DeepProbeResult> => {
+      try {
+        const html = await this.fetchLeanHtml(probeId, this.homeUrl, {
+          maxBytes: 256 * 1024,
+          stopWhen: (text: string) => /<\/html>/i.test(text) || /<iframe[^>]+src=["'][^"']+["']/i.test(text),
+        });
+
+        const result: DeepProbeResult = { canonicalEventDate: '', countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: '' };
+
+        const dateText = html.match(/<img[^>]+>\s*<span[^>]*>(\d{4}-\d{2}-\d{2})<\/span>/i)
+          || html.match(/<[^>]*class=["'][^"']*date[^"']*["'][^>]*>([^<]*\d{4}-\d{2}-\d{2}[^<]*)<\/[^>]*>/i)
+          || html.match(/>(\d{4}-\d{2}-\d{2})</i);
+        if (dateText?.[1]) result.canonicalEventDate = dateText[1].trim();
+
+        const countdownMatch = html.match(/\b(\d{2}):(\d{2}):(\d{2})\b/);
+        if (countdownMatch) {
+          const h = parseInt(countdownMatch[1], 10);
+          const m = parseInt(countdownMatch[2], 10);
+          const s = parseInt(countdownMatch[3], 10);
+          result.countdownSeconds = (h * 3600) + (m * 60) + s;
+          result.isLocked = true;
+          result.lockReason = 'countdown-timer';
+        }
+
+        const hasM3u8 = /src\s*[:=]\s*["']?[^"'\s]*\.m3u8/i.test(html)
+          || /(?:file|source|manifest|streamUrl)\s*[:=]\s*["']?[^"'\s]*\.m3u8/i.test(html)
+          || /https?:\/\/[^"'\s]+\.m3u8(?:\?[^"'\s]*)?/i.test(html);
+        const pageTextContent = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+        const hasInProgressText = /\bIN\s*PROGRESS\b|\b2ND\s*QUARTER\b|\b1ST\s*QUARTER\b|\b3RD\s*QUARTER\b|\b4TH\s*QUARTER\b|\b1ST\s*HALF\b|\b2ND\s*HALF\b|\bHALFTIME\b|\bOVERTIME\b/i.test(pageTextContent);
+        const hasLiveScore = /<span[^>]*class=["'][^"']*score[^"']*["'][^>]*>\s*\d+\s*<\/span>/i.test(html);
+        if (hasM3u8 || (hasInProgressText && hasLiveScore)) {
+          result.hasActiveStream = true;
+          result.isLive = true;
+          result.isLocked = false;
+          result.lockReason = 'early-broadcast';
+        }
+
+        this.setDeepProbeCache(probeId, result);
+        return result;
+      } catch (err: any) {
+        console.warn(`[BuffStreams] Deep probe failed for ${probeId}:`, err?.message || err);
+        return { canonicalEventDate: '', countdownSeconds: -1, hasActiveStream: false, isLive: false, isLocked: false, lockReason: 'probe-error' };
+      } finally {
+        this.probeInFlight.delete(probeId);
+      }
+    })();
+
+    this.probeInFlight.set(probeId, promise);
+    return promise;
+  }
+
+  async batchDeepProbe(streams: any[]): Promise<any[]> {
+    const targets = streams.filter((s) => s?.url && !this.getDeepProbeCache(s.url));
+    if (!targets.length) return streams;
+
+    for (let i = 0; i < targets.length; i += this.DEEP_PROBE_CONCURRENCY) {
+      const batch = targets.slice(i, i + this.DEEP_PROBE_CONCURRENCY);
+      await Promise.allSettled(batch.map((s) => this.deepProbeStream(s.url)));
+    }
+
+    return streams.map((stream) => {
+      const probe = this.getDeepProbeCache(stream.url);
+      if (!probe) return stream;
+      const enriched = { ...stream };
+      if (probe.canonicalEventDate) enriched.canonicalEventDate = probe.canonicalEventDate;
+      if (Number.isFinite(probe.countdownSeconds) && probe.countdownSeconds >= 0) {
+        enriched.countdownSeconds = probe.countdownSeconds;
+      }
+      if (probe.hasActiveStream) {
+        enriched.hasActiveStream = true;
+        enriched.isLive = true;
+        enriched.isLocked = false;
+      }
+      if (probe.isLocked && probe.lockReason === 'countdown-timer') {
+        enriched.isLocked = true;
+        enriched.lockReason = probe.lockReason;
+      }
+      return enriched;
+    });
+  }
+
+  override async search(query: string, options?: { date?: string }): Promise<any[]> {
+    try {
+      const raw = String(query || '').trim().toLowerCase();
+      let streams: any[];
+
+      if (!raw || raw === 'all') {
+        streams = await this.fetchAllStreams();
+      } else {
+        const categoryKey = raw.replace(/^category:/, '');
+        const urls: string[] = [];
+        if (categoryKey === 'fighting') {
+          urls.push(this.categoryPages.boxing, this.categoryPages.mma, this.index18Url);
+        } else if (this.categoryPages[categoryKey]) {
+          urls.push(this.categoryPages[categoryKey]);
+        } else {
+          urls.push(this.homeUrl);
+        }
+        const results = await Promise.allSettled(urls.map((url) => this.fetchCategoryStreams(url)));
+        streams = this.mergeStreams(results.filter((r) => r.status === 'fulfilled').map((r) => (r as PromiseFulfilledResult<any[]>).value));
+
+        if (categoryKey === 'fighting') {
+          streams = streams.filter((s) => /\/(?:boxing|mma|ufc|pfl|wwe)\b|title-game\/(?:boxing|mma|ufc|pfl|wwe)|\b(?:boxing|mma|ufc|pfl|wwe|bkfc|bellator|one fight|fighting championship)\b/i.test(`${s.url || ''} ${s.title || ''} ${s.sectionTitle || ''}`));
+        } else if (raw && !raw.startsWith('category:')) {
+          streams = streams.filter((s) => `${s.title} ${s.statusText || ''} ${s.type} ${s.sectionTitle || ''}`.toLowerCase().includes(raw));
+        }
+      }
+
+      const probeLimit = 24;
+      const toProbe = streams.slice(0, probeLimit);
+      if (toProbe.length) {
+        streams = await this.batchDeepProbe(streams);
+      }
+
+      return streams;
+    } catch (error: any) {
+      console.error('Error in BuffStreams search:', error);
+      return [];
+    }
+  }
+
+  override async fetchMediaInfo(mediaId: string): Promise<IMovieInfo> {
+    const url = this.toAbsoluteUrl(mediaId) || mediaId;
+    try {
+      const html = await this.fetchLeanHtml(url, this.homeUrl, {
+        maxBytes: 700 * 1024,
+        stopWhen: (text: string) => /<\/html>/i.test(text),
+      });
+
+      const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+      const title = titleMatch?.[1]?.replace(/\s*-\s*Buffstreams\s*$/i, '').trim() || 'BuffStreams Event';
+
+      const embedUrl = this.extractEmbedUrl(html, url);
+
+      let canonicalEventDate = '';
+      const dateText = html.match(/<img[^>]+>\s*<span[^>]*>(\d{4}-\d{2}-\d{2})<\/span>/i)
+        || html.match(/<[^>]*class=["'][^"']*date[^"']*["'][^>]*>([^<]*\d{4}-\d{2}-\d{2}[^<]*)<\/[^>]*>/i)
+        || html.match(/>(\d{4}-\d{2}-\d{2})</i);
+      if (dateText?.[1]) canonicalEventDate = dateText[1].trim();
+
+      let countdownSeconds = -1;
+      let lockReason = '';
+      const countdownMatch = html.match(/\b(\d{2}):(\d{2}):(\d{2})\b/);
+      if (countdownMatch) {
+        countdownSeconds = (parseInt(countdownMatch[1], 10) * 3600) + (parseInt(countdownMatch[2], 10) * 60) + parseInt(countdownMatch[3], 10);
+        lockReason = 'countdown-timer';
+      }
+
+      const hasM3u8InPage = /src\s*[:=]\s*["']?[^"'\s]*\.m3u8/i.test(html)
+        || /(?:file|source|manifest|streamUrl)\s*[:=]\s*["']?[^"'\s]*\.m3u8/i.test(html)
+        || /https?:\/\/[^"'\s]+\.m3u8(?:\?[^"'\s]*)?/i.test(html);
+      const pageTextCheck = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      const hasInProgressCheck = /\bIN\s*PROGRESS\b|\b2ND\s*QUARTER\b|\b1ST\s*QUARTER\b|\b3RD\s*QUARTER\b|\b4TH\s*QUARTER\b|\b1ST\s*HALF\b|\b2ND\s*HALF\b|\bHALFTIME\b|\bOVERTIME\b/i.test(pageTextCheck);
+      const hasLiveScoreCheck = /<span[^>]*class=["'][^"']*score[^"']*["'][^>]*>\s*\d+\s*<\/span>/i.test(html);
+      const hasActiveStream = hasM3u8InPage || (hasInProgressCheck && hasLiveScoreCheck);
+      if (hasActiveStream) lockReason = 'early-broadcast';
+
+      const liveState = this.extractLiveState(title, '', html);
+
+      return {
+        id: url,
+        title,
+        url,
+        embedUrl: embedUrl || undefined,
+        sport: this.inferType(url, title),
+        eventDate: canonicalEventDate || undefined,
+        status: liveState.periodText || (hasActiveStream ? 'LIVE' : 'UPCOMING'),
+        teams: [],
+        scores: [],
+        awayScore: null,
+        homeScore: null,
+      } as IMovieInfo;
+    } catch (error: any) {
+      console.error('Error in BuffStreams fetchMediaInfo:', error);
+      throw error;
+    }
+  }
+
+  override async fetchEpisodeSources(episodeId: string): Promise<ISource> {
+    const pageUrl = this.toAbsoluteUrl(episodeId) || episodeId;
+    try {
+      const html = await this.fetchLeanHtml(pageUrl, this.homeUrl, {
+        maxBytes: 700 * 1024,
+        stopWhen: (text: string) => /<\/html>/i.test(text) || /<iframe[^>]+src=["'][^"']+["']/i.test(text),
+      });
+
+      const embedUrl = this.extractEmbedUrl(html, pageUrl);
+      if (!embedUrl) return { sources: [], headers: {} } as ISource;
+
+      const embedHtml = await this.fetchLeanHtml(embedUrl, pageUrl, {
+        maxBytes: 384 * 1024,
+        stopWhen: (text: string) => /(?:window\.atob|source\s*:|\.m3u8|load-playlist|\/playlist\/)/i.test(text),
+      });
+
+      const hlsUrl = this.extractHlsFromEmbed(embedHtml);
+      if (!hlsUrl) return { sources: [], headers: {}, embedUrl } as ISource;
+
+      return {
+        sources: [{ url: hlsUrl, quality: 'auto', isM3U8: true, isDirect: true }],
+        headers: this.buildHeaders(pageUrl),
+        embedUrl,
+      } as ISource;
+    } catch (error: any) {
+      console.error('Error in BuffStreams fetchEpisodeSources:', error);
+      return { sources: [], headers: {} } as ISource;
+    }
+  }
+
+  override async fetchEpisodeServers(_: string): Promise<IEpisodeServer[]> {
+    return [];
+  }
+
+  private extractEmbedUrl(html: string, pageUrl: string): string | null {
+    const source = String(html || '');
+    const candidates: string[] = [];
+    const push = (value: string) => {
+      const raw = String(value || '').trim();
+      if (!raw || candidates.includes(raw)) return;
+      candidates.push(raw);
+    };
+
+    const iframePatterns = [
+      /<iframe[^>]+id=["']cx-iframe["'][^>]+src=["']([^"']+)["']/i,
+      /<iframe[^>]+data-src=["']([^"']+)["'][^>]*>/i,
+      /<iframe[^>]+src=["']([^"']+)["'][^>]*>/i,
+      /data-iframe=["']([^"']+)["']/i,
+      /src=["']([^"']+(?:embed|iframe|player)[^"']*)["']/i,
+    ];
+    for (const pattern of iframePatterns) {
+      const match = source.match(pattern);
+      if (match?.[1]) push(match[1]);
+    }
+
+    const scriptUrlPatterns = [
+      /window\.location\s*=\s*["']([^"']+)["']/i,
+      /src\s*:\s*["']([^"']+)["']/i,
+      /source\s*:\s*["']([^"']+)["']/i,
+      /file\s*:\s*["']([^"']+)["']/i,
+      /url\s*:\s*["']([^"']+)["']/i,
+      /iframe\s*:\s*["']([^"']+)["']/i,
+      /['"](https?:\/\/[^'"\s>]+(?:embed|playlist|m3u8|load-playlist)[^'"\s>]*)['"]/i,
+    ];
+    for (const pattern of scriptUrlPatterns) {
+      const match = source.match(pattern);
+      if (match?.[1]) push(match[1]);
+    }
+
+    for (const candidate of candidates) {
+      const resolved = this.toAbsoluteUrl(candidate, pageUrl);
+      if (resolved && /^https?:\/\//i.test(resolved)) return resolved;
+    }
+    return null;
+  }
+
+  private extractHlsFromEmbed(html: string): string | null {
+    const decodeIfUrl = (value: string): string | null => {
+      try {
+        const decoded = Buffer.from(String(value || '').trim(), 'base64').toString('utf8').trim();
+        if (/^https?:\/\//i.test(decoded)) return decoded;
+      } catch { /* */ }
+      return null;
+    };
+
+    const directAtobMatch = html.match(/source\s*:\s*window\.atob\(\s*['"]([^'"]+)['"]\s*\)/i);
+    if (directAtobMatch?.[1]) {
+      const decoded = decodeIfUrl(directAtobMatch[1]);
+      if (decoded) return decoded;
+    }
+
+    for (const match of html.matchAll(/window\.atob\(\s*['"]([^'"]+)['"]\s*\)/gi)) {
+      const decoded = decodeIfUrl(match[1]);
+      if (decoded) return decoded;
+    }
+
+    const directSourceMatch = html.match(/source\s*:\s*['"]([^'"]+)['"]/i);
+    if (directSourceMatch?.[1] && /^https?:\/\//i.test(directSourceMatch[1])) return directSourceMatch[1];
+
+    const playlistMatch = html.match(/https?:\/\/[^'"\s]+(?:load-playlist|\.m3u8|\/playlist\/[^'"\s]+)/i);
+    if (playlistMatch?.[0]) return playlistMatch[0];
+
+    for (const match of html.matchAll(/['"](https?:\/\/[^'"]+)['"]/gi)) {
+      if (/load-playlist|\.m3u8|\/playlist\//i.test(match[1])) return match[1];
+    }
+
+    return null;
+  }
+}
+
+export default BuffStreams;

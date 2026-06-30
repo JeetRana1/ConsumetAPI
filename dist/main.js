@@ -24,6 +24,7 @@ const light_novels_1 = __importDefault(require("./routes/light-novels"));
 const movies_1 = __importDefault(require("./routes/movies"));
 const meta_1 = __importDefault(require("./routes/meta"));
 const news_1 = __importDefault(require("./routes/news"));
+const sports_1 = __importDefault(require("./routes/sports"));
 const chalk_1 = __importDefault(require("chalk"));
 const utils_1 = __importDefault(require("./utils"));
 const streamable_1 = require("./utils/streamable");
@@ -138,6 +139,7 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     await fastify.register(movies_1.default, { prefix: '/movies' });
     await fastify.register(meta_1.default, { prefix: '/meta' });
     await fastify.register(news_1.default, { prefix: '/news' });
+    await fastify.register(sports_1.default, { prefix: '/sports' });
     await fastify.register(utils_1.default, { prefix: '/utils' });
     (0, watchTogether_1.registerWatchTogether)(fastify);
     const appendQueryParam = (path, key, value) => {
@@ -151,30 +153,32 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         const safeReferer = String(referer || '').trim();
         return appendQueryParam(path, 'referer', safeReferer);
     };
-    const buildProxyPath = (targetUrl, referer, isSegment = false) => {
+    const buildProxyPath = (targetUrl, referer, isSegment = false, baseUrl) => {
         const raw = String(targetUrl || '').trim();
         if (!raw)
             return raw;
-        if (/^\/proxy\/hls\//i.test(raw))
-            return appendRefererParam(raw, referer);
+        if (/^\/proxy\/hls\//i.test(raw)) {
+            const path = appendRefererParam(raw, referer);
+            return baseUrl ? `${baseUrl}${path}` : path;
+        }
         try {
             const parsed = new URL(raw);
             let path = `/proxy/hls/${parsed.host}${parsed.pathname}${parsed.search}`;
             path = appendRefererParam(path, referer);
             path = appendQueryParam(path, 'segment', isSegment ? '1' : '');
-            return path;
+            return baseUrl ? `${baseUrl}${path}` : path;
         }
         catch {
             return raw;
         }
     };
-    const rewriteHlsManifest = (manifest, manifestUrl, referer) => {
+    const rewriteHlsManifest = (manifest, manifestUrl, referer, baseUrl) => {
         const resolveAndProxy = (value, isSegment = false) => {
             const trimmed = String(value || '').trim();
             if (!trimmed)
                 return trimmed;
             try {
-                return buildProxyPath(new URL(trimmed, manifestUrl).toString(), referer, isSegment);
+                return buildProxyPath(new URL(trimmed, manifestUrl).toString(), referer, isSegment, baseUrl);
             }
             catch {
                 return trimmed;
@@ -217,6 +221,8 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             return true;
         if (incomingRange)
             return false;
+        if (/(?:ok\.ru|okcdn\.ru)\/.*\/video\//i.test(url))
+            return true;
         return /\/(?:hls|oppai)\//i.test(url);
     };
     const fetchHlsResource = async (url, isManifest, incomingRange, referer) => {
@@ -285,7 +291,10 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             // Some AnimeSalt variant playlists are extensionless /hls/<token> URLs, so
             // content sniffing is required instead of relying only on ".m3u8".
             if (responseIsManifest) {
-                const content = rewriteHlsManifest(responseText, url, requestReferer);
+                const hostHeader = request.headers.host || 'localhost:3000';
+                const protocol = request.headers['x-forwarded-proto'] || 'http';
+                const baseUrl = `${protocol}://${hostHeader}`;
+                const content = rewriteHlsManifest(responseText, url, requestReferer, baseUrl);
                 reply.header('Content-Type', 'application/vnd.apple.mpegurl');
                 reply.header('Access-Control-Allow-Origin', '*');
                 reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
