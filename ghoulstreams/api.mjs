@@ -188,29 +188,38 @@ const setCache = (key, data, isSeg) => {
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
 const hostTimers = new Map();
-const HOST_MIN_INTERVAL = 200;
+const HOST_MIN_INTERVAL = 2000;
+const host429Count = new Map();
 
 const rateLimitHost = async (url) => {
   const host = new URL(url).hostname;
+  const hasBeen429 = (host429Count.get(host) || 0) > 0;
+  if (!hasBeen429) return;
   const last = hostTimers.get(host) || 0;
   const now = Date.now();
   const elapsed = now - last;
   if (elapsed < HOST_MIN_INTERVAL) {
-    await wait(HOST_MIN_INTERVAL - elapsed);
+    const waitTime = HOST_MIN_INTERVAL - elapsed;
+    await wait(waitTime);
   }
   hostTimers.set(host, Date.now());
 };
 
 const fetchWithRetry = async (url, options, maxRetries = 3) => {
-  for (let i = 0; i < maxRetries; i++) {
+  for (let i = 0; i <= maxRetries; i++) {
     await rateLimitHost(url);
     const resp = await fetch(url, options);
     if (resp.status !== 429) return resp;
-    const delay = (i + 1) * 1500;
-    console.warn(`429 on ${url.split('?')[0].slice(-40)}, retry ${i+1}/${maxRetries} in ${delay}ms`);
-    await wait(delay);
+    const host = new URL(url).hostname;
+    host429Count.set(host, (host429Count.get(host) || 0) + 1);
+    if (i < maxRetries) {
+      const delay = (i + 1) * 2000;
+      console.warn(`429 on ${url.split('?')[0].slice(-40)}, retry ${i+1}/${maxRetries} in ${delay}ms`);
+      await wait(delay);
+    }
   }
-  return fetch(url, options);
+  const fallbackResp = new Response(null, { status: 503, statusText: 'Upstream rate limited - retry later' });
+  return fallbackResp;
 };
 
 const passthroughHeaders = (headers = {}) => {
@@ -675,7 +684,14 @@ app.get('/api/media-proxy', async (req, res) => {
         if (cached) {
             res.status(200);
             res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*' });
-            return res.send(cached.body);
+            return res.send(Buffer.from(cached.body));
+        }
+        const cachedRawPlaylist = getFromCache('raw:' + cacheKey);
+        if (cachedRawPlaylist) {
+            const rewritten = rewritePlaylist(cachedRawPlaylist.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl);
+            res.status(200);
+            res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=2, stale-while-revalidate=10' });
+            return res.send(rewritten);
         }
 
         const { response, usedReferer } = await fetchWithRefererFallbacks(normalizedTargetUrl, referer, rootReferer, req.headers.range);
@@ -688,9 +704,10 @@ app.get('/api/media-proxy', async (req, res) => {
 
         if (isPlaylist) {
             const body = await response.text();
+            setCache('raw:' + cacheKey, { body, type: 'text/plain' }, false);
             const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl);
             res.status(response.status);
-            res.set({ ...passthroughHeaders(response.headers), 'Content-Type': 'application/vnd.apple.mpegurl' });
+            res.set({ ...passthroughHeaders(response.headers), 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'public, max-age=2, stale-while-revalidate=10' });
             return res.send(rewritten);
         }
 
