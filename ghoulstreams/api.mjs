@@ -163,6 +163,56 @@ const getAvailabilitySnapshot = () => {
     return snapshot;
 };
 
+const mediaCache = new Map();
+const MEDIA_CACHE_MAX = 150;
+const MEDIA_CACHE_TTL_SEGMENT = 3600_000;
+const MEDIA_CACHE_TTL_PLAYLIST = 2_000;
+const MEDIA_CACHE_MAX_SIZE = 5_000_000;
+const isSegment = (url) => /\.ts(?:[?#]|$)/i.test(url);
+
+const getFromCache = (key) => {
+  const entry = mediaCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expires) { mediaCache.delete(key); return null; }
+  return entry.data;
+};
+
+const setCache = (key, data, isSeg) => {
+  if (mediaCache.size >= MEDIA_CACHE_MAX) {
+    const oldest = mediaCache.entries().next().value;
+    if (oldest) mediaCache.delete(oldest[0]);
+  }
+  mediaCache.set(key, { data, expires: Date.now() + (isSeg ? MEDIA_CACHE_TTL_SEGMENT : MEDIA_CACHE_TTL_PLAYLIST) });
+};
+
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+const hostTimers = new Map();
+const HOST_MIN_INTERVAL = 200;
+
+const rateLimitHost = async (url) => {
+  const host = new URL(url).hostname;
+  const last = hostTimers.get(host) || 0;
+  const now = Date.now();
+  const elapsed = now - last;
+  if (elapsed < HOST_MIN_INTERVAL) {
+    await wait(HOST_MIN_INTERVAL - elapsed);
+  }
+  hostTimers.set(host, Date.now());
+};
+
+const fetchWithRetry = async (url, options, maxRetries = 3) => {
+  for (let i = 0; i < maxRetries; i++) {
+    await rateLimitHost(url);
+    const resp = await fetch(url, options);
+    if (resp.status !== 429) return resp;
+    const delay = (i + 1) * 1500;
+    console.warn(`429 on ${url.split('?')[0].slice(-40)}, retry ${i+1}/${maxRetries} in ${delay}ms`);
+    await wait(delay);
+  }
+  return fetch(url, options);
+};
+
 const passthroughHeaders = (headers = {}) => {
     const out = {};
     const contentType = headers['content-type'] || headers.get?.('content-type');
@@ -228,7 +278,7 @@ const fetchWithRefererFallbacks = async (targetUrl, referer, rootReferer, rangeH
 
     let lastResponse = null;
     for (const candidate of candidates) {
-        const response = await fetch(targetUrl, { headers: buildMediaHeaders(candidate, rangeHeader) });
+        const response = await fetchWithRetry(targetUrl, { headers: buildMediaHeaders(candidate, rangeHeader) });
         if (response.ok || response.status === 206) {
             return { response, usedReferer: candidate };
         }
@@ -619,6 +669,15 @@ app.get('/api/media-proxy', async (req, res) => {
             normalizedTargetUrl = parsed.toString();
         } catch { /* keep original if URL parse fails */ }
 
+        const cacheKey = normalizedTargetUrl;
+        const isSeg = isSegment(normalizedTargetUrl);
+        const cached = getFromCache(cacheKey);
+        if (cached) {
+            res.status(200);
+            res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*' });
+            return res.send(cached.body);
+        }
+
         const { response, usedReferer } = await fetchWithRefererFallbacks(normalizedTargetUrl, referer, rootReferer, req.headers.range);
 
         if (!response || (!response.ok && response.status !== 206)) {
@@ -635,14 +694,13 @@ app.get('/api/media-proxy', async (req, res) => {
             return res.send(rewritten);
         }
 
+        const rawBody = await response.arrayBuffer();
+        const contentType = response.headers.get('content-type') || 'application/octet-stream';
+        if (isSeg && rawBody.byteLength < MEDIA_CACHE_MAX_SIZE) setCache(cacheKey, { body: rawBody, type: contentType }, true);
+
         res.status(response.status);
-        res.set(passthroughHeaders(response.headers));
-        if (response.body) {
-            for await (const chunk of response.body) {
-                res.write(chunk);
-            }
-        }
-        res.end();
+        res.set({ ...passthroughHeaders(response.headers), 'Access-Control-Allow-Origin': '*' });
+        res.send(Buffer.from(rawBody));
     } catch (error) {
         console.error('Error in /api/media-proxy:', error);
         res.status(500).send(error.message);
