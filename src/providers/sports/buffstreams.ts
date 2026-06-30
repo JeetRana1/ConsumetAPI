@@ -225,10 +225,89 @@ export class BuffStreams extends MovieParser {
     if (lower.includes('/nfl/') || lower.includes('nfl')) return 'nfl';
     if (lower.includes('/boxing/') || lower.includes('boxing')) return 'boxing';
     if (lower.includes('/mma/') || lower.includes('mma') || lower.includes('ufc')) return 'mma';
-    if (lower.includes('/soccer') || lower.includes('/football') || lower.includes('soccer')) return 'soccer';
+    if (lower.includes('/soccer') || lower.includes('/football') || lower.includes('soccer') || lower.includes('world cup') || lower.includes('world championship')) return 'soccer';
     if (lower.includes('/f1/') || lower.includes('formula 1') || lower.includes('f1') || lower.includes('nascar')) return 'f1';
     if (lower.includes('/ncaa/') || lower.includes('ncaa')) return 'ncaa';
     return 'sports';
+  }
+
+  private extractExactTime(value: string): string {
+    const match = String(value || '').match(/\b\d{1,2}:\d{2}\s*(?:AM|PM)(?:\s*(?:ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|PT|PST|PDT|UTC|GMT|CEST|CET|BST|IST|MSK|JST|AEST|AEDT|AWST|NZST|NZDT|SGT|HKT|CST\s+Asia|EEST|EET|WEST|WET|CAT|EAT|SAST|BRT|ART|CLT)?)?\b/i);
+    return match ? match[0].replace(/\s+/g, ' ').trim() : '';
+  }
+
+  private buildEasternEventStartMs(exactTime: string, canonicalDate: string): number {
+    const dateMatch = String(canonicalDate || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const timeMatch = String(exactTime || '').match(/(\d{1,2}):(\d{2})\s*(AM|PM)(?:\s*(ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|PT|PST|PDT|UTC|GMT))?/i);
+    if (!dateMatch || !timeMatch) return 0;
+
+    let hours = Number(timeMatch[1]) % 12;
+    const minutes = Number(timeMatch[2]);
+    if (String(timeMatch[3] || '').toUpperCase() === 'PM') hours += 12;
+
+    const year = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]) - 1;
+    const day = Number(dateMatch[3]);
+    const zoneToken = String(timeMatch[4] || 'UTC').toUpperCase().replace(/\s+ASIA/i, '');
+    const zoneOffsetHours =
+      zoneToken.startsWith('CT') ? 5 :
+      zoneToken.startsWith('MT') ? 6 :
+      zoneToken.startsWith('PT') ? 7 :
+      (zoneToken === 'UTC' || zoneToken === 'GMT') ? 0 :
+      zoneToken === 'CEST' || zoneToken === 'CET' || zoneToken === 'BST' || zoneToken === 'WEST' || zoneToken === 'WET' || zoneToken === 'CAT' || zoneToken === 'EAT' || zoneToken === 'SAST' ? 2 :
+      zoneToken === 'EEST' || zoneToken === 'EET' || zoneToken === 'IST' || zoneToken === 'MSK' ? 3 :
+      zoneToken === 'SGT' || zoneToken === 'HKT' || zoneToken === 'AWST' || zoneToken === 'CST' ? 8 :
+      zoneToken === 'JST' || zoneToken === 'KST' ? 9 :
+      zoneToken === 'AEST' || zoneToken === 'AEDT' || zoneToken === 'NZST' || zoneToken === 'NZDT' ? 11 :
+      zoneToken === 'BRT' || zoneToken === 'ART' ? 3 :
+      zoneToken === 'CLT' ? 4 :
+      zoneToken === 'ET' || zoneToken === 'EST' || zoneToken === 'EDT' ? 4 :
+      0;
+    const resultMs = Date.UTC(year, month, day, hours + zoneOffsetHours, minutes, 0, 0);
+    const isAmTime = String(timeMatch[3] || '').toUpperCase() === 'AM' && hours < 12;
+    if (isAmTime && resultMs < Date.now() - (8 * 60 * 60 * 1000)) {
+      const nextDayMs = Date.UTC(year, month, day + 1, hours + zoneOffsetHours, minutes, 0, 0);
+      if (nextDayMs > Date.now() - (2 * 60 * 60 * 1000)) return nextDayMs;
+    }
+    return resultMs;
+  }
+
+  private fillSiblingScheduleData(streams: any[]): any[] {
+    const sectionDateMap = new Map<string, string>();
+    for (const stream of streams) {
+      const key = String(stream?.sectionTitle || '').trim().toLowerCase();
+      const canonicalDate = String(stream?.canonicalEventDate || '').trim();
+      if (key && canonicalDate && !sectionDateMap.has(key)) sectionDateMap.set(key, canonicalDate);
+    }
+
+    return streams.map((stream) => {
+      const sectionKey = String(stream?.sectionTitle || '').trim().toLowerCase();
+      const canonicalDate = String(stream?.canonicalEventDate || sectionDateMap.get(sectionKey) || '').trim();
+      const exactTime = this.extractExactTime(stream?.liveState?.exactTime || stream?.statusText || stream?.title || '');
+      if (canonicalDate && exactTime) {
+        const computedMs = this.buildEasternEventStartMs(exactTime, canonicalDate);
+        const existingMs = Number(stream?.eventStartUtcMs || 0);
+        if (computedMs && computedMs > Date.now() - (2 * 60 * 60 * 1000)) {
+          const shouldOverride = !existingMs;
+          if (shouldOverride) {
+            const countdownSeconds = Math.floor((computedMs - Date.now()) / 1000);
+            return {
+              ...stream,
+              canonicalEventDate: canonicalDate || stream?.canonicalEventDate,
+              eventStartUtcMs: computedMs,
+              countdownSeconds,
+              isLocked: countdownSeconds > 0 ? true : stream?.isLocked,
+              lockReason: countdownSeconds > 0 ? 'countdown-timer' : stream?.lockReason,
+            };
+          }
+        }
+      }
+      if (stream?.canonicalEventDate && Number(stream?.eventStartUtcMs || 0) > 0) return stream;
+      if (canonicalDate && !stream?.canonicalEventDate) {
+        return { ...stream, canonicalEventDate: canonicalDate };
+      }
+      return stream;
+    });
   }
 
   private inferLiveState(title: string, statusText: string, sectionTitle: string): boolean {
@@ -506,7 +585,7 @@ export class BuffStreams extends MovieParser {
         streams = await this.batchDeepProbe(streams);
       }
 
-      return streams;
+      return this.fillSiblingScheduleData(streams);
     } catch (error: any) {
       console.error('Error in BuffStreams search:', error);
       return [];
