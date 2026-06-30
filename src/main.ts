@@ -22,6 +22,7 @@ import movies from './routes/movies';
 import meta from './routes/meta';
 import news from './routes/news';
 import sports from './routes/sports';
+import ghoulstreams from './routes/ghoulstreams';
 import chalk from 'chalk';
 import Utils from './utils';
 import { normalizeStreamLinks } from './utils/streamable';
@@ -163,6 +164,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   await fastify.register(meta, { prefix: '/meta' });
   await fastify.register(news, { prefix: '/news' });
   await fastify.register(sports, { prefix: '/sports' });
+  await fastify.register(ghoulstreams);
   await fastify.register(Utils, { prefix: '/utils' });
   registerWatchTogether(fastify);
 

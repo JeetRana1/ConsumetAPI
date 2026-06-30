@@ -25,6 +25,7 @@ const movies_1 = __importDefault(require("./routes/movies"));
 const meta_1 = __importDefault(require("./routes/meta"));
 const news_1 = __importDefault(require("./routes/news"));
 const sports_1 = __importDefault(require("./routes/sports"));
+const ghoulstreams_1 = __importDefault(require("./routes/ghoulstreams"));
 const chalk_1 = __importDefault(require("chalk"));
 const utils_1 = __importDefault(require("./utils"));
 const streamable_1 = require("./utils/streamable");
@@ -140,6 +141,7 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     await fastify.register(meta_1.default, { prefix: '/meta' });
     await fastify.register(news_1.default, { prefix: '/news' });
     await fastify.register(sports_1.default, { prefix: '/sports' });
+    await fastify.register(ghoulstreams_1.default);
     await fastify.register(utils_1.default, { prefix: '/utils' });
     (0, watchTogether_1.registerWatchTogether)(fastify);
     const appendQueryParam = (path, key, value) => {
