@@ -208,7 +208,18 @@ const rateLimitHost = async (url) => {
 const fetchWithRetry = async (url, options, maxRetries = 3) => {
   for (let i = 0; i <= maxRetries; i++) {
     await rateLimitHost(url);
-    const resp = await fetch(url, options);
+    let resp;
+    try {
+      resp = await fetch(url, options);
+    } catch (err) {
+      console.warn(`fetch failed on ${url.split('?')[0].slice(-40)}: ${err.cause?.code || err.message}, retry ${i+1}/${maxRetries}`);
+      if (i < maxRetries) {
+        await wait(2000);
+        continue;
+      }
+      const fallbackResp = new Response(null, { status: 503, statusText: 'Upstream unreachable' });
+      return fallbackResp;
+    }
     if (resp.status !== 429) return resp;
     const host = new URL(url).hostname;
     host429Count.set(host, (host429Count.get(host) || 0) + 1);
