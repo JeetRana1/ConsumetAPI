@@ -253,6 +253,7 @@ const rewritePlaylist = (text, playlistUrl, rootReferer) => {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('#')) return line;
             const absolute = new URL(trimmed, playlistUrl).toString();
+            if (/[?&](?:X-Amz-Signature|X-Amz-Expires|Expires|Policy|Signature)[=]/i.test(absolute)) return absolute;
             return proxiedMediaUrl(absolute, playlistUrl, rootReferer || playlistUrl);
         })
         .join('\n');
