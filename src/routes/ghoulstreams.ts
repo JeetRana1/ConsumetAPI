@@ -1,5 +1,7 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import axios from 'axios';
+import http from 'node:http';
+import https from 'node:https';
 import { BuffStreams } from '../providers/sports/buffstreams';
 import { Racing } from '../providers/sports/racing';
 import { LiveSportHelper } from '../providers/sports/livesport-helper';
@@ -15,6 +17,67 @@ const watchLookupCache = new Map<string, CacheEntry<any>>();
 const watchLookupInFlight = new Map<string, Promise<any>>();
 
 const isAbsoluteHttpUrl = (value: string) => /^https?:\/\//i.test(String(value || '').trim());
+
+const getQueryValue = (query: Record<string, unknown>, ...keys: string[]) => {
+  const map = new Map<string, unknown>();
+  for (const [key, value] of Object.entries(query || {})) map.set(String(key).toLowerCase(), value);
+  for (const key of keys) {
+    const value = map.get(String(key).toLowerCase());
+    if (value !== undefined && value !== null) return String(value).trim();
+  }
+  return '';
+};
+
+const dropConditionalHeaders = (headers: Record<string, string>) => {
+  const filtered: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase();
+    if (lower === 'if-none-match' || lower === 'if-modified-since' || lower === 'if-match' || lower === 'if-unmodified-since') {
+      continue;
+    }
+    filtered[key] = value;
+  }
+  return filtered;
+};
+
+const setCorsHeaders = (reply: FastifyReply) => {
+  reply.header('Access-Control-Allow-Origin', '*');
+  reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, Origin, Referer, User-Agent, Accept, Accept-Encoding');
+  reply.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  reply.header('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Type');
+};
+
+const streamUpstreamToReply = async (targetUrl: string, headers: Record<string, string>, reply: FastifyReply) => {
+  const url = new URL(targetUrl);
+  const client = url.protocol === 'https:' ? https : http;
+
+  return await new Promise<void>((resolve, reject) => {
+    const req = client.request(
+      targetUrl,
+      {
+        method: 'GET',
+        headers,
+      },
+      (res) => {
+        reply.status(res.statusCode || 200);
+        for (const [key, value] of Object.entries(res.headers)) {
+          if (value === undefined) continue;
+          if (key.toLowerCase() === 'transfer-encoding') continue;
+          reply.header(key, value as any);
+        }
+        setCorsHeaders(reply);
+
+        res.on('error', reject);
+        reply.raw.on('close', () => req.destroy());
+        res.pipe(reply.raw);
+        res.on('end', resolve);
+      },
+    );
+
+    req.on('error', reject);
+    req.end();
+  });
+};
 
 const pruneAvailability = () => {
   const now = Date.now();
@@ -194,47 +257,35 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
 
   fastify.get('/api/media-proxy', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const query = request.query as { url?: string; URL?: string; referer?: string; Referer?: string; root_referer?: string; rootReferer?: string };
-      const targetUrl = String(query.url || query.URL || '').trim();
-      const referer = String(query.referer || query.Referer || query.root_referer || query.rootReferer || '').trim();
+      const query = request.query as Record<string, unknown>;
+      const targetUrl = getQueryValue(query, 'url', 'URL');
+      const referer = getQueryValue(query, 'referer', 'Referer');
+      const rootReferer = getQueryValue(query, 'root_referer', 'rootReferer', 'root-referer');
+      const origin = getQueryValue(query, 'origin', 'Origin');
+      const userAgent = getQueryValue(query, 'user_agent', 'user-agent', 'User-Agent');
       if (!targetUrl || !isAbsoluteHttpUrl(targetUrl)) {
         return reply.status(400).send('Invalid or missing target URL parameter');
       }
-      
-      // Proxy the content directly instead of redirecting to avoid browser request cancellation
-      try {
-        const headers = {
-          'Referer': referer || 'https://streameeeeee.site/',
-          'User-Agent': USER_AGENT,
-          Accept: 'application/vnd.apple.mpegurl,text/plain,*/*;q=0.8',
-          'Accept-Encoding': 'identity',
-        };
-        
-        const response = await axios.get(targetUrl, {
-          headers,
-          timeout: 15000,
-          responseType: 'arraybuffer',
-          validateStatus: (status: number) => status < 500,
-        });
 
-        // Set appropriate headers
-        reply.header('Access-Control-Allow-Origin', '*');
-        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
-        reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
-        reply.header('Content-Type', response.headers['content-type'] || 'application/octet-stream');
-        if (response.headers['content-length']) {
-          reply.header('Content-Length', response.headers['content-length']);
-        }
-        if (response.headers['content-range']) {
-          reply.header('Content-Range', response.headers['content-range']);
-        }
-        
-        return reply.status(response.status).send(Buffer.from(response.data));
-      } catch (proxyError: any) {
-        console.error('[media-proxy] Error fetching:', targetUrl, proxyError.message);
-        return reply.status(500).send('Failed to fetch media');
-      }
+      const outboundHeaders = dropConditionalHeaders(
+        {
+          Referer: referer || rootReferer || 'https://streameeeeee.site/',
+          ...(origin ? { Origin: origin } : {}),
+          'User-Agent': userAgent || USER_AGENT,
+          Accept: 'application/vnd.apple.mpegurl,text/plain,video/*,audio/*,*/*;q=0.8',
+          'Accept-Encoding': 'identity',
+          ...(request.headers.range ? { Range: String(request.headers.range) } : {}),
+        } as Record<string, string>,
+      );
+
+      setCorsHeaders(reply);
+      reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      reply.header('Pragma', 'no-cache');
+      reply.header('Expires', '0');
+
+      return await streamUpstreamToReply(targetUrl, outboundHeaders, reply);
     } catch (error: any) {
+      setCorsHeaders(reply);
       return reply.status(500).send(error?.message || 'media_proxy_failed');
     }
   });

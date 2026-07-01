@@ -1434,6 +1434,20 @@ class BuffStreams extends Provider {
         }
         console.warn(`[Stream.js] Backend RPC returned no sources for ${eventUrl}: ${backendResult?.error || 'empty_sources'} — extracting from embed page`);
 
+        try {
+            const verified = await this.verifyEventSources(eventUrl);
+            const verifiedCount = Array.isArray(verified?.sources) ? verified.sources.length : 0;
+            if (verifiedCount > 0) {
+                console.log(`[Stream.js] Direct verification returned ${verifiedCount} source(s) for ${eventUrl}`);
+                return verified;
+            }
+            if (verified?.error) {
+                console.warn(`[Stream.js] Direct verification failed for ${eventUrl}: ${verified.error}`);
+            }
+        } catch (error) {
+            console.warn(`[Stream.js] Direct verification threw for ${eventUrl}:`, error?.message || error);
+        }
+
         const embedFallback = backendResult?.embedUrl || '';
         if (!embedFallback) return backendResult;
 

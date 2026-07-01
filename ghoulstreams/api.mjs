@@ -250,6 +250,28 @@ const passthroughHeaders = (headers = {}) => {
     return out;
 };
 
+const stripConditionalHeaders = (headers = {}) => {
+    const out = {};
+    for (const [key, value] of Object.entries(headers || {})) {
+        const lower = String(key || '').toLowerCase();
+        if (lower === 'if-none-match' || lower === 'if-modified-since' || lower === 'if-match' || lower === 'if-unmodified-since') {
+            continue;
+        }
+        if (value !== undefined && value !== null && value !== '') {
+            out[key] = value;
+        }
+    }
+    return out;
+};
+
+const proxyNoStoreHeaders = () => ({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'Surrogate-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*'
+});
+
 const proxiedMediaUrl = (targetUrl, referer, rootReferer) => {
     const params = new URLSearchParams({ url: targetUrl });
     if (referer) params.set('referer', referer);
@@ -269,7 +291,7 @@ const rewritePlaylist = (text, playlistUrl, rootReferer) => {
         .join('\n');
 };
 
-const buildMediaHeaders = (referer, rangeHeader) => ({
+const buildMediaHeaders = (referer, rangeHeader) => stripConditionalHeaders({
     'User-Agent': USER_AGENT,
     'Accept': '*/*',
     'Accept-Language': 'en-US,en;q=0.9',
@@ -280,7 +302,7 @@ const buildMediaHeaders = (referer, rangeHeader) => ({
     ...(rangeHeader ? { 'Range': rangeHeader } : {})
 });
 
-const fetchWithRefererFallbacks = async (targetUrl, referer, rootReferer, rangeHeader) => {
+const fetchWithRefererFallbacks = async (targetUrl, referer, rootReferer, rangeHeader, isSeg = false) => {
     const candidates = [];
     const pushUnique = (value) => {
         if (!value || !isAbsoluteHttpUrl(value) || candidates.includes(value)) return;
@@ -301,6 +323,15 @@ const fetchWithRefererFallbacks = async (targetUrl, referer, rootReferer, rangeH
         const response = await fetchWithRetry(targetUrl, { headers: buildMediaHeaders(candidate, rangeHeader) });
         if (response.ok || response.status === 206) {
             return { response, usedReferer: candidate };
+        }
+        if (isSeg && response.status === 404) {
+            await wait(200);
+            const retryResponse = await fetchWithRetry(targetUrl, { headers: buildMediaHeaders(candidate, rangeHeader) });
+            if (retryResponse.ok || retryResponse.status === 206) {
+                return { response: retryResponse, usedReferer: candidate };
+            }
+            lastResponse = retryResponse;
+            if (retryResponse.status !== 403 && retryResponse.status !== 404) break;
         }
         lastResponse = response;
         if (response.status !== 403 && response.status !== 404) break;
@@ -694,18 +725,18 @@ app.get('/api/media-proxy', async (req, res) => {
         const cached = getFromCache(cacheKey);
         if (cached) {
             res.status(200);
-            res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*' });
+            res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', ...proxyNoStoreHeaders() });
             return res.send(Buffer.from(cached.body));
         }
         const cachedRawPlaylist = getFromCache('raw:' + cacheKey);
         if (cachedRawPlaylist) {
             const rewritten = rewritePlaylist(cachedRawPlaylist.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl);
             res.status(200);
-            res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=2, stale-while-revalidate=10' });
+            res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
             return res.send(rewritten);
         }
 
-        const { response, usedReferer } = await fetchWithRefererFallbacks(normalizedTargetUrl, referer, rootReferer, req.headers.range);
+        const { response, usedReferer } = await fetchWithRefererFallbacks(normalizedTargetUrl, referer, rootReferer, req.headers.range, isSeg);
 
         if (!response || (!response.ok && response.status !== 206)) {
             return res.status(response?.status || 502).send(`Upstream media error: ${response?.status || 502}`);
@@ -718,16 +749,16 @@ app.get('/api/media-proxy', async (req, res) => {
             setCache('raw:' + cacheKey, { body, type: 'text/plain' }, false);
             const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl);
             res.status(response.status);
-            res.set({ ...passthroughHeaders(response.headers), 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'public, max-age=2, stale-while-revalidate=10' });
+            res.set({ ...passthroughHeaders(response.headers), 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
             return res.send(rewritten);
         }
 
         const rawBody = await response.arrayBuffer();
         const contentType = response.headers.get('content-type') || 'application/octet-stream';
-        if (isSeg && rawBody.byteLength < MEDIA_CACHE_MAX_SIZE) setCache(cacheKey, { body: rawBody, type: contentType }, true);
+        if (rawBody.byteLength < MEDIA_CACHE_MAX_SIZE) setCache(cacheKey, { body: rawBody, type: contentType }, isSeg);
 
         res.status(response.status);
-        res.set({ ...passthroughHeaders(response.headers), 'Access-Control-Allow-Origin': '*' });
+        res.set({ ...passthroughHeaders(response.headers), ...proxyNoStoreHeaders() });
         res.send(Buffer.from(rawBody));
     } catch (error) {
         console.error('Error in /api/media-proxy:', error);
