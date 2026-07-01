@@ -6,9 +6,13 @@ import { LiveSportHelper } from '../providers/sports/livesport-helper';
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const AVAILABILITY_TTL_MS = 1000 * 60 * 45;
+const WATCH_LOOKUP_TTL_MS = 1000 * 20;
 
 type StreamAvailability = { isLive: boolean; reason: string; updatedAt: number };
 const streamAvailability = new Map<string, StreamAvailability>();
+type CacheEntry<T> = { expiresAt: number; value: T };
+const watchLookupCache = new Map<string, CacheEntry<any>>();
+const watchLookupInFlight = new Map<string, Promise<any>>();
 
 const isAbsoluteHttpUrl = (value: string) => /^https?:\/\//i.test(String(value || '').trim());
 
@@ -32,6 +36,30 @@ const setStreamAvailability = (id: string, isLive: boolean, reason = '') => {
   const key = String(id || '').trim();
   if (!key) return;
   streamAvailability.set(key, { isLive: Boolean(isLive), reason: String(reason || ''), updatedAt: Date.now() });
+};
+
+const getCachedLookup = async <T>(key: string, fetcher: () => Promise<T>, ttlMs = WATCH_LOOKUP_TTL_MS): Promise<T> => {
+  const cacheKey = String(key || '').trim();
+  const now = Date.now();
+  const cached = watchLookupCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value as T;
+  }
+  const inflight = watchLookupInFlight.get(cacheKey);
+  if (inflight) return inflight as Promise<T>;
+
+  const promise = (async () => {
+    try {
+      const value = await fetcher();
+      watchLookupCache.set(cacheKey, { expiresAt: Date.now() + ttlMs, value });
+      return value;
+    } finally {
+      watchLookupInFlight.delete(cacheKey);
+    }
+  })();
+
+  watchLookupInFlight.set(cacheKey, promise);
+  return promise;
 };
 
 const buildHlsProxyPath = (targetUrl: string, referer = '') => {
@@ -95,8 +123,9 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
     try {
       const { id } = (request.body as { id?: string }) || {};
       const target = String(id || '').trim();
+      const cacheKey = `fetchInfo:${target}`;
       const isRacing = /fullraces|formula-1|nascar|indycar|motogp|racing/i.test(target);
-      const info = isRacing ? await racing.fetchMediaInfo(target) : await buffstreams.fetchMediaInfo(target);
+      const info = await getCachedLookup(cacheKey, async () => (isRacing ? await racing.fetchMediaInfo(target) : await buffstreams.fetchMediaInfo(target)));
       return reply.send({ success: true, data: info });
     } catch (error: any) {
       return reply.send({ success: false, error: error?.message || 'fetch_info_failed' });
@@ -107,8 +136,9 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
     try {
       const { eventUrl, embedUrl } = (request.body as { eventUrl?: string; embedUrl?: string }) || {};
       const target = String(eventUrl || embedUrl || '').trim();
+      const cacheKey = `fetchSources:${target}`;
       const isRacing = /fullraces|formula-1|nascar|indycar|motogp|racing/i.test(target);
-      const data = isRacing ? await racing.fetchEpisodeSources(target) : await buffstreams.fetchEpisodeSources(target);
+      const data = await getCachedLookup(cacheKey, async () => (isRacing ? await racing.fetchEpisodeSources(target) : await buffstreams.fetchEpisodeSources(target)));
       if (Array.isArray((data as any)?.sources) && (data as any).sources.length > 0) {
         setStreamAvailability(target, true, 'source_available');
       }
@@ -123,7 +153,8 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
       const { title, sport } = (request.body as { title?: string; sport?: string }) || {};
       if (!title) return reply.send({ success: false, error: 'title required' });
       const client = axios.create();
-      const data = await LiveSportHelper.getLiveStats(client, String(title), String(sport || 'sports'));
+      const cacheKey = `matchDetails:${String(title || '').trim()}:${String(sport || 'sports').trim().toLowerCase()}`;
+      const data = await getCachedLookup(cacheKey, async () => LiveSportHelper.getLiveStats(client, String(title), String(sport || 'sports')));
       return reply.send({ success: true, data: data || null });
     } catch (error: any) {
       return reply.send({ success: true, data: null, error: error?.message || 'match_details_failed' });
