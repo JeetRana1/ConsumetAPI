@@ -263,7 +263,7 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     fastify.get('/proxy/hls/*', async (request, reply) => {
         const rawRequestUrl = String(request.url || '');
         const [rawPath, rawQuery = ''] = rawRequestUrl.split('?');
-        const wildcardPath = decodeURIComponent(rawPath.replace(/^\/proxy\/hls\//i, '')).trim();
+        const wildcardPath = rawPath.replace(/^\/proxy\/hls\//i, '').trim();
         const refererParam = String(new URLSearchParams(rawQuery).get('referer') || '').trim();
         const segmentParam = String(new URLSearchParams(rawQuery).get('segment') || '').trim() === '1';
         const passthroughQuery = rawQuery

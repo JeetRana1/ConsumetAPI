@@ -169,7 +169,40 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
       if (!targetUrl || !isAbsoluteHttpUrl(targetUrl)) {
         return reply.status(400).send('Invalid or missing target URL parameter');
       }
-      return reply.redirect(buildHlsProxyPath(targetUrl, referer));
+      
+      // Proxy the content directly instead of redirecting to avoid browser request cancellation
+      try {
+        const headers = {
+          'Referer': referer || 'https://streameeeeee.site/',
+          'User-Agent': USER_AGENT,
+          Accept: 'application/vnd.apple.mpegurl,text/plain,*/*;q=0.8',
+          'Accept-Encoding': 'identity',
+        };
+        
+        const response = await axios.get(targetUrl, {
+          headers,
+          timeout: 15000,
+          responseType: 'arraybuffer',
+          validateStatus: (status: number) => status < 500,
+        });
+
+        // Set appropriate headers
+        reply.header('Access-Control-Allow-Origin', '*');
+        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+        reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        reply.header('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+        if (response.headers['content-length']) {
+          reply.header('Content-Length', response.headers['content-length']);
+        }
+        if (response.headers['content-range']) {
+          reply.header('Content-Range', response.headers['content-range']);
+        }
+        
+        return reply.status(response.status).send(Buffer.from(response.data));
+      } catch (proxyError: any) {
+        console.error('[media-proxy] Error fetching:', targetUrl, proxyError.message);
+        return reply.status(500).send('Failed to fetch media');
+      }
     } catch (error: any) {
       return reply.status(500).send(error?.message || 'media_proxy_failed');
     }
