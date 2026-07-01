@@ -35,11 +35,14 @@ const setStreamAvailability = (id: string, isLive: boolean, reason = '') => {
 };
 
 const buildHlsProxyPath = (targetUrl: string, referer = '') => {
-  const parsed = new URL(targetUrl);
-  const query = new URLSearchParams(parsed.search);
-  if (referer) query.set('referer', referer);
-  const search = query.toString();
-  return `/proxy/hls/${parsed.host}${parsed.pathname}${search ? `?${search}` : ''}`;
+  const hostEnd = targetUrl.indexOf('/', targetUrl.indexOf('://') + 3);
+  if (hostEnd === -1) return `/proxy/hls/${new URL(targetUrl).host}/`;
+  const qsStart = targetUrl.indexOf('?', hostEnd);
+  const rawPath = qsStart >= 0 ? targetUrl.slice(hostEnd, qsStart) : targetUrl.slice(hostEnd);
+  const rawQuery = qsStart >= 0 ? targetUrl.slice(qsStart + 1) : '';
+  const host = new URL(targetUrl).host;
+  const newQuery = referer ? `${rawQuery}${rawQuery ? '&' : ''}referer=${encodeURIComponent(referer)}` : rawQuery;
+  return `/proxy/hls/${host}${rawPath}${newQuery ? `?${newQuery}` : ''}`;
 };
 
 const noStoreHeaders = async (_request: FastifyRequest, reply: FastifyReply) => {
