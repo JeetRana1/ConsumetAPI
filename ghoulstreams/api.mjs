@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Readable } from 'stream';
 import { load as cheerioLoad } from 'cheerio';
 import BuffStreams from './Stream.mjs';
 
@@ -944,11 +945,20 @@ app.get('/api/media-proxy', async (req, res) => {
         // Stream directly instead of buffering — this is the key fix.
         // Without streaming, every segment is fully downloaded before the
         // browser receives a single byte, adding ~2-3s of latency.
+        // Uses Readable.fromWeb for Node 18+ compatibility (for await on
+        // ReadableStream requires Node 20+).
         try {
-            for await (const chunk of response.body) {
-                res.write(chunk);
+            if (response.body) {
+                await new Promise((resolve, reject) => {
+                    Readable.fromWeb(response.body)
+                        .on('error', reject)
+                        .pipe(res)
+                        .on('error', reject)
+                        .on('finish', resolve);
+                });
+            } else {
+                res.end();
             }
-            res.end();
         } catch {
             if (!res.headersSent) res.status(502).send('Stream failed');
         }
