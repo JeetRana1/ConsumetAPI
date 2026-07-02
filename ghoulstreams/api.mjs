@@ -940,29 +940,16 @@ app.get('/api/media-proxy', async (req, res) => {
         res.status(response.status);
         res.set({ ...passthroughHeaders(response.headers), ...proxyNoStoreHeaders() });
 
-        if (isSeg) {
-            try {
-                const buffer = await response.arrayBuffer();
-                res.end(Buffer.from(buffer));
-            } catch {
-                if (!res.headersSent) res.status(502).send('Segment fetch failed');
-            }
-            return;
-        }
-
-        const contentType = response.headers.get('content-type') || 'application/octet-stream';
-        let buffer;
+        // Stream directly instead of buffering — this is the key fix.
+        // Without streaming, every segment is fully downloaded before the
+        // browser receives a single byte, adding ~2-3s of latency.
         try {
-            buffer = await response.arrayBuffer();
-            res.end(Buffer.from(buffer));
+            for await (const chunk of response.body) {
+                res.write(chunk);
+            }
+            res.end();
         } catch {
-            if (!res.headersSent) res.status(502).send('Media fetch failed');
-            return;
-        }
-
-        const totalBytes = buffer.byteLength;
-        if (totalBytes > 0 && totalBytes < MEDIA_CACHE_MAX_SIZE) {
-            setCache(cacheKey, { body: buffer, type: contentType }, false);
+            if (!res.headersSent) res.status(502).send('Stream failed');
         }
     } catch (error) {
         console.error('Error in /api/media-proxy:', error);
