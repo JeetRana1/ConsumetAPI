@@ -283,21 +283,26 @@ const proxyNoStoreHeaders = () => ({
     'Access-Control-Allow-Origin': '*'
 });
 
-const proxiedMediaUrl = (targetUrl, referer, rootReferer) => {
+const proxiedMediaUrl = (targetUrl, referer, rootReferer, baseUrl) => {
     const params = new URLSearchParams({ url: targetUrl });
     if (referer) params.set('referer', referer);
     if (rootReferer) params.set('root_referer', rootReferer);
-    return `/api/media-proxy?${params.toString()}`;
+    const path = `/api/media-proxy?${params.toString()}`;
+    if (baseUrl) {
+        const base = String(baseUrl).replace(/\/+$/, '');
+        return `${base}${path}`;
+    }
+    return path;
 };
 
-const rewritePlaylist = (text, playlistUrl, rootReferer) => {
+const rewritePlaylist = (text, playlistUrl, rootReferer, baseUrl) => {
     const lines = String(text || '').split(/\r?\n/);
     return lines
         .map((line) => {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('#')) return line;
             const absolute = new URL(trimmed, playlistUrl).toString();
-            return proxiedMediaUrl(absolute, playlistUrl, rootReferer || playlistUrl);
+            return proxiedMediaUrl(absolute, playlistUrl, rootReferer || playlistUrl, baseUrl);
         })
         .join('\n');
 };
@@ -674,9 +679,14 @@ app.post('/api/fetchSources', async (req, res) => {
         const target = eventUrl || embedUrl;
         const isBackground = Boolean(background);
         console.log('Fetching sources for:', target);
-        const sources = isBackground
-            ? await provider.verifyEventSources(target)
-            : await provider.fetchSources(target);
+        const timeoutMs = 20000;
+        const result = await Promise.race([
+            isBackground
+                ? provider.verifyEventSources(target)
+                : provider.fetchSources(target),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Fetch sources timed out')), timeoutMs))
+        ]);
+        const sources = result || { sources: [], error: 'empty_result' };
         console.log('Got sources:', sources.sources.length);
         if (sources.sources.length > 0) {
             setStreamAvailability(target, true, 'source_available');
@@ -686,10 +696,15 @@ app.post('/api/fetchSources', async (req, res) => {
         res.json({ success: true, data: sources });
     } catch (error) {
         console.error('Error in /api/fetchSources:', error);
+        const timedOut = error.message === 'Fetch sources timed out';
         if (!req.body?.background) {
             setStreamAvailability(req.body?.eventUrl || req.body?.embedUrl, false, error.message);
         }
-        res.json({ success: false, error: error.message });
+        if (timedOut) {
+            res.json({ success: false, error: 'Source fetch timed out' });
+        } else {
+            res.json({ success: false, error: error.message });
+        }
     }
 });
 
@@ -853,6 +868,7 @@ app.get('/api/media-proxy', async (req, res) => {
         const cleanHeaders = stripConditionalHeaders(outgoingHeaders);
 
         const isSeg = isSegment(normalizedTargetUrl);
+        const proxyBaseUrl = process.env.API_PUBLIC_URL || `${req.protocol || req.headers['x-forwarded-proto'] || 'https'}://${req.get('host')}`;
 
         const fetchUpstream = async () => {
             const candidates = [];
@@ -881,7 +897,7 @@ app.get('/api/media-proxy', async (req, res) => {
         }
         const cachedRawPlaylist = getFromCache('raw:' + cacheKey);
         if (cachedRawPlaylist) {
-            const rewritten = rewritePlaylist(cachedRawPlaylist.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl);
+            const rewritten = rewritePlaylist(cachedRawPlaylist.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl, proxyBaseUrl);
             res.status(200);
             res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
             return res.send(rewritten);
@@ -892,7 +908,7 @@ app.get('/api/media-proxy', async (req, res) => {
         if (!response || (!response.ok && response.status !== 206)) {
             const staleRaw = getFromCache('raw:' + cacheKey, true);
             if (staleRaw) {
-                const rewritten = rewritePlaylist(staleRaw.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl);
+                const rewritten = rewritePlaylist(staleRaw.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl, proxyBaseUrl);
                 res.status(200);
                 res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
                 return res.send(rewritten);
@@ -911,7 +927,7 @@ app.get('/api/media-proxy', async (req, res) => {
         if (isPlaylist) {
             const body = await response.text();
             setCache('raw:' + cacheKey, { body, type: 'text/plain' }, false);
-            const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl);
+            const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl, proxyBaseUrl);
             res.status(response.status);
             res.set({ ...passthroughHeaders(response.headers), 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
             return res.send(rewritten);
