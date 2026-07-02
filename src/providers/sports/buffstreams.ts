@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio';
 import { MovieParser } from '@consumet/extensions/dist/models';
 import { TvType, IMovieInfo, ISource, IEpisodeServer } from '@consumet/extensions';
+import { extractDirectSourcesWithPlaywright } from '../../utils/browserRuntimeExtractor';
 
 type DeepProbeResult = {
   canonicalEventDate: string;
@@ -678,18 +679,42 @@ export class BuffStreams extends MovieParser {
       });
 
       const embedUrl = this.extractEmbedUrl(html, pageUrl);
-      if (!embedUrl) return { sources: [], headers: {} } as ISource;
+      const candidateUrls = this.collectEmbedCandidates(html, pageUrl);
+      if (embedUrl) candidateUrls.unshift(embedUrl);
 
-      const embedHtml = await this.fetchLeanHtml(embedUrl, pageUrl, {
-        maxBytes: 384 * 1024,
-        stopWhen: (text: string) => /(?:window\.atob|source\s*:|\.m3u8|load-playlist|\/playlist\/)/i.test(text),
-      });
+      const uniqueCandidates = [...new Set(candidateUrls.map((candidate) => this.toAbsoluteUrl(candidate, pageUrl) || '').filter(Boolean))];
+      const gatheredSources: Array<{ url: string; quality: string; isM3U8: boolean; isDirect: boolean; headers?: Record<string, string> }> = [];
 
-      const hlsUrl = this.extractHlsFromEmbed(embedHtml);
-      if (!hlsUrl) return { sources: [], headers: {}, embedUrl } as ISource;
+      for (const candidate of uniqueCandidates) {
+        const embedHtml = await this.fetchLeanHtml(candidate, pageUrl, {
+          maxBytes: 384 * 1024,
+          stopWhen: (text: string) => /(?:window\.atob|source\s*:|\.m3u8|load-playlist|\/playlist\/)/i.test(text),
+        }).catch(() => '');
+
+        const directSources = this.extractSourcesFromEmbedHtml(embedHtml, candidate, pageUrl);
+        for (const source of directSources) {
+          gatheredSources.push(source);
+        }
+      }
+
+      if (!gatheredSources.length && embedUrl) {
+        const playwrightSources = await extractDirectSourcesWithPlaywright(embedUrl, pageUrl, 12000).catch(() => []);
+        for (const source of playwrightSources) {
+          if (!source?.url) continue;
+          gatheredSources.push({
+            url: source.url,
+            quality: source.quality || 'auto',
+            isM3U8: Boolean(source.isM3U8),
+            isDirect: true,
+          });
+        }
+      }
+
+      const deduped = this.dedupeSources(gatheredSources);
+      if (!deduped.length) return { sources: [], headers: {}, embedUrl } as ISource;
 
       return {
-        sources: [{ url: hlsUrl, quality: 'auto', isM3U8: true, isDirect: true }],
+        sources: deduped,
         headers: this.buildHeaders(pageUrl),
         embedUrl,
       } as ISource;
@@ -701,6 +726,101 @@ export class BuffStreams extends MovieParser {
 
   override async fetchEpisodeServers(_: string): Promise<IEpisodeServer[]> {
     return [];
+  }
+
+  private collectEmbedCandidates(html: string, pageUrl: string): string[] {
+    const source = String(html || '');
+    const candidates: string[] = [];
+    const push = (value: string) => {
+      const raw = String(value || '').trim();
+      if (!raw || candidates.includes(raw)) return;
+      candidates.push(raw);
+    };
+
+    const patterns = [
+      /<iframe[^>]+id=["']cx-iframe["'][^>]+src=["']([^"']+)["']/i,
+      /<iframe[^>]+data-src=["']([^"']+)["'][^>]*>/i,
+      /<iframe[^>]+src=["']([^"']+)["'][^>]*>/i,
+      /data-iframe=["']([^"']+)["']/i,
+      /src=["']([^"']+(?:embed|iframe|player|server)[^"']*)["']/i,
+      /src\s*:\s*["']([^"']+)["']/i,
+      /source\s*:\s*["']([^"']+)["']/i,
+      /file\s*:\s*["']([^"']+)["']/i,
+      /url\s*:\s*["']([^"']+)["']/i,
+      /iframe\s*:\s*["']([^"']+)["']/i,
+      /['"](https?:\/\/[^'"\s>]+(?:embed|iframe|player|playlist|load-playlist|server|source)[^'"\s>]*)['"]/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = source.match(pattern);
+      if (match?.[1]) push(match[1]);
+    }
+
+    for (const match of source.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+      const href = String(match[1] || '');
+      const linkText = String(match[2] || '').toLowerCase();
+      if (/server|source|play|stream|watch|embed/i.test(href) || /server|source|play|stream/i.test(linkText)) {
+        push(href);
+      }
+    }
+
+    return candidates.map((candidate) => this.toAbsoluteUrl(candidate, pageUrl) || candidate).filter(Boolean);
+  }
+
+  private extractSourcesFromEmbedHtml(html: string, candidateUrl: string, pageUrl: string) {
+    const source = String(html || '');
+    const headers = this.buildHeaders(candidateUrl || pageUrl);
+    const out: Array<{ url: string; quality: string; isM3U8: boolean; isDirect: boolean; headers?: Record<string, string> }> = [];
+    const seen = new Set<string>();
+    const push = (url: string, quality = 'auto') => {
+      const clean = String(url || '').trim();
+      if (!clean || seen.has(clean)) return;
+      seen.add(clean);
+      out.push({
+        url: clean,
+        quality,
+        isM3U8: /\.m3u8(\?|$)/i.test(clean) || /\/m3u8-proxy\?/i.test(clean) || /\/playlist\//i.test(clean),
+        isDirect: true,
+        headers,
+      });
+    };
+
+    for (const match of source.matchAll(/https?:\/\/[^'"\s]+(?:load-playlist|\.m3u8|\/playlist\/[^'"\s]*)/gi)) {
+      push(match[0], 'auto');
+    }
+
+    for (const match of source.matchAll(/['"](https?:\/\/[^'"]+)['"]/gi)) {
+      if (/load-playlist|\.m3u8|\/playlist\//i.test(match[1])) push(match[1], 'auto');
+    }
+
+    const directAtobMatch = source.match(/source\s*:\s*window\.atob\(\s*['"]([^'"]+)['"]\s*\)/i);
+    if (directAtobMatch?.[1]) {
+      try {
+        const decoded = Buffer.from(String(directAtobMatch[1]).trim(), 'base64').toString('utf8').trim();
+        if (/^https?:\/\//i.test(decoded)) push(decoded, 'auto');
+      } catch { /* noop */ }
+    }
+
+    for (const match of source.matchAll(/window\.atob\(\s*['"]([^'"]+)['"]\s*\)/gi)) {
+      try {
+        const decoded = Buffer.from(String(match[1]).trim(), 'base64').toString('utf8').trim();
+        if (/^https?:\/\//i.test(decoded)) push(decoded, 'auto');
+      } catch { /* noop */ }
+    }
+
+    return out;
+  }
+
+  private dedupeSources(
+    sources: Array<{ url: string; quality: string; isM3U8: boolean; isDirect: boolean; headers?: Record<string, string> }>
+  ) {
+    const seen = new Set<string>();
+    return sources.filter((source) => {
+      const key = String(source?.url || '').trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   private extractEmbedUrl(html: string, pageUrl: string): string | null {

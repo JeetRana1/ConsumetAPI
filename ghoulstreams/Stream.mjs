@@ -1,4 +1,5 @@
 import { Provider } from './Provider.mjs';
+import { load as cheerioLoad } from 'cheerio';
 
 class BuffStreams extends Provider {
     constructor() {
@@ -1422,34 +1423,279 @@ class BuffStreams extends Provider {
         }
     }
 
+    async fetchServerButtonsFromPage(pageUrl) {
+        try {
+            const response = await fetch(pageUrl, {
+                headers: this.buildHeaders(pageUrl),
+                signal: AbortSignal.timeout(15000)
+            });
+            if (!response.ok) return { servers: [], embedUrl: '', error: `HTTP ${response.status}` };
+            const html = await response.text();
+
+            const pageOrigin = (() => { try { return new URL(pageUrl).origin; } catch { return ''; } })();
+            const $ = cheerioLoad(html);
+            const servers = [];
+            const seenUrls = new Set();
+
+            const streamSection = $(
+                '#live-stream-section, .streaming-section, .stream-block, ' +
+                '.live-streams-wrapper, .streams-container, .video-servers, ' +
+                '.server-navigation, .server-list, #server-list, #streams, ' +
+                '.new-table, #streams-table, .table-row, ' +
+                '[class*="server"], [class*="stream"], [id*="server"], [id*="stream"], ' +
+                '.watch-live, .live-servers, .stream-links, .game-streams'
+            ).first();
+            const container = streamSection.length ? streamSection : $('body');
+
+            const excludedNames = new Set(['thetvapp', 'crackstreams', 'methstreams', 'buffstream']);
+            const pushServer = (name, url, engine, quality) => {
+                const cleanName = String(name || '').replace(/\s+/g, ' ').trim();
+                let cleanUrl = String(url || '').replace(/&amp;/g, '&').trim();
+                if (!cleanName || cleanName.length > 60 || !cleanUrl) return;
+                if (cleanUrl.startsWith('//')) cleanUrl = 'https:' + cleanUrl;
+                if (!/^https?:\/\//i.test(cleanUrl) && pageOrigin) {
+                    try { cleanUrl = new URL(cleanUrl, pageOrigin).toString(); } catch { return; }
+                }
+                if (!/^https?:\/\//i.test(cleanUrl)) return;
+                if (seenUrls.has(cleanUrl)) return;
+                seenUrls.add(cleanUrl);
+                const nameLower = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (excludedNames.has(nameLower)) return;
+                servers.push({ name: cleanName, url: cleanUrl, engine: engine || 'iframe', quality: quality || 'auto' });
+            };
+
+            // 1) Parse table rows in #streams / .new-table (stream server list)
+            $('#streams table tbody tr, #streams .table-row, .new-table tbody tr, .new-table .table-row').each((_, el) => {
+                const $el = $(el);
+                const name = $el.find('.streamer-name, .mobile-name').text().trim() || $el.find('td:first').text().trim();
+                if (!name) return;
+                let url = '';
+                const link = $el.find('a.watch-btn, a[href]').first();
+                if (link.length) {
+                    url = link.attr('href') || '';
+                }
+                if (!url) {
+                    const onclick = $el.attr('onclick') || '';
+                    const m = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/i);
+                    if (m) url = m[1];
+                }
+                if (!url) return;
+                pushServer(name, url, 'iframe', 'auto');
+            });
+
+            // 2) General server button search (existing)
+            container.find('a, button, [role="button"], .server-btn, .stream-btn, [data-server], [data-stream]').each((_, el) => {
+                const $el = $(el);
+                let name = $el.attr('data-name') || $el.attr('data-server') || $el.attr('title') || $el.attr('aria-label') || $el.text().trim();
+                name = name.replace(/\s+/g, ' ').trim();
+                if (!name || name.length > 60 || seenUrls.has($el.attr('href') || $el.attr('data-src') || $el.attr('data-url') || '')) return;
+                let url = $el.attr('href') || $el.attr('data-src') || $el.attr('data-url') || $el.attr('data-iframe') || $el.attr('src') || '';
+                url = String(url).replace(/&amp;/g, '&').trim();
+                if (url.startsWith('//')) url = 'https:' + url;
+                if (!/^https?:\/\//i.test(url) && pageOrigin) {
+                    try { url = new URL(url, pageOrigin).toString(); } catch { return; }
+                }
+                if (!/^https?:\/\//i.test(url)) return;
+                if (seenUrls.has(url)) return;
+                seenUrls.add(url);
+
+                const onclick = $el.attr('onclick') || '';
+                let engine = 'hls';
+                const engineHint = String(name + ' ' + onclick).toLowerCase();
+                if (/iframe|embed|frame|player/i.test(engineHint)) engine = 'iframe';
+
+                const qualityHint = $el.find('.quality, .res, [class*="quality"], [class*="res"]').first().text().trim()
+                    || $el.attr('data-quality') || 'auto';
+                servers.push({ name, url, engine, quality: qualityHint });
+            });
+
+            // 3) Fallback: regex extraction from raw HTML for JS-rendered content
+            if (servers.length < 2) {
+                const streamUrlPattern = /(?:href|window\.open)\s*\(\s*['"](https?:\/\/[^'"]+(?:stream|embed|watch|live)[^'"]*)['"]/gi;
+                const namePattern = /(?:<span[^>]*class=["'][^"']*streamer-name[^"']*["'][^>]*>([\s\S]{0,80}?)<\/span>)/gi;
+                const names = [];
+                let m;
+                while ((m = namePattern.exec(html)) !== null) {
+                    const n = this.cleanText(m[1]);
+                    if (n && !names.includes(n)) names.push(n);
+                }
+                let idx2 = 0;
+                const streamUrls = [];
+                while ((m = streamUrlPattern.exec(html)) !== null) {
+                    const u = String(m[1]).replace(/&amp;/g, '&').trim();
+                    if (u && !streamUrls.includes(u)) {
+                        const name = names[idx2] || 'Server ' + (idx2 + 1);
+                        pushServer(name, u, 'iframe', 'auto');
+                        streamUrls.push(u);
+                        idx2++;
+                    }
+                }
+            }
+
+            let embedUrl = '';
+            $('iframe[id="cx-iframe"], iframe[src]').each((_, el) => {
+                const src = $(el).attr('src') || '';
+                if (src && !embedUrl) {
+                    embedUrl = src.replace(/&amp;/g, '&').trim();
+                    if (embedUrl.startsWith('//')) embedUrl = 'https:' + embedUrl;
+                }
+            });
+            if (!embedUrl) {
+                const m = html.match(/<iframe[^>]+id=["']cx-iframe["'][^>]+src=["']([^"']+)["']/i);
+                if (m) embedUrl = m[1].replace(/&amp;/g, '&').trim();
+            }
+            if (!embedUrl) {
+                $('frame[src]').each((_, el) => {
+                    const src = $(el).attr('src') || '';
+                    if (src && !embedUrl) {
+                        embedUrl = src.replace(/&amp;/g, '&').trim();
+                        if (embedUrl.startsWith('//')) embedUrl = 'https:' + embedUrl;
+                    }
+                });
+            }
+
+            return { servers, embedUrl, error: '' };
+        } catch (error) {
+            console.error(`[Stream.js] fetchServerButtonsFromPage failed for ${pageUrl}:`, error?.message || error);
+            return { servers: [], embedUrl: '', error: error.message };
+        }
+    }
+
     async fetchSources(eventUrl) {
+        const pageResult = await this.fetchServerButtonsFromPage(eventUrl);
+        const allSources = [];
+        const seen = new Set();
+
+        for (const server of pageResult.servers) {
+            const key = server.url;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const isM3u8 = /\.m3u8(\?|$)/i.test(server.url) || /load-playlist|\/playlist\//i.test(server.url);
+            allSources.push({
+                name: server.name,
+                url: server.url,
+                engine: server.engine,
+                quality: server.quality,
+                isM3U8: isM3u8,
+                isDirect: !isM3u8,
+                headers: this.buildHeaders(eventUrl)
+            });
+        }
+
+        if (pageResult.embedUrl && !seen.has(pageResult.embedUrl)) {
+            seen.add(pageResult.embedUrl);
+            const isM3u8 = /\.m3u8(\?|$)/i.test(pageResult.embedUrl) || /load-playlist|\/playlist\//i.test(pageResult.embedUrl);
+            allSources.push({
+                name: 'Embed',
+                url: pageResult.embedUrl,
+                engine: 'iframe',
+                quality: 'auto',
+                isM3U8: isM3u8,
+                isDirect: !isM3u8,
+                headers: this.buildHeaders(pageResult.embedUrl || eventUrl)
+            });
+
+            try {
+                const embedResp = await fetch(pageResult.embedUrl, {
+                    headers: this.buildHeaders(eventUrl),
+                    signal: AbortSignal.timeout(10000)
+                });
+                if (embedResp.ok) {
+                    const embedHtml = await embedResp.text();
+                    const hlsFromEmbed = this.extractAllSourcesFromEmbed(embedHtml, pageResult.embedUrl, eventUrl);
+                    for (const hlsSrc of hlsFromEmbed) {
+                        if (!seen.has(hlsSrc.url)) {
+                            seen.add(hlsSrc.url);
+                            allSources.push({
+                                name: 'HD Stream',
+                                url: hlsSrc.url,
+                                isM3U8: true,
+                                engine: 'hls',
+                                quality: hlsSrc.quality || 'auto',
+                                isM3U8: true,
+                                isDirect: true,
+                                headers: this.buildHeaders(eventUrl)
+                            });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn(`[Stream.js] Embed HLS extraction failed: ${err?.message || err}`);
+            }
+        }
+
+        const embedFetchTasks = pageResult.servers
+            .filter((s) => s.url && s.url !== pageResult.embedUrl)
+            .slice(0, 8)
+            .map(async (server, i) => {
+                try {
+                    const embedUrl = await this.resolveServerEmbed(server.url);
+                    if (!embedUrl || seen.has(embedUrl)) return;
+                    seen.add(embedUrl);
+                    const resp = await fetch(embedUrl, {
+                        headers: this.buildHeaders(eventUrl),
+                        signal: AbortSignal.timeout(8000)
+                    });
+                    if (!resp.ok) return;
+                    const html = await resp.text();
+                    const hlsList = this.extractAllSourcesFromEmbed(html, embedUrl, server.url);
+                    for (const hlsSrc of hlsList) {
+                        if (!seen.has(hlsSrc.url)) {
+                            seen.add(hlsSrc.url);
+                            allSources.push({
+                                name: server.name + ' HLS',
+                                url: hlsSrc.url,
+                                isM3U8: true,
+                                engine: 'hls',
+                                quality: hlsSrc.quality || 'auto',
+                                isDirect: true,
+                                headers: this.buildHeaders(eventUrl)
+                            });
+                        }
+                    }
+                } catch {
+                }
+            });
+        await Promise.allSettled(embedFetchTasks);
+
+        if (allSources.length > 0) {
+            console.log(`[Stream.js] Direct page extraction returned ${allSources.length} source(s) for ${eventUrl}`);
+            return {
+                sources: allSources,
+                subtitles: [],
+                headers: this.buildHeaders(eventUrl),
+                embedUrl: pageResult.embedUrl || ''
+            };
+        }
+
+        console.warn(`[Stream.js] No sources found on page for ${eventUrl}, falling back to backend RPC`);
         const backendResult = await BuffStreams.fetchSourcesFromBackend(
             eventUrl,
             this.backendApiBase
         );
-        const sourceCount = Array.isArray(backendResult?.sources) ? backendResult.sources.length : 0;
-        if (sourceCount > 0) {
-            console.log(`[Stream.js] Backend RPC returned ${sourceCount} source(s) for ${eventUrl}`);
-            return backendResult;
-        }
-        console.warn(`[Stream.js] Backend RPC returned no sources for ${eventUrl}: ${backendResult?.error || 'empty_sources'} — extracting from embed page`);
-
-        try {
-            const verified = await this.verifyEventSources(eventUrl);
-            const verifiedCount = Array.isArray(verified?.sources) ? verified.sources.length : 0;
-            if (verifiedCount > 0) {
-                console.log(`[Stream.js] Direct verification returned ${verifiedCount} source(s) for ${eventUrl}`);
-                return verified;
+        if (Array.isArray(backendResult?.sources) && backendResult.sources.length > 0) {
+            const enriched = backendResult.sources.map((s) => ({
+                ...s,
+                name: s.name || s.server || s.label || 'Source',
+                engine: s.engine || (s.isM3U8 ? 'hls' : 'iframe')
+            }));
+            const embedUrl = backendResult.embedUrl || '';
+            if (embedUrl && !enriched.some((s) => s.url === embedUrl)) {
+                enriched.push({
+                    name: 'Embed',
+                    url: embedUrl,
+                    engine: 'iframe',
+                    quality: 'auto',
+                    isM3U8: false,
+                    isDirect: false,
+                    headers: this.buildHeaders(embedUrl)
+                });
             }
-            if (verified?.error) {
-                console.warn(`[Stream.js] Direct verification failed for ${eventUrl}: ${verified.error}`);
-            }
-        } catch (error) {
-            console.warn(`[Stream.js] Direct verification threw for ${eventUrl}:`, error?.message || error);
+            return { ...backendResult, sources: enriched };
         }
 
         const embedFallback = backendResult?.embedUrl || '';
-        if (!embedFallback) return backendResult;
+        if (!embedFallback) return { sources: allSources, subtitles: [], headers: this.buildHeaders(eventUrl), embedUrl: '' };
 
         try {
             let embedOrigin = '';
@@ -1459,32 +1705,35 @@ class BuffStreams extends Provider {
                 : {};
 
             const embedResponse = await fetch(embedFallback, {
-                headers: {
-                    'User-Agent': this.userAgent,
-                    ...refererHeaders
-                },
+                headers: { 'User-Agent': this.userAgent, ...refererHeaders },
                 signal: AbortSignal.timeout(10000),
             });
-            if (!embedResponse.ok) return backendResult;
-            const embedHtml = await embedResponse.text();
-
-            const hlsUrl = this.extractHlsFromEmbed(embedHtml);
-            if (!hlsUrl) {
-                console.warn(`[Stream.js] No HLS URL found in embed page HTML for ${embedFallback}`);
-                return backendResult;
+            if (embedResponse.ok) {
+                const embedHtml = await embedResponse.text();
+                const embedSources = this.extractAllSourcesFromEmbed(embedHtml, embedFallback, eventUrl);
+                if (embedSources.length > 0) {
+                    const enriched = embedSources.map((s) => ({
+                        ...s,
+                        name: s.name || s.server || 'Stream',
+                        engine: s.engine || (s.isM3U8 ? 'hls' : 'iframe')
+                    }));
+                    enriched.push({
+                        name: 'Embed',
+                        url: embedFallback,
+                        engine: 'iframe',
+                        quality: 'auto',
+                        isM3U8: false,
+                        isDirect: false,
+                        headers: refererHeaders
+                    });
+                    return { sources: enriched, subtitles: [], headers: refererHeaders, embedUrl: embedFallback };
+                }
             }
-
-            console.log(`[Stream.js] Extracted HLS: ${hlsUrl}`);
-            return {
-                sources: [{ url: hlsUrl, quality: 'auto', isM3U8: true, isDirect: true, headers: refererHeaders }],
-                subtitles: [],
-                headers: refererHeaders,
-                embedUrl: embedFallback
-            };
         } catch (error) {
-            console.error(`[Stream.js] Embed extraction failed for ${embedFallback}:`, error?.message || error);
-            return backendResult;
+            console.warn(`[Stream.js] Embed fallback failed:`, error?.message || error);
         }
+
+        return { sources: allSources, subtitles: [], headers: this.buildHeaders(eventUrl), embedUrl: pageResult.embedUrl || '' };
     }
 
     async verifyEventSources(eventUrl) {
@@ -1514,11 +1763,11 @@ class BuffStreams extends Provider {
                 strip: false,
                 stopWhen: (text) => /(?:window\.atob|source\s*:|\.m3u8|load-playlist|\/playlist\/)/i.test(text)
             });
-            const hlsUrl = this.extractHlsFromEmbed(embedHtml);
-            if (!hlsUrl) throw new Error('No direct HLS URL found in embed');
+            const allSources = this.extractAllSourcesFromEmbed(embedHtml, embedUrl, normalizedEventUrl);
+            if (!allSources.length) throw new Error('No direct HLS URL found in embed');
 
             return {
-                sources: [{ url: hlsUrl, quality: 'auto', isM3U8: true, isDirect: true }],
+                sources: allSources,
                 subtitles: [],
                 headers: {},
                 embedUrl,
@@ -1529,6 +1778,103 @@ class BuffStreams extends Provider {
             return { sources: [], subtitles: [], headers: {}, error: error.message, verifiedOnly: true };
         }
     }
+    collectSourceCandidates(eventUrl, embedFallback) {
+        const candidates = [];
+        const push = (value) => {
+            const raw = String(value || '').trim();
+            if (!raw || candidates.includes(raw)) return;
+            candidates.push(raw);
+        };
+        push(embedFallback);
+        push(eventUrl);
+        return candidates.filter((value) => /^https?:\/\//i.test(value));
+    }
+    extractAllSourcesFromEmbed(html, candidateUrl, pageUrl) {
+        const source = String(html || '');
+        const headers = this.buildHeaders(candidateUrl || pageUrl);
+        const out = [];
+        const seen = new Set();
+        const push = (url, quality = 'auto') => {
+            const clean = String(url || '').trim();
+            if (!clean || seen.has(clean)) return;
+            seen.add(clean);
+            out.push({
+                url: clean,
+                quality,
+                isM3U8: /\.m3u8(\?|$)/i.test(clean) || /\/m3u8-proxy\?/i.test(clean) || /\/playlist\//i.test(clean),
+                isDirect: true,
+                headers
+            });
+        };
+        for (const match of source.matchAll(/https?:\/\/[^'"\s]+(?:load-playlist|\.m3u8|\/playlist\/[^'"\s]*)/gi)) {
+            push(match[0], 'auto');
+        }
+        for (const match of source.matchAll(/['"](https?:\/\/[^'"]+)['"]/gi)) {
+            if (/load-playlist|\.m3u8|\/playlist\//i.test(match[1])) push(match[1], 'auto');
+        }
+        for (const match of source.matchAll(/window\.atob\(\s*['"]([^'"]+)['"]\s*\)/gi)) {
+            try {
+                const decoded = Buffer.from(String(match[1]).trim(), 'base64').toString('utf8').trim();
+                if (/^https?:\/\//i.test(decoded)) push(decoded, 'auto');
+            } catch { }
+        }
+        return out;
+    }
+
+    async resolveServerEmbed(serverUrl) {
+        try {
+            const response = await fetch(serverUrl, {
+                headers: { 'User-Agent': this.userAgent }
+            });
+            if (!response.ok) return null;
+            const html = await response.text();
+            const $ = cheerioLoad(html);
+
+            const knownIds = ['wp_player', 'player', 'main-player', 'video-player', 'stream-player', 'embed-player', 'live-stream'];
+            for (const id of knownIds) {
+                const iframe = $(`iframe#${id}`);
+                if (iframe.length) {
+                    const src = iframe.attr('src');
+                    if (src) return src;
+                }
+            }
+
+            const knownClasses = ['embed-responsive-item', 'player-iframe', 'stream-iframe', 'video-iframe'];
+            for (const cls of knownClasses) {
+                const iframe = $(`iframe.${cls}`);
+                if (iframe.length) {
+                    const src = iframe.attr('src');
+                    if (src) return src;
+                }
+            }
+
+            const allIframes = $('iframe');
+            for (let i = 0; i < allIframes.length; i++) {
+                const src = $(allIframes[i]).attr('src') || '';
+                if (/gooz\.aapmains|embed|stream|player|watch/i.test(src) && !/youtube.*chat|live.*chat|googleads|doubleclick|facebook/i.test(src)) {
+                    return src;
+                }
+            }
+
+            for (let i = 0; i < allIframes.length; i++) {
+                const src = $(allIframes[i]).attr('src') || '';
+                if (src && src.startsWith('http') && !/youtube.*chat|googleads|doubleclick/i.test(src)) {
+                    return src;
+                }
+            }
+
+            const embedPattern = /gooz\.aapmains\.net\/new-stream-embed\/(\d+)/i;
+            const jsMatch = html.match(embedPattern);
+            if (jsMatch) {
+                return 'https://' + jsMatch[0];
+            }
+
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
     // Lightweight transport bridge that forwards a watch request directly
     // to the configured Consumet backend. Returns the normalized
     // { sources, subtitles, headers, embedUrl } shape that watch.html and

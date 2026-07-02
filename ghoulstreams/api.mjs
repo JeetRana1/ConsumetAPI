@@ -166,15 +166,18 @@ const getAvailabilitySnapshot = () => {
 const mediaCache = new Map();
 const MEDIA_CACHE_MAX = 150;
 const MEDIA_CACHE_TTL_SEGMENT = 3600_000;
-const MEDIA_CACHE_TTL_PLAYLIST = 2_000;
+const MEDIA_CACHE_TTL_PLAYLIST = 30_000;
+const MEDIA_CACHE_STALE_LIMIT = 300_000;
 const MEDIA_CACHE_MAX_SIZE = 5_000_000;
-const isSegment = (url) => /\.ts(?:[?#]|$)/i.test(url);
+const isSegment = (url) => /\.ts(?:[?#]|$)/i.test(url) || /\.txt\?.*X-Amz-/i.test(url);
 
-const getFromCache = (key) => {
+const getFromCache = (key, allowStale = false) => {
   const entry = mediaCache.get(key);
   if (!entry) return null;
-  if (Date.now() > entry.expires) { mediaCache.delete(key); return null; }
-  return entry.data;
+  if (Date.now() <= entry.expires) return entry.data;
+  if (allowStale && Date.now() - entry.created <= MEDIA_CACHE_STALE_LIMIT) return entry.data;
+  mediaCache.delete(key);
+  return null;
 };
 
 const setCache = (key, data, isSeg) => {
@@ -182,7 +185,7 @@ const setCache = (key, data, isSeg) => {
     const oldest = mediaCache.entries().next().value;
     if (oldest) mediaCache.delete(oldest[0]);
   }
-  mediaCache.set(key, { data, expires: Date.now() + (isSeg ? MEDIA_CACHE_TTL_SEGMENT : MEDIA_CACHE_TTL_PLAYLIST) });
+  mediaCache.set(key, { data, expires: Date.now() + (isSeg ? MEDIA_CACHE_TTL_SEGMENT : MEDIA_CACHE_TTL_PLAYLIST), created: Date.now() });
 };
 
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -206,11 +209,19 @@ const rateLimitHost = async (url) => {
 };
 
 const fetchWithRetry = async (url, options, maxRetries = 3) => {
+  const isSeg = /\.ts(?:[?#]|$)/i.test(url) || /\.txt\?.*X-Amz-/i.test(url);
+  const timeoutMs = isSeg ? 30000 : 20000;
   for (let i = 0; i <= maxRetries; i++) {
     await rateLimitHost(url);
     let resp;
     try {
-      resp = await fetch(url, options);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        resp = await fetch(url, { ...options, signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch (err) {
       console.warn(`fetch failed on ${url.split('?')[0].slice(-40)}: ${err.cause?.code || err.message}, retry ${i+1}/${maxRetries}`);
       if (i < maxRetries) {
@@ -682,6 +693,20 @@ app.post('/api/fetchSources', async (req, res) => {
     }
 });
 
+app.post('/api/resolve-server-embed', async (req, res) => {
+    try {
+        const { url } = req.body;
+        if (!url) {
+            return res.json({ success: false, error: 'no_url' });
+        }
+        const embedUrl = await provider.resolveServerEmbed(url);
+        res.json({ success: true, embedUrl: embedUrl || '' });
+    } catch (error) {
+        console.error('Error in /api/resolve-server-embed:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
 app.post('/api/proxy', async (req, res) => {
     try {
         const { url } = req.body;
@@ -703,6 +728,102 @@ app.post('/api/proxy', async (req, res) => {
     }
 });
 
+app.get('/api/iframe-proxy', async (req, res) => {
+    try {
+        const targetUrl = String(req.query.url || '').trim();
+        const referer = String(req.query.referer || '').trim();
+        if (!targetUrl) return res.status(400).send('Missing url param');
+
+        const resp = await fetch(targetUrl, {
+            headers: {
+                'User-Agent': USER_AGENT,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                ...(referer ? { 'Referer': referer, 'Origin': (() => { try { return new URL(referer).origin; } catch { return ''; } })() } : {})
+            },
+            signal: AbortSignal.timeout(15000)
+        });
+
+        let html = await resp.text();
+        const base = (() => { try { return new URL(targetUrl).origin; } catch { return ''; } })();
+        if (base) {
+            html = html.replace(/(<(?:img|script|link|source|video|audio|iframe)\b[^>]*?)(src=|href=)(["'])(?!https?:\/\/|\/\/|data:|#|javascript:)/gi, '$1$2$3' + base + '/');
+        }
+
+        const proxyBase = `${req.protocol}://${req.get('host')}`;
+        const escTargetUrl = encodeURIComponent(targetUrl);
+        const xhrOverride = `<script>
+var ro=XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open=function(m,u){
+var url=typeof u==='string'?u:'';
+if(/^https?:\\/\\//i.test(url)&&url.indexOf('${proxyBase}')<0){u='${proxyBase}/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
+return ro.apply(this,arguments)
+};
+var rf=window.fetch;
+window.fetch=function(u,o){
+var url=typeof u==='string'?u:'';
+if(/^https?:\\/\\//i.test(url)&&url.indexOf('${proxyBase}')<0){u='${proxyBase}/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
+return rf.call(this,u,o)
+};
+</script>`;
+        html = html.replace('</head>', xhrOverride + '</head>');
+
+        res.set({
+            'Content-Type': 'text/html; charset=utf-8',
+            'X-Frame-Options': 'ALLOWALL',
+            'Content-Security-Policy': "frame-ancestors * 'self'",
+            'Access-Control-Allow-Origin': '*',
+            ...proxyNoStoreHeaders()
+        });
+        res.send(html);
+    } catch (error) {
+        console.error('Error in /api/iframe-proxy:', error);
+        res.status(502).send('Proxy error: ' + error.message);
+    }
+});
+
+app.all('/api/proxy', async (req, res) => {
+    if (req.method === 'OPTIONS') {
+        return res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Allow-Headers': '*' }).end();
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return res.status(405).send('Method not allowed');
+    }
+    const targetUrl = String(req.query.url || '').trim();
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+        return res.status(400).send('Missing or invalid url param');
+    }
+    try {
+        const referer = String(req.query.referer || targetUrl).trim();
+        const resp = await fetch(targetUrl, {
+            headers: {
+                'User-Agent': USER_AGENT,
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': referer,
+                'Origin': (() => { try { return new URL(referer).origin; } catch { return ''; } })(),
+                ...(req.headers.range ? { 'Range': req.headers.range } : {})
+            },
+            signal: AbortSignal.timeout(30000)
+        });
+        res.status(resp.status);
+        resp.headers.forEach((v, k) => {
+            const lower = k.toLowerCase();
+            if (!/^(transfer-encoding|connection|keep-alive)$/i.test(lower)) {
+                res.set(k, v);
+            }
+        });
+        res.set('Access-Control-Allow-Origin', '*');
+        if (resp.body) {
+            for await (const chunk of resp.body) res.write(chunk);
+        }
+        res.end();
+    } catch (error) {
+        console.error('Error in /api/proxy:', error);
+        res.status(502).send('Proxy error: ' + error.message);
+    }
+});
+
 app.get('/api/media-proxy', async (req, res) => {
     try {
         const rawQuery = { ...req.query };
@@ -718,10 +839,40 @@ app.get('/api/media-proxy', async (req, res) => {
         try {
             const parsed = new URL(targetUrl);
             normalizedTargetUrl = parsed.toString();
-        } catch { /* keep original if URL parse fails */ }
+        } catch { }
+
+        const strippedRange = req.headers.range;
+        const outgoingHeaders = {
+            'User-Agent': USER_AGENT,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': referer || normalizedTargetUrl,
+            'Origin': (() => { try { return new URL(referer || normalizedTargetUrl).origin; } catch { return ''; } })(),
+            ...(strippedRange ? { 'Range': strippedRange } : {})
+        };
+        const cleanHeaders = stripConditionalHeaders(outgoingHeaders);
+
+        const isSeg = isSegment(normalizedTargetUrl);
+
+        const fetchUpstream = async () => {
+            const candidates = [];
+            const pushUnique = (v) => { if (v && /^https?:\/\//i.test(v) && !candidates.includes(v)) candidates.push(v); };
+            pushUnique(referer);
+            pushUnique(rootReferer);
+            pushUnique(normalizedTargetUrl);
+            try { const o = new URL(normalizedTargetUrl).origin; if (o) pushUnique(o + '/'); } catch { }
+
+            for (const ref of candidates) {
+                const resp = await fetchWithRetry(normalizedTargetUrl, {
+                    headers: { ...cleanHeaders, 'Referer': ref, 'Origin': (() => { try { return new URL(ref).origin; } catch { return ''; } })() }
+                });
+                if (resp.ok || resp.status === 206) return { response: resp, usedReferer: ref };
+                if (resp.status !== 403 && resp.status !== 404) return { response: resp, usedReferer: ref };
+            }
+            return { response: null, usedReferer: '' };
+        };
 
         const cacheKey = normalizedTargetUrl;
-        const isSeg = isSegment(normalizedTargetUrl);
         const cached = getFromCache(cacheKey);
         if (cached) {
             res.status(200);
@@ -736,9 +887,22 @@ app.get('/api/media-proxy', async (req, res) => {
             return res.send(rewritten);
         }
 
-        const { response, usedReferer } = await fetchWithRefererFallbacks(normalizedTargetUrl, referer, rootReferer, req.headers.range, isSeg);
+        const { response, usedReferer } = await fetchUpstream();
 
         if (!response || (!response.ok && response.status !== 206)) {
+            const staleRaw = getFromCache('raw:' + cacheKey, true);
+            if (staleRaw) {
+                const rewritten = rewritePlaylist(staleRaw.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl);
+                res.status(200);
+                res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
+                return res.send(rewritten);
+            }
+            const staleMedia = getFromCache(cacheKey, true);
+            if (staleMedia) {
+                res.status(200);
+                res.set({ 'Content-Type': staleMedia.type, ...proxyNoStoreHeaders() });
+                return res.send(Buffer.from(staleMedia.body));
+            }
             return res.status(response?.status || 502).send(`Upstream media error: ${response?.status || 502}`);
         }
 
@@ -753,13 +917,33 @@ app.get('/api/media-proxy', async (req, res) => {
             return res.send(rewritten);
         }
 
-        const rawBody = await response.arrayBuffer();
-        const contentType = response.headers.get('content-type') || 'application/octet-stream';
-        if (rawBody.byteLength < MEDIA_CACHE_MAX_SIZE) setCache(cacheKey, { body: rawBody, type: contentType }, isSeg);
-
         res.status(response.status);
         res.set({ ...passthroughHeaders(response.headers), ...proxyNoStoreHeaders() });
-        res.send(Buffer.from(rawBody));
+
+        if (isSeg) {
+            try {
+                const buffer = await response.arrayBuffer();
+                res.end(Buffer.from(buffer));
+            } catch {
+                if (!res.headersSent) res.status(502).send('Segment fetch failed');
+            }
+            return;
+        }
+
+        const contentType = response.headers.get('content-type') || 'application/octet-stream';
+        let buffer;
+        try {
+            buffer = await response.arrayBuffer();
+            res.end(Buffer.from(buffer));
+        } catch {
+            if (!res.headersSent) res.status(502).send('Media fetch failed');
+            return;
+        }
+
+        const totalBytes = buffer.byteLength;
+        if (totalBytes > 0 && totalBytes < MEDIA_CACHE_MAX_SIZE) {
+            setCache(cacheKey, { body: buffer, type: contentType }, false);
+        }
     } catch (error) {
         console.error('Error in /api/media-proxy:', error);
         res.status(500).send(error.message);
