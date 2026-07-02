@@ -284,7 +284,8 @@ const proxyNoStoreHeaders = () => ({
     'Pragma': 'no-cache',
     'Expires': '0',
     'Surrogate-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*'
+    'Access-Control-Allow-Origin': '*',
+    'X-Accel-Buffering': 'no'
 });
 
 const proxiedMediaUrl = (targetUrl, referer, rootReferer, baseUrl) => {
