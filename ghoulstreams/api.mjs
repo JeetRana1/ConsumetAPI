@@ -37,6 +37,8 @@ app.use((req, res, next) => {
     next();
 });
 
+app.set('trust proxy', true);
+
 if (HAS_LOCAL_FRONTEND) {
     app.use(express.static(__dirname, {
         etag: true,
@@ -868,7 +870,9 @@ app.get('/api/media-proxy', async (req, res) => {
         const cleanHeaders = stripConditionalHeaders(outgoingHeaders);
 
         const isSeg = isSegment(normalizedTargetUrl);
-        const proxyBaseUrl = process.env.API_PUBLIC_URL || `${req.protocol || req.headers['x-forwarded-proto'] || 'https'}://${req.get('host')}`;
+        const host = req.get('host') || '';
+        const scheme = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host) ? 'http' : 'https';
+        const proxyBaseUrl = process.env.API_PUBLIC_URL || `${req.secure || req.protocol === 'https' ? 'https' : scheme}://${host}`;
 
         const fetchUpstream = async () => {
             const candidates = [];
