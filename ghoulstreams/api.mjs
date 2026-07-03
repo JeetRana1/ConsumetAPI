@@ -946,16 +946,22 @@ app.get('/api/media-proxy', async (req, res) => {
         // Stream directly instead of buffering — this is the key fix.
         // Without streaming, every segment is fully downloaded before the
         // browser receives a single byte, adding ~2-3s of latency.
-        // Uses Readable.fromWeb for Node 18+ compatibility (for await on
-        // ReadableStream requires Node 20+).
         try {
             if (response.body) {
-                await new Promise((resolve, reject) => {
-                    Readable.fromWeb(response.body)
-                        .on('error', reject)
-                        .pipe(res)
-                        .on('error', reject)
-                        .on('finish', resolve);
+                const chunks = [];
+                const nodeStream = Readable.fromWeb(response.body);
+                nodeStream.on('data', c => { chunks.push(c); res.write(c); });
+                nodeStream.on('error', () => { if (!res.headersSent) res.status(502).end(); });
+                nodeStream.on('end', () => {
+                    res.end();
+                    // Cache downstream of stream so repeated requests (seek, retry) are instant
+                    if (!isSeg) {
+                        const totalBytes = chunks.reduce((s, c) => s + c.length, 0);
+                        if (totalBytes > 0 && totalBytes < MEDIA_CACHE_MAX_SIZE) {
+                            const ct = response.headers.get('content-type') || 'application/octet-stream';
+                            setCache(cacheKey, { body: Buffer.concat(chunks), type: ct }, false);
+                        }
+                    }
                 });
             } else {
                 res.end();
