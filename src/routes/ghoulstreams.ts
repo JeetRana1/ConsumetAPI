@@ -282,6 +282,8 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
       reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       reply.header('Pragma', 'no-cache');
       reply.header('Expires', '0');
+      reply.removeHeader('etag');
+      reply.removeHeader('last-modified');
 
       return await streamUpstreamToReply(targetUrl, outboundHeaders, reply);
     } catch (error: any) {

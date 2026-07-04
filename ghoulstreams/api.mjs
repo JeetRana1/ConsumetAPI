@@ -171,6 +171,7 @@ const mediaCache = new Map();
 const MEDIA_CACHE_MAX = 150;
 const MEDIA_CACHE_TTL_SEGMENT = 3600_000;
 const MEDIA_CACHE_TTL_PLAYLIST = 30_000;
+const MEDIA_CACHE_TTL_LIVE_PLAYLIST = 3000;
 const MEDIA_CACHE_STALE_LIMIT = 300_000;
 const MEDIA_CACHE_MAX_SIZE = 5_000_000;
 const isSegment = (url) => /\.ts(?:[?#]|$)/i.test(url) || /\.txt\?.*X-Amz-/i.test(url);
@@ -754,13 +755,15 @@ app.get('/api/iframe-proxy', async (req, res) => {
         const referer = String(req.query.referer || '').trim();
         if (!targetUrl) return res.status(400).send('Missing url param');
 
+        const upstreamHeaders = stripConditionalHeaders({
+            'User-Agent': USER_AGENT,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            ...(referer ? { 'Referer': referer, 'Origin': (() => { try { return new URL(referer).origin; } catch { return ''; } })() } : {})
+        });
+
         const resp = await fetch(targetUrl, {
-            headers: {
-                'User-Agent': USER_AGENT,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                ...(referer ? { 'Referer': referer, 'Origin': (() => { try { return new URL(referer).origin; } catch { return ''; } })() } : {})
-            },
+            headers: upstreamHeaders,
             signal: AbortSignal.timeout(15000)
         });
 
@@ -772,26 +775,96 @@ app.get('/api/iframe-proxy', async (req, res) => {
 
         const proxyBase = `${req.protocol}://${req.get('host')}`;
         const escTargetUrl = encodeURIComponent(targetUrl);
+        const debugOverlay = `<script>
+(function(){
+  function emit(msg){
+    try { window.parent && window.parent.postMessage('[gs-embed] ' + msg, '*'); } catch {}
+  }
+  emit('boot');
+  const watch = () => {
+    emit('ready:' + document.readyState);
+    try {
+      const videos = Array.from(document.querySelectorAll('video'));
+      emit('videos:' + videos.length);
+      videos.forEach((video, idx) => {
+        if (video.__gsDebugBound) return;
+        video.__gsDebugBound = true;
+        const label = 'video' + idx;
+        ['loadstart','loadedmetadata','playing','pause','waiting','stalled','canplay','canplaythrough','seeking','seeked','ended','error','timeupdate','progress'].forEach((ev) => {
+          video.addEventListener(ev, () => {
+            let extra = '';
+            try {
+              extra = ' ct=' + (Number.isFinite(video.currentTime) ? video.currentTime.toFixed(1) : 'na') + ' rs=' + video.readyState + ' ns=' + video.networkState + ' paused=' + video.paused;
+            } catch {}
+            emit(label + ':' + ev + extra);
+          }, { passive: true });
+        });
+      });
+    } catch (e) {
+      emit('bind-error:' + (e && e.message ? e.message : String(e)));
+    }
+    try {
+      const oldFetch = window.fetch;
+      window.fetch = function(input, init) {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (/playlist|m3u8|load-playlist|chatgpt\\.hereisman\\.net/i.test(url)) emit('fetch:' + url);
+        return oldFetch.apply(this, arguments);
+      };
+    } catch {}
+    try {
+      const oldOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        try { if (/playlist|m3u8|load-playlist|chatgpt\\.hereisman\\.net/i.test(String(url || ''))) emit('xhr:' + String(url)); } catch {}
+        return oldOpen.apply(this, arguments);
+      };
+    } catch {}
+    try {
+      const oldError = console.error;
+      console.error = function() {
+        try { emit('console.error:' + Array.from(arguments).join(' ')); } catch {}
+        return oldError.apply(this, arguments);
+      };
+    } catch {}
+    setInterval(() => emit('heartbeat:' + Date.now()), 5000);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', watch, { once: true });
+  else watch();
+})();
+</script>`;
         const xhrOverride = `<script>
+var PROXY_BASE='${proxyBase}';
+function _shouldProxy(u){
+var url=typeof u==='string'?u:'';
+if(!url) return false;
+return /^https?:\\/\\//i.test(url) && (/\\/playlist\\//i.test(url) || /chatgpt\\.hereisman\\.net/i.test(url));
+}
 var ro=XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open=function(m,u){
 var url=typeof u==='string'?u:'';
-if(/^https?:\\/\\//i.test(url)&&url.indexOf('${proxyBase}')<0){u='${proxyBase}/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
+if(_shouldProxy(url)&&url.indexOf(PROXY_BASE)<0){u=PROXY_BASE+'/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
 return ro.apply(this,arguments)
 };
 var rf=window.fetch;
 window.fetch=function(u,o){
 var url=typeof u==='string'?u:'';
-if(/^https?:\\/\\//i.test(url)&&url.indexOf('${proxyBase}')<0){u='${proxyBase}/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
+if(_shouldProxy(url)&&url.indexOf(PROXY_BASE)<0){u=PROXY_BASE+'/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
 return rf.call(this,u,o)
 };
 </script>`;
-        html = html.replace('</head>', xhrOverride + '</head>');
-
+        const hlsPatch = `<script>
+(function(){
+  var d=document.createDocumentFragment();
+  var s=document.createElement('script');
+  s.textContent='if(typeof Hls!==\\"undefined\\"&&Hls.DefaultConfig){Hls.DefaultConfig.liveSyncDuration=45;Hls.DefaultConfig.liveMaxLatencyDuration=90;Hls.DefaultConfig.maxBufferLength=45;Hls.DefaultConfig.maxMaxBufferLength=60;Hls.DefaultConfig.maxBufferSize=120*1000*1000;Hls.DefaultConfig.backBufferLength=45;Hls.DefaultConfig.liveBackBufferLength=30;Hls.DefaultConfig.maxLiveSyncPlaybackRate=1.25}';
+  d.appendChild(s);
+  document.head.appendChild(d);
+})();
+</script>`;
+        html = html.replace('</head>', debugOverlay + xhrOverride + hlsPatch + '</head>');
         res.set({
             'Content-Type': 'text/html; charset=utf-8',
             'X-Frame-Options': 'ALLOWALL',
-            'Content-Security-Policy': "frame-ancestors * 'self'",
+            'Content-Security-Policy': "frame-ancestors * 'self'; script-src * 'unsafe-inline' 'unsafe-eval' blob:; worker-src blob: *; style-src * 'unsafe-inline'",
             'Access-Control-Allow-Origin': '*',
             ...proxyNoStoreHeaders()
         });
@@ -835,12 +908,27 @@ app.all('/api/proxy', async (req, res) => {
         });
         res.set('Access-Control-Allow-Origin', '*');
         if (resp.body) {
-            for await (const chunk of resp.body) res.write(chunk);
+            const reader = resp.body.getReader();
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    res.write(value);
+                }
+            } catch (streamError) {
+                console.error('Stream error in /api/proxy:', streamError);
+            } finally {
+                reader.releaseLock();
+            }
         }
         res.end();
     } catch (error) {
         console.error('Error in /api/proxy:', error);
-        res.status(502).send('Proxy error: ' + error.message);
+        if (!res.headersSent) {
+            res.status(502).send('Proxy error: ' + error.message);
+        } else {
+            res.end();
+        }
     }
 });
 
@@ -873,6 +961,7 @@ app.get('/api/media-proxy', async (req, res) => {
         const cleanHeaders = stripConditionalHeaders(outgoingHeaders);
 
         const isSeg = isSegment(normalizedTargetUrl);
+        const isPlaylist = /mpegurl|m3u8|load-playlist|\/playlist\/|\/video\/?(?:\?|#|$)/i.test(normalizedTargetUrl) || /playlist/i.test(String(req.headers['content-type'] || ''));
         const host = req.get('host') || '';
         const scheme = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host) ? 'http' : 'https';
         const proxyBaseUrl = process.env.API_PUBLIC_URL || `${req.secure || req.protocol === 'https' ? 'https' : scheme}://${host}`;
@@ -896,73 +985,112 @@ app.get('/api/media-proxy', async (req, res) => {
         };
 
         const cacheKey = normalizedTargetUrl;
-        const cached = getFromCache(cacheKey);
-        if (cached) {
-            res.status(200);
-            res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', ...proxyNoStoreHeaders() });
-            return res.send(Buffer.from(cached.body));
+        if (isPlaylist || isSeg) {
+            console.log('[media-proxy]', isPlaylist ? 'playlist' : 'segment', normalizedTargetUrl, 'referer=', referer || '-', 'root=', rootReferer || '-');
         }
-        const cachedRawPlaylist = getFromCache('raw:' + cacheKey);
-        if (cachedRawPlaylist) {
-            const rewritten = rewritePlaylist(cachedRawPlaylist.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl, proxyBaseUrl);
-            res.status(200);
-            res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
-            return res.send(rewritten);
+        if (isPlaylist) {
+            const cached = getFromCache(cacheKey + ':rewritten');
+            if (cached) {
+                res.status(200);
+                res.removeHeader('ETag');
+                res.removeHeader('Last-Modified');
+                res.removeHeader('Cache-Control');
+                res.set({
+                    'Content-Type': 'application/vnd.apple.mpegurl',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate, proxy-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0',
+                    'Surrogate-Control': 'no-store',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                return res.send(cached);
+            }
+        } else {
+            const cached = getFromCache(cacheKey);
+            if (cached) {
+                res.status(200);
+                res.removeHeader('ETag');
+                res.removeHeader('Last-Modified');
+                res.removeHeader('Cache-Control');
+                res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', ...proxyNoStoreHeaders() });
+                return res.send(Buffer.from(cached.body));
+            }
         }
 
         const { response, usedReferer } = await fetchUpstream();
 
         if (!response || (!response.ok && response.status !== 206)) {
-            const staleRaw = getFromCache('raw:' + cacheKey, true);
-            if (staleRaw) {
-                const rewritten = rewritePlaylist(staleRaw.body, normalizedTargetUrl, rootReferer || referer || normalizedTargetUrl, proxyBaseUrl);
-                res.status(200);
-                res.set({ 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
-                return res.send(rewritten);
-            }
-            const staleMedia = getFromCache(cacheKey, true);
-            if (staleMedia) {
-                res.status(200);
-                res.set({ 'Content-Type': staleMedia.type, ...proxyNoStoreHeaders() });
-                return res.send(Buffer.from(staleMedia.body));
+            if (!isPlaylist) {
+                const staleMedia = getFromCache(cacheKey, true);
+                if (staleMedia) {
+                    res.status(200);
+                    res.removeHeader('ETag');
+                    res.removeHeader('Last-Modified');
+                    res.removeHeader('Cache-Control');
+                    res.set({ 'Content-Type': staleMedia.type, ...proxyNoStoreHeaders() });
+                    return res.send(Buffer.from(staleMedia.body));
+                }
             }
             return res.status(response?.status || 502).send(`Upstream media error: ${response?.status || 502}`);
         }
 
-        const isPlaylist = /mpegurl|m3u8|load-playlist|\/playlist\/|\/video\/?(?:\?|#|$)/i.test(normalizedTargetUrl) || /playlist/i.test(String(req.headers['content-type'] || ''));
-
         if (isPlaylist) {
             const body = await response.text();
-            setCache('raw:' + cacheKey, { body, type: 'text/plain' }, false);
             const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl, proxyBaseUrl);
+            mediaCache.set(cacheKey + ':rewritten', { data: rewritten, expires: Date.now() + MEDIA_CACHE_TTL_LIVE_PLAYLIST, created: Date.now() });
             res.status(response.status);
-            res.set({ ...passthroughHeaders(response.headers), 'Content-Type': 'application/vnd.apple.mpegurl', ...proxyNoStoreHeaders() });
+            res.removeHeader('ETag');
+            res.removeHeader('Last-Modified');
+            res.removeHeader('Cache-Control');
+            res.set({
+                'Content-Type': 'application/vnd.apple.mpegurl',
+                'Cache-Control': 'no-cache, no-store, must-revalidate, proxy-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+                'Surrogate-Control': 'no-store',
+                'Access-Control-Allow-Origin': '*'
+            });
             return res.send(rewritten);
         }
 
         res.status(response.status);
-        res.set({ ...passthroughHeaders(response.headers), ...proxyNoStoreHeaders() });
+        const responseHeaders = {
+            ...passthroughHeaders(response.headers),
+            ...(response.headers.get('content-length') ? { 'Content-Length': response.headers.get('content-length') } : {}),
+            ...(response.headers.get('accept-ranges') ? { 'Accept-Ranges': response.headers.get('accept-ranges') } : {}),
+        };
+        res.set({
+            ...responseHeaders,
+            ...proxyNoStoreHeaders()
+        });
+        res.removeHeader('ETag');
+        res.removeHeader('Last-Modified');
+        res.removeHeader('Cache-Control');
 
-        // Stream directly instead of buffering — this is the key fix.
-        // Without streaming, every segment is fully downloaded before the
-        // browser receives a single byte, adding ~2-3s of latency.
+        // Stream upstream directly to client via pipe. Playlists and small
+        // media are also accumulated for cache (constrained by MEDIA_CACHE_MAX_SIZE).
+        // Segments (isSeg===true) skip accumulation entirely.
         try {
             if (response.body) {
-                const chunks = [];
                 const nodeStream = Readable.fromWeb(response.body);
-                nodeStream.on('data', c => { chunks.push(c); res.write(c); });
-                nodeStream.on('error', () => { if (!res.headersSent) res.status(502).end(); });
-                nodeStream.on('end', () => {
-                    res.end();
-                    // Cache downstream of stream so repeated requests (seek, retry) are instant
-                    if (!isSeg) {
-                        const totalBytes = chunks.reduce((s, c) => s + c.length, 0);
-                        if (totalBytes > 0 && totalBytes < MEDIA_CACHE_MAX_SIZE) {
-                            const ct = response.headers.get('content-type') || 'application/octet-stream';
-                            setCache(cacheKey, { body: Buffer.concat(chunks), type: ct }, false);
+                nodeStream.pipe(res);
+                // Cache the full response asynchronously after streaming
+                // completes, so the player never waits on cache writes.
+                if (!isSeg) {
+                    const ct = response.headers.get('content-type') || 'application/octet-stream';
+                    let accSize = 0;
+                    const accChunks = [];
+                    nodeStream.on('data', c => {
+                        accSize += c.length;
+                        if (accSize < MEDIA_CACHE_MAX_SIZE) accChunks.push(c);
+                    });
+                    nodeStream.on('end', () => {
+                        if (accChunks.length > 0 && accSize > 0) {
+                            setCache(cacheKey, { body: Buffer.concat(accChunks), type: ct }, false);
                         }
-                    }
-                });
+                    });
+                }
+                nodeStream.on('error', () => { res.end(); });
             } else {
                 res.end();
             }
