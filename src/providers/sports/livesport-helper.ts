@@ -80,7 +80,7 @@ const FEED_SIGN = 'SW9D1eZo';
 const SPORT_BY_ID: Record<string, string> = { '1': 'soccer', '3': 'basketball', '4': 'hockey', '5': 'cfl', '6': 'baseball', '12': 'american-football' };
 const SOCCER_RE = /\b(soccer|premier league|la liga|serie a|bundesliga|uefa|fifa)\b/i;
 const SUPPORTED_RE = /\b(baseball|mlb|basketball|nba|hockey|nhl|american football|nfl|cfl)\b/i;
-const LIVE_RE = /\b(in progress|live|inning|quarter|period|halftime|half time|ht|break|intermission|delay|1st half|2nd half|overtime|ot|finished|ended)\b/i;
+const LIVE_RE = /\b(in progress|live|inning|quarter|period|halftime|half time|ht|break|intermission|delay|1st half|2nd half|overtime|ot)\b/i;
 
 export class LiveSportHelper {
   static cache: { matches: any[]; cachedAt: number } = { matches: [], cachedAt: 0 };
@@ -396,8 +396,8 @@ export class LiveSportHelper {
       if (/baseball|mlb/.test(normalizedSport)) return match.sport === 'baseball';
       if (/basketball|nba/.test(normalizedSport)) return match.sport === 'basketball';
       if (/hockey|nhl/.test(normalizedSport)) return match.sport === 'hockey';
-      if (/cfl/.test(normalizedSport)) return match.sport === 'cfl';
-      if (/american-football|nfl/.test(normalizedSport)) return match.sport === 'american-football';
+      if (/cfl/.test(normalizedSport)) return match.sport === 'cfl' || match.sport === 'american-football';
+      if (/american-football|nfl/.test(normalizedSport)) return match.sport === 'american-football' || match.sport === 'cfl';
       if (/soccer|football/.test(normalizedSport)) return match.sport === 'soccer';
       return true;
     });
@@ -460,8 +460,9 @@ export class LiveSportHelper {
   static feedStatus(fields: Record<string, string>, sport: string): string {
     const stage = fields.AB || '';
     const note = LiveSportHelper.cleanText(fields.AM || fields.AC || fields.AD || fields.AX || '');
+    const isFootball = sport === 'cfl' || sport === 'american-football' || sport === 'nfl';
     if (note && /delay|postpon|cancel|intermission|halftime|half\s*time|break|ht/i.test(note)) {
-      if (/ht|halftime|half\s*time/i.test(note)) return 'HT';
+      if (/ht|halftime|half\s*time/i.test(note)) return isFootball ? 'Halftime' : 'HT';
       return note;
     }
     const homeKeys = ['BA', 'BC', 'BE', 'BG', 'BI', 'BK', 'BM', 'BO', 'BQ', 'BS', 'BU'];
@@ -473,6 +474,7 @@ export class LiveSportHelper {
       }
     }
     if (maxPeriod > 0) {
+      if (stage === '3') return 'Finished';
       if (sport === 'baseball') return `${maxPeriod}${LiveSportHelper.ordinal(maxPeriod)} INNING`;
       if (sport === 'basketball') {
         if (maxPeriod > 4) return 'OVERTIME';
@@ -482,12 +484,35 @@ export class LiveSportHelper {
         if (maxPeriod > 3) return 'OVERTIME';
         return `${maxPeriod}${LiveSportHelper.ordinal(maxPeriod)} PERIOD`;
       }
+      if (sport === 'cfl' || sport === 'american-football' || sport === 'nfl') {
+        if (maxPeriod === 2 && /ht|halftime|break|intermission|half.?time/i.test(note)) return 'Halftime';
+        if (maxPeriod > 4) return 'Overtime';
+        return `${maxPeriod}${LiveSportHelper.ordinal(maxPeriod)} QUARTER`;
+      }
     }
+    if (stage === '3') return 'Finished';
     const period = LiveSportHelper.num(fields.AC || '0');
     if (sport === 'baseball' && period > 0) return `${period}${LiveSportHelper.ordinal(period)} INNING`;
     if (sport === 'basketball' && period > 0) return `${period}${LiveSportHelper.ordinal(period)} QUARTER`;
     if (sport === 'hockey' && period > 0) return `${period}${LiveSportHelper.ordinal(period)} PERIOD`;
-    if (stage === '3') return 'Finished';
+    if (sport === 'cfl' || sport === 'american-football' || sport === 'nfl') {
+      // If maxPeriod already handled the case above, we shouldn't reach here
+      // Fallback: use packed code or AC field
+      if (/^\d{2}$/.test(note)) {
+        const stageChar = note[0];
+        const periodChar = note[1];
+        if (stageChar === '3') return 'Finished';
+        const q = parseInt(periodChar, 10);
+        if (q >= 1 && q <= 4) return `${q}${LiveSportHelper.ordinal(q)} QUARTER`;
+        if (q === 5) return 'Halftime';
+        return 'Overtime';
+      }
+      if (note.toLowerCase() === 'ht') return 'Halftime';
+      if (note.toLowerCase() === 'ot') return 'Overtime';
+      if (period > 0 && period <= 4) return `${period}${LiveSportHelper.ordinal(period)} QUARTER`;
+      if (period === 5) return 'Halftime';
+      if (period > 5) return 'Overtime';
+    }
     if (sport === 'soccer' && stage === '2') {
       const ao = LiveSportHelper.num(fields.AO || '0');
       let ax = String(fields.AX || '1').trim();
@@ -557,9 +582,9 @@ export class LiveSportHelper {
         const val2 = LiveSportHelper.nullableNum(fields[awayKeys[i]]);
         if (val1 === null && val2 === null) continue;
         hasInnings = true;
-        const label = String(i + 1);
+        const isFootball = sport === 'cfl' || sport === 'american-football' || sport === 'nfl';
+        const label = isFootball ? `Q${i + 1}` : String(i + 1);
         
-        // Treat baseball runs same as other sports (BA/BC is Home, BB/BD is Away)
         matrix.home[label] = val1 ?? 0;
         matrix.away[label] = val2 ?? 0;
         matrix.runsByInning.push({ inning: label, home: val1, away: val2 });
@@ -1169,7 +1194,13 @@ export class LiveSportHelper {
         } else {
           opponent = `${homeName} vs ${awayName}`.trim();
         }
-        const game = { date: dateStr, tournament, opponent, score, outcome };
+        // Extract opponent logo from the H2H feed (EC = home team logo, ED = away team logo)
+        const hLogo = LiveSportHelper.feedAsset(fields.EC);
+        const aLogo = LiveSportHelper.feedAsset(fields.ED);
+        let opponentLogo = '';
+        if (opponent === homeName) opponentLogo = hLogo;
+        else if (opponent === awayName) opponentLogo = aLogo;
+        const game = { date: dateStr, tournament, opponent, score, outcome, opponentLogo };
         if (currentMode === 'home' && homeLastGames.length < 5) homeLastGames.push(game);
         else if (currentMode === 'away' && awayLastGames.length < 5) awayLastGames.push(game);
         else if (currentMode === 'h2h' && directHeadToHead.length < 5) directHeadToHead.push({ ...game, tournament: badgeText || tournament });
@@ -1180,9 +1211,16 @@ export class LiveSportHelper {
 
   static fromSeed(seed: any): any {
     const matrix = seed.matrix || { home: {}, away: {}, runsByInning: [] };
-    const isLive = LIVE_RE.test(`${seed.status} ${seed.rowText}`) ||
-      /^\d+'$/.test(seed.status) ||
-      (seed.sport === 'soccer' ? (seed.stage === '2' && /^\d+:\d+$/.test(seed.status)) : /^\d+:\d+$/.test(seed.status));
+    const statusRow = `${seed.status} ${seed.rowText}`;
+    let isLive = false;
+    if (!/\b(finished|completed|ended|full\s*time|ft\b|final)\b/i.test(statusRow)) {
+      isLive = (
+        LIVE_RE.test(statusRow) ||
+        /^\d+'$/.test(seed.status) ||
+        /^Q[1-4]$/i.test(seed.status) ||
+        (seed.sport === 'soccer' ? (seed.stage === '2' && /^\d+:\d+$/.test(seed.status)) : /^\d+:\d+$/.test(seed.status))
+      );
+    }
     const status = seed.sport === 'soccer'
       ? LiveSportHelper.carrySoccerClock(seed.matchId, seed.status || 'Scheduled', isLive)
       : (seed.status || 'Scheduled');
@@ -1332,8 +1370,7 @@ export class LiveSportHelper {
       if (/baseball|mlb/i.test(sportType)) canonicalSport = 'baseball';
       else if (/basketball|nba/i.test(sportType)) canonicalSport = 'basketball';
       else if (/hockey|nhl/i.test(sportType)) canonicalSport = 'hockey';
-      else if (/cfl/i.test(sportType)) canonicalSport = 'cfl';
-      else if (/american-football|nfl/i.test(sportType)) canonicalSport = 'american-football';
+      else if (/cfl|american-football|nfl/i.test(sportType)) canonicalSport = ''; // treat cfl and american-football as interchangeable in filtering
       else if (/soccer|football/i.test(sportType)) canonicalSport = 'soccer';
       const scored = LiveSportHelper.cache.matches
         .filter(c => !canonicalSport || c.sport === canonicalSport)
@@ -1460,10 +1497,6 @@ export class LiveSportHelper {
             }
             const newStatus = LiveSportHelper.feedStatus(mergedFields, match.sport);
             if (newStatus && newStatus !== 'Scheduled' && newStatus !== 'Upcoming') {
-              const stage = mergedFields.AB || '';
-              match.liveScoreboard.isLive = LIVE_RE.test(newStatus) ||
-                /^\d+'$/.test(newStatus) ||
-                (match.sport === 'soccer' ? (stage === '2' && /^\d+:\d+$/.test(newStatus)) : /^\d+:\d+$/.test(newStatus));
               const carriedStatus = match.sport === 'soccer'
                 ? LiveSportHelper.carrySoccerClock(match.matchId, newStatus, match.liveScoreboard.isLive)
                 : newStatus;
@@ -1526,6 +1559,26 @@ export class LiveSportHelper {
         match.lineups.homeSubstitutes = match.lineups.homeSubstitutes || match.lineups.substitutesHome || [];
         match.lineups.awaySubstitutes = match.lineups.awaySubstitutes || match.lineups.substitutesAway || [];
         match.h2hHistory.directHeadToHead = match.h2hHistory.directHeadToHead || [];
+        // Build team→logo map from all cached matches
+        if (!LiveSportHelper.cache.teamLogoMap || !LiveSportHelper.cache.matches.length) {
+          const map: Record<string, string> = {};
+          for (const c of LiveSportHelper.cache.matches) {
+            const hKey = LiveSportHelper.normalizeTitle(c.homeTeam);
+            const aKey = LiveSportHelper.normalizeTitle(c.awayTeam);
+            if (c.homeLogo && !map[hKey]) map[hKey] = c.homeLogo;
+            if (c.awayLogo && !map[aKey]) map[aKey] = c.awayLogo;
+          }
+          LiveSportHelper.cache.teamLogoMap = map;
+        }
+        // Enrich H2H entries with opponent logo from the map
+        for (const list of [match.h2hHistory.homeLastGames, match.h2hHistory.awayLastGames]) {
+          for (const game of list) {
+            if (game.opponent && !game.opponentLogo) {
+              const normOpp = LiveSportHelper.normalizeTitle(game.opponent);
+              game.opponentLogo = LiveSportHelper.cache.teamLogoMap[normOpp] || '';
+            }
+          }
+        }
         match.liveStats = match.liveStats || { eventsTimeline: [] };
         const hasUsefulScoreboard = Boolean(match.liveScoreboard?.homeTotal || match.liveScoreboard?.awayTotal) ||
           Boolean(match.liveScoreboard?.matrix?.runsByInning && match.liveScoreboard.matrix.runsByInning.length > 0) ||
@@ -1637,9 +1690,17 @@ export class LiveSportHelper {
             homeLogo: seed.homeLogo || oldMatch.homeLogo || '',
             awayLogo: seed.awayLogo || oldMatch.awayLogo || '',
           };
-          if (oldMatch.liveScoreboard && oldMatch.liveScoreboard.matrix && Object.keys(oldMatch.liveScoreboard.matrix.home || {}).length > 0) {
-            if (!matchObj.liveScoreboard.matrix || Object.keys(matchObj.liveScoreboard.matrix.home || {}).length === 0) {
-              matchObj.liveScoreboard.matrix = oldMatch.liveScoreboard.matrix;
+          if (oldMatch.liveScoreboard) {
+            if (oldMatch.liveScoreboard.matrix && Object.keys(oldMatch.liveScoreboard.matrix.home || {}).length > 0) {
+              if (!matchObj.liveScoreboard.matrix || Object.keys(matchObj.liveScoreboard.matrix.home || {}).length === 0) {
+                matchObj.liveScoreboard.matrix = oldMatch.liveScoreboard.matrix;
+              }
+            }
+            // Preserve "Finished" status from summary feed when directory feed lags
+            if (oldMatch.detailsFetched && /^(finished|completed|ended)$/i.test(String(oldMatch.liveScoreboard.status || ''))) {
+              matchObj.liveScoreboard.status = oldMatch.liveScoreboard.status;
+              matchObj.liveScoreboard.isLive = false;
+              matchObj.status = oldMatch.liveScoreboard.status;
             }
           }
         }
