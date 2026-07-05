@@ -83,7 +83,7 @@ const SUPPORTED_RE = /\b(baseball|mlb|basketball|nba|hockey|nhl|american footbal
 const LIVE_RE = /\b(in progress|live|inning|quarter|period|halftime|half time|ht|break|intermission|delay|1st half|2nd half|overtime|ot)\b/i;
 
 export class LiveSportHelper {
-  static cache: { matches: any[]; cachedAt: number } = { matches: [], cachedAt: 0 };
+  static cache: { matches: any[]; cachedAt: number; teamLogoMap?: Record<string, string> } = { matches: [], cachedAt: 0 };
   static cacheMap = new Map<string, any[]>();
   static dynamicFsign = FEED_SIGN;
   static soccerClockAnchors = new Map<string, { minute: number; observedAt: number }>();
