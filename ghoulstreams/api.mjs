@@ -11,6 +11,8 @@ const app = express();
 const provider = new BuffStreams();
 const streamAvailability = new Map();
 const sourcesCache = new Map();
+const directoryCache = { data: null, ts: 0 };
+const DIRECTORY_CACHE_TTL = 20_000;
 const HAS_LOCAL_FRONTEND = fs.existsSync(path.join(__dirname, 'index.html'));
 
 const ONE_YEAR_SECONDS = 31536000;
@@ -619,6 +621,9 @@ app.get('/api/racing/watch', async (req, res) => {
 });
 
 app.get('/api/livesport-directory', async (_req, res) => {
+    if (directoryCache.data && Date.now() - directoryCache.ts < DIRECTORY_CACHE_TTL) {
+        return res.json(directoryCache.data);
+    }
     try {
         const backendBase = (process.env.CONSUMET_API_BASE || process.env.SITE_API_BASE || 'http://localhost:3000').replace(/\/$/, '');
         const response = await fetch(`${backendBase}/sports/buffstreams/directory`, {
@@ -629,9 +634,13 @@ app.get('/api/livesport-directory', async (_req, res) => {
             return res.json({ success: true, data: { matches: [] } });
         }
         const data = await response.json();
-        res.json({ success: true, data: data?.data || data || { matches: [] } });
+        const result = { success: true, data: data?.data || data || { matches: [] } };
+        directoryCache.data = result;
+        directoryCache.ts = Date.now();
+        res.json(result);
     } catch (error) {
         console.error('Error in /api/livesport-directory:', error?.message || error);
+        if (directoryCache.data) return res.json(directoryCache.data);
         res.json({ success: true, data: { matches: [] } });
     }
 });
@@ -1163,6 +1172,7 @@ function startServer(port, retries = 10) {
     const server = app.listen(port, () => {
         console.log(`BuffStreams Test Server running on http://localhost:${port}`);
         console.log('Check browser console (F12) for debug logs when playing streams');
+        fetch(`http://localhost:${port}/api/livesport-directory`).catch(() => {});
     });
 
     server.on('error', (error) => {
