@@ -14,12 +14,14 @@ import { google } from 'googleapis';
 const configureMeta = (meta: any) => {
   if (meta && (meta as any).client?.defaults) {
     // Already set globally in main.ts, but being explicit for meta routes
-    (meta as any).client.defaults.headers.common['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+    (meta as any).client.defaults.headers.common['User-Agent'] =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
   }
   return meta;
 };
 
-const shouldLookupTrailers = String(process.env.TMDB_ENABLE_TRAILER_LOOKUP || 'false').toLowerCase() === 'true';
+const shouldLookupTrailers =
+  String(process.env.TMDB_ENABLE_TRAILER_LOOKUP || 'false').toLowerCase() === 'true';
 
 const createTmdbClient = (provider: any) => {
   if (!tmdbApi) return null;
@@ -81,7 +83,10 @@ const trailerScore = (params: {
   return score;
 };
 
-const fetchTmdbOfficialTrailer = async (id: string, type?: string): Promise<string | null> => {
+const fetchTmdbOfficialTrailer = async (
+  id: string,
+  type?: string,
+): Promise<string | null> => {
   if (!tmdbApi) return null;
 
   try {
@@ -91,7 +96,9 @@ const fetchTmdbOfficialTrailer = async (id: string, type?: string): Promise<stri
     const results = Array.isArray(response?.data?.results) ? response.data.results : [];
 
     const ranked = results
-      .filter((row: any) => String(row?.site || '').toLowerCase() === 'youtube' && row?.key)
+      .filter(
+        (row: any) => String(row?.site || '').toLowerCase() === 'youtube' && row?.key,
+      )
       .map((row: any) => {
         const trailerType = String(row?.type || '').toLowerCase();
         const trailerName = String(row?.name || '').toLowerCase();
@@ -120,7 +127,8 @@ const fetchTmdbOfficialTrailer = async (id: string, type?: string): Promise<stri
         return {
           key: String(row.key),
           score,
-          publishedAt: Date.parse(String(row?.published_at || row?.publishedAt || '')) || 0,
+          publishedAt:
+            Date.parse(String(row?.published_at || row?.publishedAt || '')) || 0,
         };
       })
       .sort((a: any, b: any) => b.score - a.score || b.publishedAt - a.publishedAt);
@@ -185,7 +193,9 @@ const hasForbiddenTrailerText = (value: string): boolean => {
   );
 };
 
-const chooseOfficialTrailerFromExisting = async (payload: any): Promise<string | null> => {
+const chooseOfficialTrailerFromExisting = async (
+  payload: any,
+): Promise<string | null> => {
   const candidates: Array<{ url: string; score: number }> = [];
 
   const pushCandidate = (rawUrl: any, name?: any, type?: any, official?: any) => {
@@ -215,10 +225,21 @@ const chooseOfficialTrailerFromExisting = async (payload: any): Promise<string |
   } else if (Array.isArray(payload)) {
     for (const row of payload.slice(0, 12)) {
       if (typeof row === 'string') pushCandidate(row);
-      else if (row && typeof row === 'object') pushCandidate(row.url || row.link || row.id || row.key, row.name || row.title, row.type, row.official);
+      else if (row && typeof row === 'object')
+        pushCandidate(
+          row.url || row.link || row.id || row.key,
+          row.name || row.title,
+          row.type,
+          row.official,
+        );
     }
   } else if (payload && typeof payload === 'object') {
-    pushCandidate(payload.url || payload.link || payload.id || payload.key, payload.name || payload.title, payload.type, payload.official);
+    pushCandidate(
+      payload.url || payload.link || payload.id || payload.key,
+      payload.name || payload.title,
+      payload.type,
+      payload.official,
+    );
   }
 
   const ranked = candidates.sort((a, b) => b.score - a.score);
@@ -255,7 +276,10 @@ const attachBestTrailer = async (info: any, id: string, type?: string) => {
   }
 };
 
-const fetchYouTubeTrailer = async (title: string, year?: string): Promise<string | null> => {
+const fetchYouTubeTrailer = async (
+  title: string,
+  year?: string,
+): Promise<string | null> => {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) return null;
 
@@ -294,7 +318,9 @@ const fetchYouTubeTrailer = async (title: string, year?: string): Promise<string
       const durationById = new Map<string, number>();
       for (const detail of videoDetails.data.items || []) {
         const detailId = detail.id || '';
-        const duration = parseIso8601DurationToSeconds(detail.contentDetails?.duration || '');
+        const duration = parseIso8601DurationToSeconds(
+          detail.contentDetails?.duration || '',
+        );
         if (detailId) durationById.set(detailId, duration);
       }
 
@@ -341,11 +367,138 @@ const resolveMovieProvider = (provider?: string) => {
   }
 };
 
+const resolveHdstream4uTvEpisodeId = async (
+  request: FastifyRequest,
+  id: string,
+  type: string,
+  season?: number,
+  episode?: number,
+): Promise<string> => {
+  const requestedSeason = Number(season || 1);
+  const requestedEpisode = Number(episode || 1);
+
+  let targetId = String(id || '').trim();
+  try {
+    const tmdbInfoRes = await request.server.inject({
+      method: 'GET',
+      url: `/meta/tmdb/info/${encodeURIComponent(targetId)}?type=${encodeURIComponent(type || 'tv')}`,
+    });
+    const tmdbInfo = safeJsonParse(tmdbInfoRes.body || '{}');
+    const titleCandidates = getTitleCandidatesFromMedia(tmdbInfo);
+    const preferredYear = Number(
+      String(tmdbInfo?.releaseDate || tmdbInfo?.first_air_date || '').slice(0, 4),
+    );
+    const targetSeasonLabel = `season ${requestedSeason}`;
+    for (const title of titleCandidates) {
+      try {
+        const results = await searchHdhub4uByTitle(`${title} ${targetSeasonLabel}`);
+        const normTitle = normalizeText(title);
+        const ranked = results
+          .map((entry) => {
+            const score = titleMatchScore(entry.title, titleCandidates);
+            const normalizedEntry = normalizeText(entry.title);
+            const startsWithBonus =
+              normTitle && normalizedEntry.startsWith(normTitle) ? 400 : 0;
+            const trailingAfterTitle =
+              normTitle && normalizedEntry.startsWith(normTitle)
+                ? normalizedEntry.slice(normTitle.length).trim()
+                : '';
+            const foreignSuffixPenalty =
+              trailingAfterTitle &&
+              !/^(?:\(?season\b|s\d+\b|series\b|web\b|all\s+episodes\b|bluray\b|webrip\b|web-dl\b|hindi\b|english\b|dual\b|x264\b|480p\b|720p\b|1080p\b|2160p\b|dd5\.1\b|\|)/i.test(
+                trailingAfterTitle,
+              )
+                ? -550
+                : 0;
+            const seasonHit = new RegExp(`season[\s-]*${requestedSeason}(?:\b|-)`, 'i').test(
+              `${entry.title} ${entry.url}`,
+            )
+              ? 300
+              : -200;
+            const yearBonus =
+              preferredYear &&
+              new RegExp(`(^|[^\d])${preferredYear}([^\d]|$)`, 'i').test(entry.title)
+                ? 120
+                : 0;
+            return {
+              url: entry.url,
+              score:
+                score + seasonHit + yearBonus + startsWithBonus + foreignSuffixPenalty,
+            };
+          })
+          .filter((entry) => entry.score >= 700)
+          .sort((a, b) => b.score - a.score);
+        if (ranked[0]?.url) {
+          targetId = ranked[0].url;
+          break;
+        }
+      } catch {
+        // fall back to generic info lookup below
+      }
+    }
+  } catch {
+    // fall through to generic info lookup below
+  }
+
+  const infoRes = await request.server.inject({
+    method: 'GET',
+    url: `/movies/hdstream4u/info?id=${encodeURIComponent(targetId)}&type=${encodeURIComponent(type || 'tv')}`,
+  });
+  if (infoRes.statusCode >= 400) return '';
+  const payload = safeJsonParse(infoRes.body || '{}');
+  const entries = Array.isArray(payload?.episodes) ? payload.episodes : [];
+  const match = entries.find(
+    (entry: any) =>
+      Number(entry?.seasonNumber || entry?.season || 1) === requestedSeason &&
+      Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode,
+  );
+  const normalizeEpisodeId = (entry: any): string => {
+    const raw = String(entry?.episodeId || entry?.url || entry?.id || '').trim();
+    // If the episodeId is a hubstream hash URL, extract the hash and look up
+    // the equivalent hdstream4u file URL from the entries list.
+    if (/^https?:\/\/(?:[^.]+\.)*hubstream\.(?:art|pw|cc|ink|foo|boo)\/?#/i.test(raw)) {
+      for (const candidate of entries) {
+        const candidateUrl = String(candidate?.episodeId || candidate?.url || candidate?.id || '').trim();
+        if (/^https?:\/\/(?:[^.]+\.)?(?:hdstream4u\.com|morencius\.com)\/file\//i.test(candidateUrl)) {
+          return candidateUrl;
+        }
+      }
+    }
+    return raw;
+  };
+
+  if (match) return normalizeEpisodeId(match);
+
+  // HDStream4u season pages sometimes expose only the requested season's episodes
+  // but still label every row as season 1. When that happens, fall back to episode
+  // number matching so TMDB SxEy requests can still resolve.
+  const episodeOnlyMatches = entries.filter(
+    (entry: any) =>
+      Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode,
+  );
+  if (episodeOnlyMatches.length === 1) {
+    return normalizeEpisodeId(episodeOnlyMatches[0]);
+  }
+
+  const seasonValues = Array.from(
+    new Set(
+      entries
+        .map((entry: any) => Number(entry?.seasonNumber || entry?.season || 1))
+        .filter((value: number) => Number.isFinite(value) && value > 0),
+    ),
+  );
+  if (seasonValues.length === 1) {
+    const fallback = episodeOnlyMatches[0];
+    if (fallback) return normalizeEpisodeId(fallback);
+  }
+
+  return '';
+};
+
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const MOVIE_WATCH_ATTEMPT_TIMEOUT_MS = Number(
   process.env.MOVIE_WATCH_ATTEMPT_TIMEOUT_MS || (IS_PRODUCTION ? 7000 : 5000),
 );
-
 
 const parseLocsFromXml = (xml: string): string[] => {
   return [...xml.matchAll(/<loc>([^<]+)<\/loc>/gi)].map((m) => m[1].trim());
@@ -422,10 +575,9 @@ const resolveTmdbExternalImdbId = async (id: string, type?: string): Promise<str
   if (/^tt\d+$/i.test(sourceId)) return sourceId;
   if (!/^\d+$/.test(sourceId) || !tmdbApi) return '';
 
-  const mediaTypes = Array.from(new Set([
-    type === 'tv' ? 'tv' : 'movie',
-    type === 'tv' ? 'movie' : 'tv',
-  ]));
+  const mediaTypes = Array.from(
+    new Set([type === 'tv' ? 'tv' : 'movie', type === 'tv' ? 'movie' : 'tv']),
+  );
 
   for (const mediaType of mediaTypes) {
     try {
@@ -446,7 +598,9 @@ const isAnimeLikeMovie = (media: any): boolean => {
   const genreNames = toGenreNames(media?.genres);
   const hasAnimationGenre = genreNames.some((genre) => genre.includes('animation'));
   const hasAnimeGenre = genreNames.some((genre) => genre.includes('anime'));
-  const lang = normalizeText(String(media?.originalLanguage || media?.original_language || ''));
+  const lang = normalizeText(
+    String(media?.originalLanguage || media?.original_language || ''),
+  );
   const isJapanese = lang === 'ja';
   return hasAnimeGenre || (hasAnimationGenre && isJapanese);
 };
@@ -460,6 +614,221 @@ const normalizeSlug = (value: string): string =>
     .replace(/^-|-$/g, '');
 
 const stripTrailingYear = (value: string): string => value.replace(/-(19|20)\d{2}$/i, '');
+
+const HDHUB4U_POST_SITEMAP_URL = 'https://new2.hdhub4u.cl/post-sitemap.xml';
+let hdhub4uSitemapCache: { urls: string[]; expiresAt: number } | null = null;
+
+const fetchHdhub4uSitemapUrls = async (): Promise<string[]> => {
+  if (hdhub4uSitemapCache && hdhub4uSitemapCache.expiresAt > Date.now()) {
+    return hdhub4uSitemapCache.urls;
+  }
+
+  const response = await axios.get(HDHUB4U_POST_SITEMAP_URL, {
+    timeout: 20000,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    responseType: 'text',
+  });
+  const xml = String(response.data || '');
+  const urls = [...xml.matchAll(/<loc>([^<]+)<\/loc>/gi)]
+    .map((match) => String(match[1] || '').trim())
+    .filter((value) => /^https?:\/\//i.test(value));
+
+  hdhub4uSitemapCache = {
+    urls,
+    expiresAt: Date.now() + 30 * 60 * 1000,
+  };
+
+  return urls;
+};
+
+const searchHdhub4uByTitle = async (
+  query: string,
+): Promise<Array<{ title: string; url: string }>> => {
+  const apiUrl = new URL('https://search.pingora.fyi/collections/post/documents/search');
+  apiUrl.searchParams.set('q', query);
+  apiUrl.searchParams.set('query_by', 'post_title,category,stars,director,imdb_id');
+  apiUrl.searchParams.set('query_by_weights', '4,2,2,2,4');
+  apiUrl.searchParams.set('sort_by', 'sort_by_date:desc');
+  apiUrl.searchParams.set('limit', '10');
+  apiUrl.searchParams.set('highlight_fields', 'none');
+  apiUrl.searchParams.set('use_cache', 'true');
+  apiUrl.searchParams.set('page', '1');
+  apiUrl.searchParams.set('analytics_tag', new Date().toISOString().slice(0, 10));
+
+  const response = await axios.get(apiUrl.toString(), {
+    timeout: 15000,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      Accept: 'application/json, text/plain, */*',
+      Origin: 'https://new2.hdhub4u.cl',
+      Referer: `https://new2.hdhub4u.cl/?s=${encodeURIComponent(query)}`,
+    },
+  });
+
+  const hits = Array.isArray(response.data?.hits) ? response.data.hits : [];
+  return hits
+    .map((hit: any) => hit?.document || {})
+    .map((doc: any) => ({
+      title: String(doc?.post_title || '').trim(),
+      url: String(doc?.permalink || doc?.url || '').trim(),
+    }))
+    .filter((entry: any) => entry.title && entry.url);
+};
+
+const findBestHdhub4uUrl = async (
+  titleCandidates: string[],
+  year?: number,
+): Promise<string> => {
+  const urls = await fetchHdhub4uSitemapUrls();
+  const ranked = urls
+    .map((url) => {
+      const slug = stripTrailingYear(normalizeSlug(new URL(url).pathname.split('/').filter(Boolean).pop() || ''));
+      const score = titleMatchScore(slug.replace(/-/g, ' '), titleCandidates);
+      const yearBonus = year && new RegExp(`(^|-)${year}(-|$)`, 'i').test(url) ? 120 : 0;
+      const tvBonus = /season|episode|series|web-series/i.test(url) ? 30 : 0;
+      return { url, score: score + yearBonus + tvBonus };
+    })
+    .filter((entry) => entry.score >= 700)
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0]?.url || '';
+};
+
+const extractHdstreamMovieCandidateIds = (infoPayload: any): string[] => {
+  const servers = Array.isArray(infoPayload?.servers) ? infoPayload.servers : [];
+  const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
+  const out: string[] = [];
+  const push = (value: any) => {
+    const clean = String(value || '').trim();
+    if (clean && !out.includes(clean)) out.push(clean);
+  };
+
+  servers.forEach((server: any) => {
+    const url = String(server?.url || '').trim();
+    const fileCode = String(server?.fileCode || '').trim();
+    if (/(?:hdstream4u|morencius)\.com\/file\//i.test(url)) {
+      push(fileCode || url);
+    }
+  });
+
+  servers.forEach((server: any) => {
+    const url = String(server?.url || '').trim();
+    if (/hubstream\.(?:art|pw|cc|ink|foo|boo)\/#/i.test(url)) push(url);
+  });
+
+  episodes.forEach((episode: any) => {
+    push(episode?.episodeId);
+    push(episode?.url);
+  });
+
+  return out;
+};
+
+const withSoftTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> => {
+  return await Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+};
+
+const resolveHdstream4uEpisodeId = async (
+  request: FastifyRequest,
+  mediaInfo: any,
+): Promise<string> => {
+  const mediaIdHint = String(mediaInfo?.tmdbId || mediaInfo?.id || '').trim();
+  const mediaTypeHint = String(mediaInfo?.type || mediaInfo?.media_type || 'movie').trim();
+
+  if (mediaIdHint) {
+    const directInfoRes = await request.server.inject({
+      method: 'GET',
+      url: `/movies/hdstream4u/info?id=${encodeURIComponent(mediaIdHint)}&type=${encodeURIComponent(mediaTypeHint)}`,
+    });
+    if (directInfoRes.statusCode < 400) {
+      const directInfoPayload = safeJsonParse(directInfoRes.body || '{}');
+      const directCandidates = extractHdstreamMovieCandidateIds(directInfoPayload);
+      if (directCandidates.length) return directCandidates[0];
+    }
+  }
+
+  const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
+  if (!titleCandidates.length) return '';
+
+  const preferredYear = Number(String(mediaInfo?.releaseDate || mediaInfo?.first_air_date || '').slice(0, 4));
+  let matchedUrl = '';
+  for (const title of titleCandidates) {
+    try {
+      const results = await searchHdhub4uByTitle(title);
+      const ranked = results
+        .map((entry) => {
+          const score = titleMatchScore(entry.title, titleCandidates);
+          const yearBonus = preferredYear && new RegExp(`(^|[^\d])${preferredYear}([^\d]|$)`, 'i').test(entry.title)
+            ? 120
+            : 0;
+          const tvLike = /season|episode|series|web[\s-]*series/i.test(entry.title + ' ' + entry.url);
+          const typeBonus = mediaInfo?.type === 'tv' || mediaInfo?.media_type === 'tv'
+            ? (tvLike ? 80 : -40)
+            : (tvLike ? -60 : 40);
+          return { url: entry.url, score: score + yearBonus + typeBonus };
+        })
+        .filter((entry) => entry.score >= 700)
+        .sort((a, b) => b.score - a.score);
+      if (ranked[0]?.url) {
+        matchedUrl = ranked[0].url;
+        break;
+      }
+    } catch {
+      // Fall back to sitemap matching below.
+    }
+  }
+
+  if (!matchedUrl) {
+    matchedUrl = await findBestHdhub4uUrl(
+      titleCandidates,
+      Number.isFinite(preferredYear) ? preferredYear : undefined,
+    );
+  }
+  if (!matchedUrl) return '';
+
+  const infoRes = await request.server.inject({
+    method: 'GET',
+    url: `/movies/hdstream4u/info?id=${encodeURIComponent(matchedUrl)}`,
+  });
+  if (infoRes.statusCode >= 400) return '';
+
+  const infoPayload = safeJsonParse(infoRes.body || '{}');
+  const servers = Array.isArray(infoPayload?.servers) ? infoPayload.servers : [];
+  const isTv =
+    String(mediaInfo?.type || mediaInfo?.media_type || '').toLowerCase() === 'tv';
+  const directFileServer = servers.find((server: any) =>
+    /(?:hdstream4u|morencius)\.com\/file\//i.test(String(server?.url || '')),
+  );
+  const primary =
+    servers.find((server: any) => /watch\s*online/i.test(String(server?.name || ''))) ||
+    servers.find((server: any) => /^https?:\/\//i.test(String(server?.url || ''))) ||
+    servers[0];
+  const fallbackEpisode = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes[0] : null;
+
+  if (!isTv) {
+    const directFileId = String(
+      directFileServer?.fileCode || directFileServer?.url || '',
+    ).trim();
+    if (directFileId) return directFileId;
+
+    const providerMediaId = String(
+      infoPayload?.id || matchedUrl || infoPayload?.url || '',
+    ).trim();
+    if (providerMediaId) return providerMediaId;
+  }
+
+  return String(
+    primary?.url ||
+      primary?.fileCode ||
+      primary?.id ||
+      fallbackEpisode?.episodeId ||
+      fallbackEpisode?.url ||
+      '',
+  ).trim();
+};
 
 const buildDramaSlugVariants = (dramaSlug: string): string[] => {
   const base = normalizeSlug(dramaSlug);
@@ -515,222 +884,342 @@ const convertTmdbImagesToUrls = (data: any) => {
 
   return data;
 };
-  const tryAnimeProvidersForMovie = async (request: any, options: { titleCandidates: string[]; server?: StreamingServers; }) => {
-    const { titleCandidates, server } = options;
-    if (!titleCandidates.length) return null;
-    const providersInOrder = [
-      'satoru',
-    ];
+const tryAnimeProvidersForMovie = async (
+  request: any,
+  options: { titleCandidates: string[]; server?: StreamingServers },
+) => {
+  const { titleCandidates, server } = options;
+  if (!titleCandidates.length) return null;
+  const providersInOrder = ['satoru'];
 
-    for (const providerKey of providersInOrder) {
-      const baseRoute = ANIME_PROVIDER_ROUTES[providerKey];
-      if (!baseRoute) continue;
-      
-      // Limit to top 2 titles for speed
-      const queries = titleCandidates.slice(0, 2);
-      
-      // Parallelize title searches
-      const searchPromises = queries.map(async (query) => {
-        try {
-          const searchRes = await request.server.inject({
-            method: 'GET',
-            url: `${baseRoute}/${encodeURIComponent(query)}`,
-          });
-          if (searchRes.statusCode >= 400) return null;
-          const searchPayload: any = safeJsonParse(searchRes.body);
-          const searchRows = Array.isArray(searchPayload?.results) ? searchPayload.results : [];
-          if (!searchRows.length) return null;
+  for (const providerKey of providersInOrder) {
+    const baseRoute = ANIME_PROVIDER_ROUTES[providerKey];
+    if (!baseRoute) continue;
 
-          return searchRows
+    // Limit to top 2 titles for speed
+    const queries = titleCandidates.slice(0, 2);
+
+    // Parallelize title searches
+    const searchPromises = queries.map(async (query) => {
+      try {
+        const searchRes = await request.server.inject({
+          method: 'GET',
+          url: `${baseRoute}/${encodeURIComponent(query)}`,
+        });
+        if (searchRes.statusCode >= 400) return null;
+        const searchPayload: any = safeJsonParse(searchRes.body);
+        const searchRows = Array.isArray(searchPayload?.results)
+          ? searchPayload.results
+          : [];
+        if (!searchRows.length) return null;
+
+        return (
+          searchRows
             .map((item: any) => ({
               item,
-              score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
+              score: titleMatchScore(
+                String(item?.title || item?.name || ''),
+                titleCandidates,
+              ),
             }))
-            .sort((a: any, b: any) => b.score - a.score)[0]?.item || null;
+            .sort((a: any, b: any) => b.score - a.score)[0]?.item || null
+        );
+      } catch {
+        return null;
+      }
+    });
+
+    const searchResults = await Promise.all(searchPromises);
+
+    // Try to process each found item in parallel
+    const pickPromises = searchResults
+      .filter((picked) => picked?.id)
+      .map(async (picked) => {
+        try {
+          const infoRes = await request.server.inject({
+            method: 'GET',
+            url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
+          });
+          if (infoRes.statusCode >= 400) return null;
+          const infoPayload: any = safeJsonParse(infoRes.body);
+          const episodes = Array.isArray(infoPayload?.episodes)
+            ? infoPayload.episodes
+            : [];
+          if (!episodes.length) return null;
+
+          const episodeIds = Array.from(
+            new Set(
+              [
+                episodes[0]?.id,
+                episodes[episodes.length - 1]?.id,
+                episodes.find((ep: any) => Number(ep?.number || 0) === 1)?.id,
+              ]
+                .filter((value) => typeof value === 'string' && value.trim())
+                .map((value) => String(value).trim()),
+            ),
+          );
+          if (!episodeIds.length) return null;
+
+          // Try first episode only for speed
+          for (const candidateEpisodeId of episodeIds.slice(0, 1)) {
+            const queryParts: string[] = [];
+            if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
+            const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
+            const watchRes = await request.server.inject({
+              method: 'GET',
+              url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
+            });
+            if (watchRes.statusCode >= 400) continue;
+            const watchPayload: any = safeJsonParse(watchRes.body);
+            if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
+              return watchPayload;
+            }
+          }
+          return null;
         } catch {
           return null;
         }
       });
 
-      const searchResults = await Promise.all(searchPromises);
-      
-      // Try to process each found item in parallel
-      const pickPromises = searchResults
-        .filter((picked) => picked?.id)
-        .map(async (picked) => {
-          try {
-            const infoRes = await request.server.inject({
-              method: 'GET',
-              url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
-            });
-            if (infoRes.statusCode >= 400) return null;
-            const infoPayload: any = safeJsonParse(infoRes.body);
-            const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
-            if (!episodes.length) return null;
+    const results = await Promise.all(pickPromises);
+    const firstValid = results.find((r) => r);
+    if (firstValid) return firstValid;
+  }
 
-            const episodeIds = Array.from(
-              new Set(
-                [
-                  episodes[0]?.id,
-                  episodes[episodes.length - 1]?.id,
-                  episodes.find((ep: any) => Number(ep?.number || 0) === 1)?.id,
-                ]
-                  .filter((value) => typeof value === 'string' && value.trim())
-                  .map((value) => String(value).trim()),
-              ),
-            );
-            if (!episodeIds.length) return null;
+  return null;
+};
 
-            // Try first episode only for speed
-            for (const candidateEpisodeId of episodeIds.slice(0, 1)) {
-              const queryParts: string[] = [];
-              if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
-              const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
-              const watchRes = await request.server.inject({
-                method: 'GET',
-                url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
-              });
-              if (watchRes.statusCode >= 400) continue;
-              const watchPayload: any = safeJsonParse(watchRes.body);
-              if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
-                return watchPayload;
-              }
-            }
-            return null;
-          } catch {
-            return null;
-          }
-        });
-
-      const results = await Promise.all(pickPromises);
-      const firstValid = results.find((r) => r);
-      if (firstValid) return firstValid;
+const buildJustanimeTmdbInfo = async (request: any, id: string, type: string) => {
+  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+  const fetchBase = async () => {
+    const res = await baseTmdb.fetchMediaInfo(id, type);
+    if (res && typeof res === 'object') {
+      delete (res as any).cast;
+      delete (res as any).characters;
+      delete (res as any).recommendations;
+      delete (res as any).similar;
     }
-
-    return null;
+    return res;
   };
 
+  const baseInfo: any = redis
+    ? await cache.fetch(
+        redis as Redis,
+        `tmdb:info:${type}:${id}:trailer-v3`,
+        fetchBase,
+        REDIS_TTL,
+      )
+    : await fetchBase();
 
+  await attachBestTrailer(baseInfo, id, type);
 
-  const buildJustanimeTmdbInfo = async (request: any, id: string, type: string) => {
-    const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-    const fetchBase = async () => {
-      const res = await baseTmdb.fetchMediaInfo(id, type);
-      if (res && typeof res === 'object') {
-        delete (res as any).cast;
-        delete (res as any).characters;
-        delete (res as any).recommendations;
-        delete (res as any).similar;
-      }
-      return res;
-    };
+  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+  if (!titleCandidates.length) return baseInfo;
 
-    const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:trailer-v3`, fetchBase, REDIS_TTL)
-      : await fetchBase();
+  const yearGuess = Number(
+    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
+  );
 
-    await attachBestTrailer(baseInfo, id, type);
+  // Search JustAnime with multiple title candidates and year variants
+  let pick: any = null;
+  const searchTerms = [];
 
-    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-    if (!titleCandidates.length) return baseInfo;
+  // Add title candidates
+  searchTerms.push(...titleCandidates.slice(0, 2));
 
-    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-    
-    // Search JustAnime with multiple title candidates and year variants
-    let pick: any = null;
-    const searchTerms = [];
-    
-    // Add title candidates
-    searchTerms.push(...titleCandidates.slice(0, 2));
-    
-    // Add simplified versions (remove special characters, colons, etc.)
-    titleCandidates.slice(0, 2).forEach(title => {
-      const simplified = title.replace(/[^\w\s]/g, '').trim();
-      if (simplified !== title) searchTerms.push(simplified);
-    });
-    
-    // Add year variants for better matching
-    if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-      searchTerms.push(...titleCandidates.slice(0, 2).map(title => `${title} ${yearGuess}`));
-    }
-    
-    for (const term of searchTerms.slice(0, 6)) { // Try up to 6 search terms
-      try {
-        const searchRes = await request.server.inject({
-          method: 'GET',
-          url: `/anime/justanime/${encodeURIComponent(term)}`,
-        });
-        
-        if (searchRes.statusCode < 400) {
-          const payload = safeJsonParse(searchRes.body || '{}');
-          const results: any[] = Array.isArray(payload?.results)
-            ? payload.results
-            : Array.isArray(payload?.data)
+  // Add simplified versions (remove special characters, colons, etc.)
+  titleCandidates.slice(0, 2).forEach((title) => {
+    const simplified = title.replace(/[^\w\s]/g, '').trim();
+    if (simplified !== title) searchTerms.push(simplified);
+  });
+
+  // Add year variants for better matching
+  if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+    searchTerms.push(
+      ...titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`),
+    );
+  }
+
+  for (const term of searchTerms.slice(0, 6)) {
+    // Try up to 6 search terms
+    try {
+      const searchRes = await request.server.inject({
+        method: 'GET',
+        url: `/anime/justanime/${encodeURIComponent(term)}`,
+      });
+
+      if (searchRes.statusCode < 400) {
+        const payload = safeJsonParse(searchRes.body || '{}');
+        const results: any[] = Array.isArray(payload?.results)
+          ? payload.results
+          : Array.isArray(payload?.data)
             ? payload.data
             : [];
-          
-          const scored = results.map((item: any) => {
+
+        const scored = results
+          .map((item: any) => {
             // JustAnime title is a nested object: {english, romaji}
             const titleObj = item?.title;
-            const itemTitle = typeof titleObj === 'string'
-              ? titleObj
-              : String(titleObj?.english || titleObj?.romaji || titleObj?.native || item?.name || '');
+            const itemTitle =
+              typeof titleObj === 'string'
+                ? titleObj
+                : String(
+                    titleObj?.english ||
+                      titleObj?.romaji ||
+                      titleObj?.native ||
+                      item?.name ||
+                      '',
+                  );
             let score = titleMatchScore(itemTitle, titleCandidates);
-            
+
             if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-              const itemYear = Number(String(item?.year || item?.released || '').slice(0, 4));
+              const itemYear = Number(
+                String(item?.year || item?.released || '').slice(0, 4),
+              );
               if (itemYear === yearGuess) score += 50;
               else if (Math.abs(itemYear - yearGuess) <= 1) score += 20;
             }
-            
-            return { item, score };
-          }).sort((a: any, b: any) => b.score - a.score);
 
-          const candidate = scored[0]?.item;
-          if (candidate && (!pick || (scored[0]?.score || 0) > (pick.score || 0))) {
-            pick = { ...candidate, score: scored[0]?.score || 0 };
-          }
+            return { item, score };
+          })
+          .sort((a: any, b: any) => b.score - a.score);
+
+        const candidate = scored[0]?.item;
+        if (candidate && (!pick || (scored[0]?.score || 0) > (pick.score || 0))) {
+          pick = { ...candidate, score: scored[0]?.score || 0 };
         }
-      } catch {
-        continue; // Try next term
       }
+    } catch {
+      continue; // Try next term
     }
-    
-    if (pick) {
-      const providerId = String(pick.id || pick.anilistId || '');
-      const anilistId = pick.anilistId ? String(pick.anilistId) : null;
-      
-      if (providerId) {
-        // Map episodes to JustAnime format: providerId$episode$number
+  }
+
+  if (pick) {
+    const providerId = String(pick.id || pick.anilistId || '');
+    const anilistId = pick.anilistId ? String(pick.anilistId) : null;
+
+    if (providerId) {
+      // Map episodes to JustAnime format: providerId$episode$number
+      if (Array.isArray(baseInfo.seasons)) {
+        baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIdx: number) => {
+          if (!Array.isArray(season.episodes)) return season;
+          return {
+            ...season,
+            episodes: season.episodes.map((ep: any) => ({
+              ...ep,
+              id: `${providerId}$episode$${ep.episode || ep.number}`,
+            })),
+          };
+        });
+      } else if (Array.isArray(baseInfo.episodes)) {
+        baseInfo.episodes = baseInfo.episodes.map((ep: any) => ({
+          ...ep,
+          id: `${providerId}$episode$${ep.episode || ep.number}`,
+        }));
+      }
+      if (anilistId) baseInfo.anilistId = anilistId;
+      baseInfo.id = providerId;
+    }
+  }
+
+  convertTmdbImagesToUrls(baseInfo);
+  return baseInfo;
+};
+
+const buildAnimesaltTmdbInfo = async (request: any, id: string, type: string) => {
+  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+  const fetchBase = async () => {
+    const res = await baseTmdb.fetchMediaInfo(id, type);
+    if (res && typeof res === 'object') {
+      delete (res as any).cast;
+      delete (res as any).characters;
+      delete (res as any).recommendations;
+      delete (res as any).similar;
+    }
+    return res;
+  };
+
+  const baseInfo: any = redis
+    ? await cache.fetch(
+        redis as Redis,
+        `tmdb:info:${type}:${id}:trailer-v3`,
+        fetchBase,
+        REDIS_TTL,
+      )
+    : await fetchBase();
+
+  await attachBestTrailer(baseInfo, id, type);
+
+  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+  if (!titleCandidates.length) return baseInfo;
+
+  const yearGuess = Number(
+    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
+  );
+
+  // Search AnimeSalt with primary titles
+  const term = titleCandidates[0];
+  try {
+    const searchRes = await request.server.inject({
+      method: 'GET',
+      url: `/anime/animesalt/${encodeURIComponent(term)}`,
+    });
+
+    if (searchRes.statusCode < 400) {
+      const payload = safeJsonParse(searchRes.body || '{}');
+      const results = Array.isArray(payload?.results) ? payload.results : [];
+
+      const scored = results
+        .map((item: any) => {
+          const itemTitle = String(item?.title || '');
+          let score = titleMatchScore(itemTitle, titleCandidates);
+
+          if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+            const itemYear = Number(String(item?.releaseDate || '').slice(0, 4));
+            if (itemYear === yearGuess) score += 50;
+          }
+
+          return { item, score };
+        })
+        .sort((a: any, b: any) => b.score - a.score);
+
+      const pick = scored[0]?.item;
+      if (pick && pick.anilistId) {
+        const anilistId = String(pick.anilistId);
+
         if (Array.isArray(baseInfo.seasons)) {
-          baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIdx: number) => {
+          baseInfo.seasons = baseInfo.seasons.map((season: any) => {
             if (!Array.isArray(season.episodes)) return season;
             return {
               ...season,
               episodes: season.episodes.map((ep: any) => ({
                 ...ep,
-                id: `${providerId}$episode$${ep.episode || ep.number}`,
+                id: `${anilistId}$episode$${ep.episode || ep.number}`,
               })),
             };
           });
         } else if (Array.isArray(baseInfo.episodes)) {
-           baseInfo.episodes = baseInfo.episodes.map((ep: any) => ({
-              ...ep,
-              id: `${providerId}$episode$${ep.episode || ep.number}`,
-           }));
+          baseInfo.episodes = baseInfo.episodes.map((ep: any) => ({
+            ...ep,
+            id: `${anilistId}$episode$${ep.episode || ep.number}`,
+          }));
         }
-        if (anilistId) baseInfo.anilistId = anilistId;
-        baseInfo.id = providerId;
+        baseInfo.anilistId = anilistId;
+        baseInfo.id = anilistId;
       }
     }
+  } catch {
+    // ignore mapping errors
+  }
 
-    convertTmdbImagesToUrls(baseInfo);
-    return baseInfo;
-  };
+  convertTmdbImagesToUrls(baseInfo);
+  return baseInfo;
+};
 
-  const buildAnimesaltTmdbInfo = async (request: any, id: string, type: string) => {
-    const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-    const fetchBase = async () => {
+const buildAnimetsuTmdbInfo = async (request: any, id: string, type: string) => {
+  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+  const fetchBase = async () => {
+    try {
       const res = await baseTmdb.fetchMediaInfo(id, type);
       if (res && typeof res === 'object') {
         delete (res as any).cast;
@@ -739,437 +1228,473 @@ const convertTmdbImagesToUrls = (data: any) => {
         delete (res as any).similar;
       }
       return res;
-    };
+    } catch {
+      if (!tmdbApi)
+        throw new Error('Failed to fetch TMDB base info for Animetsu mapping');
+      const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+      const directUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${tmdbApi}&language=en-US`;
+      const directRes = await axios.get(directUrl);
+      const raw = directRes?.data || {};
+      const direct: any = {
+        id: raw.id,
+        title: raw.title || raw.name || 'Unknown',
+        name: raw.name || raw.title || 'Unknown',
+        releaseDate: raw.release_date || raw.first_air_date || null,
+        firstAirDate: raw.first_air_date || null,
+        image: raw.poster_path || null,
+        cover: raw.backdrop_path || null,
+        description: raw.overview || '',
+        genres: Array.isArray(raw.genres) ? raw.genres : [],
+        seasons: [],
+        episodes: [],
+      };
 
-    const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:trailer-v3`, fetchBase, REDIS_TTL)
-      : await fetchBase();
+      if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
+        const seasonRows = raw.seasons
+          .filter((season: any) => Number(season?.season_number || 0) > 0)
+          .sort(
+            (a: any, b: any) =>
+              Number(a?.season_number || 0) - Number(b?.season_number || 0),
+          );
+        const seasonDetails = await Promise.all(
+          seasonRows.map(async (season: any) => {
+            const seasonNo = Number(season?.season_number || 0);
+            try {
+              const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
+              const seasonRes = await axios.get(seasonUrl);
+              const eps = Array.isArray(seasonRes?.data?.episodes)
+                ? seasonRes.data.episodes.map((ep: any) => ({
+                    id: '',
+                    episode: Number(ep?.episode_number || 0),
+                    number: Number(ep?.episode_number || 0),
+                    title: ep?.name || `Episode ${ep?.episode_number || 0}`,
+                  }))
+                : [];
+              return {
+                season: seasonNo,
+                number: seasonNo,
+                name: season?.name || `Season ${seasonNo}`,
+                episodes: eps,
+              };
+            } catch {
+              return {
+                season: seasonNo,
+                number: seasonNo,
+                name: season?.name || `Season ${seasonNo}`,
+                episodes: [],
+              };
+            }
+          }),
+        );
+        direct.seasons = seasonDetails;
+      }
 
-    await attachBestTrailer(baseInfo, id, type);
+      return direct;
+    }
+  };
 
-    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-    if (!titleCandidates.length) return baseInfo;
+  const baseInfo: any = redis
+    ? await cache.fetch(
+        redis as Redis,
+        `tmdb:info:${type}:${id}:trailer-v3`,
+        fetchBase,
+        REDIS_TTL,
+      )
+    : await fetchBase();
 
-    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-    
-    // Search AnimeSalt with primary titles
-    const term = titleCandidates[0];
+  await attachBestTrailer(baseInfo, id, type);
+
+  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+  if (!titleCandidates.length) return baseInfo;
+
+  const yearGuess = Number(
+    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
+  );
+  let pick: any = null;
+
+  const searchTerms = Array.from(
+    new Set(
+      [
+        ...titleCandidates.slice(0, 2),
+        ...titleCandidates.slice(0, 2).map((title) =>
+          String(title || '')
+            .replace(/[^\w\s]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim(),
+        ),
+        ...(Number.isFinite(yearGuess) && yearGuess > 1900
+          ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
+          : []),
+      ].filter(Boolean),
+    ),
+  );
+
+  for (const term of searchTerms.slice(0, 6)) {
     try {
       const searchRes = await request.server.inject({
         method: 'GET',
-        url: `/anime/animesalt/${encodeURIComponent(term)}`,
+        url: `/anime/animetsu/search/${encodeURIComponent(term)}`,
       });
-      
-      if (searchRes.statusCode < 400) {
-        const payload = safeJsonParse(searchRes.body || '{}');
-        const results = Array.isArray(payload?.results) ? payload.results : [];
-        
-        const scored = results.map((item: any) => {
-          const itemTitle = String(item?.title || '');
-          let score = titleMatchScore(itemTitle, titleCandidates);
-          
-          if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-            const itemYear = Number(String(item?.releaseDate || '').slice(0, 4));
-            if (itemYear === yearGuess) score += 50;
-          }
-          
-          return { item, score };
-        }).sort((a: any, b: any) => b.score - a.score);
+      if (searchRes.statusCode >= 400) continue;
 
-        const pick = scored[0]?.item;
-        if (pick && pick.anilistId) {
-          const anilistId = String(pick.anilistId);
-          
-          if (Array.isArray(baseInfo.seasons)) {
-            baseInfo.seasons = baseInfo.seasons.map((season: any) => {
-              if (!Array.isArray(season.episodes)) return season;
-              return {
-                ...season,
-                episodes: season.episodes.map((ep: any) => ({
-                  ...ep,
-                  id: `${anilistId}$episode$${ep.episode || ep.number}`,
-                })),
-              };
-            });
-          } else if (Array.isArray(baseInfo.episodes)) {
-             baseInfo.episodes = baseInfo.episodes.map((ep: any) => ({
-                ...ep,
-                id: `${anilistId}$episode$${ep.episode || ep.number}`,
-             }));
+      const payload = safeJsonParse(searchRes.body || '{}');
+      const results = Array.isArray(payload?.results) ? payload.results : [];
+      const scored = results
+        .map((item: any) => {
+          let score = titleMatchScore(
+            String(item?.title || item?.name || ''),
+            titleCandidates,
+          );
+          if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+            const itemYear = Number(
+              String(item?.releaseDate || item?.year || '').slice(0, 4),
+            );
+            if (itemYear === yearGuess) score += 50;
+            else if (Number.isFinite(itemYear) && Math.abs(itemYear - yearGuess) <= 1)
+              score += 20;
           }
-          baseInfo.anilistId = anilistId;
-          baseInfo.id = anilistId;
-        }
+          return { item, score };
+        })
+        .sort((a: any, b: any) => b.score - a.score);
+
+      const candidate = scored[0];
+      if (candidate?.item?.id && (!pick || candidate.score > pick.score)) {
+        pick = { ...candidate.item, score: candidate.score };
       }
     } catch {
-      // ignore mapping errors
+      continue;
     }
+  }
 
+  const providerId = String(pick?.id || '').trim();
+  if (!providerId) {
     convertTmdbImagesToUrls(baseInfo);
     return baseInfo;
-  };
+  }
 
-  const buildAnimetsuTmdbInfo = async (request: any, id: string, type: string) => {
-    const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-    const fetchBase = async () => {
-      try {
-        const res = await baseTmdb.fetchMediaInfo(id, type);
-        if (res && typeof res === 'object') {
-          delete (res as any).cast;
-          delete (res as any).characters;
-          delete (res as any).recommendations;
-          delete (res as any).similar;
-        }
-        return res;
-      } catch {
-        if (!tmdbApi) throw new Error('Failed to fetch TMDB base info for Animetsu mapping');
-        const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
-        const directUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${tmdbApi}&language=en-US`;
-        const directRes = await axios.get(directUrl);
-        const raw = directRes?.data || {};
-        const direct: any = {
-          id: raw.id,
-          title: raw.title || raw.name || 'Unknown',
-          name: raw.name || raw.title || 'Unknown',
-          releaseDate: raw.release_date || raw.first_air_date || null,
-          firstAirDate: raw.first_air_date || null,
-          image: raw.poster_path || null,
-          cover: raw.backdrop_path || null,
-          description: raw.overview || '',
-          genres: Array.isArray(raw.genres) ? raw.genres : [],
-          seasons: [],
-          episodes: [],
-        };
-
-        if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
-          const seasonRows = raw.seasons
-            .filter((season: any) => Number(season?.season_number || 0) > 0)
-            .sort((a: any, b: any) => Number(a?.season_number || 0) - Number(b?.season_number || 0));
-          const seasonDetails = await Promise.all(
-            seasonRows.map(async (season: any) => {
-              const seasonNo = Number(season?.season_number || 0);
-              try {
-                const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
-                const seasonRes = await axios.get(seasonUrl);
-                const eps = Array.isArray(seasonRes?.data?.episodes)
-                  ? seasonRes.data.episodes.map((ep: any) => ({
-                      id: '',
-                      episode: Number(ep?.episode_number || 0),
-                      number: Number(ep?.episode_number || 0),
-                      title: ep?.name || `Episode ${ep?.episode_number || 0}`,
-                    }))
-                  : [];
-                return {
-                  season: seasonNo,
-                  number: seasonNo,
-                  name: season?.name || `Season ${seasonNo}`,
-                  episodes: eps,
-                };
-              } catch {
-                return {
-                  season: seasonNo,
-                  number: seasonNo,
-                  name: season?.name || `Season ${seasonNo}`,
-                  episodes: [],
-                };
-              }
-            }),
-          );
-          direct.seasons = seasonDetails;
-        }
-
-        return direct;
-      }
-    };
-
-    const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:trailer-v3`, fetchBase, REDIS_TTL)
-      : await fetchBase();
-
-    await attachBestTrailer(baseInfo, id, type);
-
-    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-    if (!titleCandidates.length) return baseInfo;
-
-    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-    let pick: any = null;
-
-    const searchTerms = Array.from(new Set([
-      ...titleCandidates.slice(0, 2),
-      ...titleCandidates.slice(0, 2).map((title) => String(title || '').replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()),
-      ...(Number.isFinite(yearGuess) && yearGuess > 1900
-        ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
-        : []),
-    ].filter(Boolean)));
-
-    for (const term of searchTerms.slice(0, 6)) {
-      try {
-        const searchRes = await request.server.inject({
-          method: 'GET',
-          url: `/anime/animetsu/search/${encodeURIComponent(term)}`,
-        });
-        if (searchRes.statusCode >= 400) continue;
-
-        const payload = safeJsonParse(searchRes.body || '{}');
-        const results = Array.isArray(payload?.results) ? payload.results : [];
-        const scored = results
-          .map((item: any) => {
-            let score = titleMatchScore(String(item?.title || item?.name || ''), titleCandidates);
-            if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-              const itemYear = Number(String(item?.releaseDate || item?.year || '').slice(0, 4));
-              if (itemYear === yearGuess) score += 50;
-              else if (Number.isFinite(itemYear) && Math.abs(itemYear - yearGuess) <= 1) score += 20;
-            }
-            return { item, score };
-          })
-          .sort((a: any, b: any) => b.score - a.score);
-
-        const candidate = scored[0];
-        if (candidate?.item?.id && (!pick || candidate.score > pick.score)) {
-          pick = { ...candidate.item, score: candidate.score };
-        }
-      } catch {
-        continue;
-      }
+  let providerEpisodes: any[] = [];
+  let providerInfoPayload: any = null;
+  try {
+    const infoRes = await request.server.inject({
+      method: 'GET',
+      url: `/anime/animetsu/info?id=${encodeURIComponent(providerId)}`,
+    });
+    if (infoRes.statusCode < 400) {
+      providerInfoPayload = safeJsonParse(infoRes.body || '{}');
+      providerEpisodes = Array.isArray(providerInfoPayload?.episodes)
+        ? providerInfoPayload.episodes
+        : [];
     }
+  } catch {
+    providerEpisodes = [];
+  }
 
-    const providerId = String(pick?.id || '').trim();
-    if (!providerId) {
-      convertTmdbImagesToUrls(baseInfo);
-      return baseInfo;
+  const sortedProviderEpisodes = [...providerEpisodes].sort(
+    (a: any, b: any) =>
+      Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0),
+  );
+
+  const buildAnimetsuSiteSeasons = async (): Promise<any[]> => {
+    if (!providerInfoPayload || typeof providerInfoPayload !== 'object') return [];
+
+    const relatedEntries = Array.isArray(providerInfoPayload?.relatedSeasons)
+      ? providerInfoPayload.relatedSeasons
+      : Array.isArray(providerInfoPayload?.providerSeasons)
+        ? providerInfoPayload.providerSeasons
+        : [];
+    const rawEntries = relatedEntries.length
+      ? [...relatedEntries]
+      : [providerInfoPayload];
+    if (!rawEntries.some((entry: any) => String(entry?.id || '').trim() === providerId)) {
+      rawEntries.unshift(providerInfoPayload);
     }
+    const seenIds = new Set<string>();
+    const entries = rawEntries
+      .map((entry: any) => {
+        const entryId = String(entry?.id || '').trim();
+        return entryId ? { ...entry, id: entryId } : null;
+      })
+      .filter(Boolean)
+      .filter((entry: any) => {
+        const entryId = String(entry?.id || '').trim();
+        if (!entryId || seenIds.has(entryId)) return false;
+        seenIds.add(entryId);
 
-    let providerEpisodes: any[] = [];
-    let providerInfoPayload: any = null;
-    try {
-      const infoRes = await request.server.inject({
-        method: 'GET',
-        url: `/anime/animetsu/info?id=${encodeURIComponent(providerId)}`,
+        const format = String(entry?.format || '').toUpperCase();
+        const relation = String(
+          entry?.relation || entry?.relation_type || '',
+        ).toLowerCase();
+        const titleText = String(
+          typeof entry?.title === 'string'
+            ? entry.title
+            : entry?.title?.english || entry?.title?.romaji || entry?.name || '',
+        ).toLowerCase();
+        if (format && format !== 'TV') return false;
+        if (/movie|special|ova|ona|pv|recap/i.test(`${format} ${relation} ${titleText}`))
+          return false;
+        return true;
       });
-      if (infoRes.statusCode < 400) {
-        providerInfoPayload = safeJsonParse(infoRes.body || '{}');
-        providerEpisodes = Array.isArray(providerInfoPayload?.episodes) ? providerInfoPayload.episodes : [];
-      }
-    } catch {
-      providerEpisodes = [];
-    }
 
-    const sortedProviderEpisodes = [...providerEpisodes].sort(
-      (a: any, b: any) => Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0),
+    const details = await Promise.all(
+      entries.map(async (entry: any, index: number) => {
+        let info = String(entry?.id || '') === providerId ? providerInfoPayload : null;
+        if (!info || !Array.isArray(info?.episodes)) {
+          try {
+            const res = await request.server.inject({
+              method: 'GET',
+              url: `/anime/animetsu/info?id=${encodeURIComponent(String(entry.id))}`,
+            });
+            if (res.statusCode < 400) info = safeJsonParse(res.body || '{}');
+          } catch {
+            info = null;
+          }
+        }
+
+        const episodes = (Array.isArray(info?.episodes) ? info.episodes : [])
+          .map((ep: any, epIndex: number) => {
+            const episodeNo =
+              Number(ep?.episode || ep?.number || ep?.episodeNum || epIndex + 1) ||
+              epIndex + 1;
+            return {
+              id: String(ep?.id || `${entry.id}$episode$${episodeNo}`).trim(),
+              episode: episodeNo,
+              number: episodeNo,
+              episodeNum: episodeNo,
+              title: String(ep?.title || `Episode ${episodeNo}`),
+              image: ep?.image,
+              description: ep?.description,
+              isFiller: ep?.isFiller === true || ep?.is_filler === true,
+            };
+          })
+          .sort((a: any, b: any) => Number(a.episode || 0) - Number(b.episode || 0));
+        if (!episodes.length) return null;
+
+        const relationLabel = String(entry?.relation || '').trim();
+        const titleLabel = String(
+          relationLabel ||
+            (typeof entry?.title === 'string'
+              ? entry.title
+              : entry?.title?.english ||
+                entry?.title?.romaji ||
+                entry?.name ||
+                info?.title ||
+                ''),
+        ).trim();
+        const seasonNo = index + 1;
+        return {
+          season: seasonNo,
+          number: seasonNo,
+          seasonNo,
+          seasonNumber: seasonNo,
+          name: titleLabel || `Season ${seasonNo}`,
+          title: titleLabel || `Season ${seasonNo}`,
+          id: String(entry.id),
+          providerAnimeId: String(entry.id),
+          image: entry?.image || entry?.cover_image?.large || info?.image,
+          cover: entry?.cover || entry?.banner || info?.cover,
+          releaseDate: entry?.releaseDate || entry?.year || info?.releaseDate,
+          episodes,
+        };
+      }),
     );
 
-    const buildAnimetsuSiteSeasons = async (): Promise<any[]> => {
-      if (!providerInfoPayload || typeof providerInfoPayload !== 'object') return [];
+    return details.filter(Boolean) as any[];
+  };
 
-      const relatedEntries = Array.isArray(providerInfoPayload?.relatedSeasons)
-        ? providerInfoPayload.relatedSeasons
-        : Array.isArray(providerInfoPayload?.providerSeasons)
-          ? providerInfoPayload.providerSeasons
-          : [];
-      const rawEntries = relatedEntries.length ? [...relatedEntries] : [providerInfoPayload];
-      if (!rawEntries.some((entry: any) => String(entry?.id || '').trim() === providerId)) {
-        rawEntries.unshift(providerInfoPayload);
-      }
-      const seenIds = new Set<string>();
-      const entries = rawEntries
-        .map((entry: any) => {
-          const entryId = String(entry?.id || '').trim();
-          return entryId ? { ...entry, id: entryId } : null;
-        })
-        .filter(Boolean)
-        .filter((entry: any) => {
-          const entryId = String(entry?.id || '').trim();
-          if (!entryId || seenIds.has(entryId)) return false;
-          seenIds.add(entryId);
-
-          const format = String(entry?.format || '').toUpperCase();
-          const relation = String(entry?.relation || entry?.relation_type || '').toLowerCase();
-          const titleText = String(
-            typeof entry?.title === 'string'
-              ? entry.title
-              : entry?.title?.english || entry?.title?.romaji || entry?.name || '',
-          ).toLowerCase();
-          if (format && format !== 'TV') return false;
-          if (/movie|special|ova|ona|pv|recap/i.test(`${format} ${relation} ${titleText}`)) return false;
-          return true;
-        });
-
-      const details = await Promise.all(
-        entries.map(async (entry: any, index: number) => {
-          let info = String(entry?.id || '') === providerId ? providerInfoPayload : null;
-          if (!info || !Array.isArray(info?.episodes)) {
-            try {
-              const res = await request.server.inject({
-                method: 'GET',
-                url: `/anime/animetsu/info?id=${encodeURIComponent(String(entry.id))}`,
-              });
-              if (res.statusCode < 400) info = safeJsonParse(res.body || '{}');
-            } catch {
-              info = null;
-            }
-          }
-
-          const episodes = (Array.isArray(info?.episodes) ? info.episodes : [])
-            .map((ep: any, epIndex: number) => {
-              const episodeNo = Number(ep?.episode || ep?.number || ep?.episodeNum || epIndex + 1) || epIndex + 1;
-              return {
-                id: String(ep?.id || `${entry.id}$episode$${episodeNo}`).trim(),
-                episode: episodeNo,
-                number: episodeNo,
-                episodeNum: episodeNo,
-                title: String(ep?.title || `Episode ${episodeNo}`),
-                image: ep?.image,
-                description: ep?.description,
-                isFiller: ep?.isFiller === true || ep?.is_filler === true,
-              };
-            })
-            .sort((a: any, b: any) => Number(a.episode || 0) - Number(b.episode || 0));
-          if (!episodes.length) return null;
-
-          const relationLabel = String(entry?.relation || '').trim();
-          const titleLabel = String(
-            relationLabel ||
-              (typeof entry?.title === 'string'
-                ? entry.title
-                : entry?.title?.english || entry?.title?.romaji || entry?.name || info?.title || ''),
-          ).trim();
-          const seasonNo = index + 1;
-          return {
-            season: seasonNo,
-            number: seasonNo,
-            seasonNo,
-            seasonNumber: seasonNo,
-            name: titleLabel || `Season ${seasonNo}`,
-            title: titleLabel || `Season ${seasonNo}`,
-            id: String(entry.id),
-            providerAnimeId: String(entry.id),
-            image: entry?.image || entry?.cover_image?.large || info?.image,
-            cover: entry?.cover || entry?.banner || info?.cover,
-            releaseDate: entry?.releaseDate || entry?.year || info?.releaseDate,
-            episodes,
-          };
-        }),
-      );
-
-      return details.filter(Boolean) as any[];
-    };
-
-    const animetsuSiteSeasons = await buildAnimetsuSiteSeasons();
-    if (animetsuSiteSeasons.length) {
-      baseInfo.seasons = animetsuSiteSeasons;
-      baseInfo.providerSeasons = animetsuSiteSeasons;
-      baseInfo.episodes = [];
-      baseInfo.id = providerId;
-      if (pick?.anilistId) baseInfo.anilistId = String(pick.anilistId);
-      if (pick?.malId) baseInfo.malId = String(pick.malId);
-
-      convertTmdbImagesToUrls(baseInfo);
-      return baseInfo;
-    }
-
-    if (Array.isArray(baseInfo.seasons)) {
-      baseInfo.seasons = baseInfo.seasons.map((season: any) => {
-        if (!Array.isArray(season.episodes)) return season;
-
-        return {
-          ...season,
-          id: providerId,
-          providerAnimeId: providerId,
-          episodes: season.episodes.map((ep: any, idx: number) => {
-            const epNo = Number(ep?.episode || ep?.number || idx + 1) || (idx + 1);
-            const mapped = sortedProviderEpisodes.find((row: any) => Number(row?.number || row?.episode || 0) === epNo);
-            return {
-              ...ep,
-              id: mapped?.id || `${providerId}$episode$${epNo}`,
-            };
-          }),
-        };
-      });
-    } else if (Array.isArray(baseInfo.episodes)) {
-      baseInfo.episodes = baseInfo.episodes.map((ep: any, idx: number) => {
-        const mapped = sortedProviderEpisodes[idx] || sortedProviderEpisodes[Number(ep?.episode || ep?.number || idx + 1) - 1];
-        return {
-          ...ep,
-          id: mapped?.id || `${providerId}$episode$${ep.episode || ep.number || idx + 1}`,
-        };
-      });
-    }
-
+  const animetsuSiteSeasons = await buildAnimetsuSiteSeasons();
+  if (animetsuSiteSeasons.length) {
+    baseInfo.seasons = animetsuSiteSeasons;
+    baseInfo.providerSeasons = animetsuSiteSeasons;
+    baseInfo.episodes = [];
     baseInfo.id = providerId;
     if (pick?.anilistId) baseInfo.anilistId = String(pick.anilistId);
     if (pick?.malId) baseInfo.malId = String(pick.malId);
 
     convertTmdbImagesToUrls(baseInfo);
     return baseInfo;
+  }
+
+  if (Array.isArray(baseInfo.seasons)) {
+    baseInfo.seasons = baseInfo.seasons.map((season: any) => {
+      if (!Array.isArray(season.episodes)) return season;
+
+      return {
+        ...season,
+        id: providerId,
+        providerAnimeId: providerId,
+        episodes: season.episodes.map((ep: any, idx: number) => {
+          const epNo = Number(ep?.episode || ep?.number || idx + 1) || idx + 1;
+          const mapped = sortedProviderEpisodes.find(
+            (row: any) => Number(row?.number || row?.episode || 0) === epNo,
+          );
+          return {
+            ...ep,
+            id: mapped?.id || `${providerId}$episode$${epNo}`,
+          };
+        }),
+      };
+    });
+  } else if (Array.isArray(baseInfo.episodes)) {
+    baseInfo.episodes = baseInfo.episodes.map((ep: any, idx: number) => {
+      const mapped =
+        sortedProviderEpisodes[idx] ||
+        sortedProviderEpisodes[Number(ep?.episode || ep?.number || idx + 1) - 1];
+      return {
+        ...ep,
+        id: mapped?.id || `${providerId}$episode$${ep.episode || ep.number || idx + 1}`,
+      };
+    });
+  }
+
+  baseInfo.id = providerId;
+  if (pick?.anilistId) baseInfo.anilistId = String(pick.anilistId);
+  if (pick?.malId) baseInfo.malId = String(pick.malId);
+
+  convertTmdbImagesToUrls(baseInfo);
+  return baseInfo;
+};
+
+const inferAnimekaiSeasonNumber = (value: string): number => {
+  const raw = String(value || '').toLowerCase();
+  if (!raw) return 1;
+
+  const seasonMatch = raw.match(/season\s*(\d+)/i);
+  if (seasonMatch?.[1]) {
+    const n = Number(seasonMatch[1]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+
+  const ordinalMatch = raw.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
+  if (ordinalMatch?.[1]) {
+    const n = Number(ordinalMatch[1]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+
+  const partMatch = raw.match(/\bpart\s*(\d+)\b/i);
+  if (partMatch?.[1]) {
+    const n = Number(partMatch[1]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+
+  return 1;
+};
+
+const buildAnimekaiTmdbInfo = async (request: any, id: string, type: string) => {
+  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+  const fetchBase = async () => {
+    try {
+      const res = await baseTmdb.fetchMediaInfo(id, type);
+      if (res && typeof res === 'object') {
+        delete (res as any).cast;
+        delete (res as any).characters;
+        delete (res as any).recommendations;
+        delete (res as any).similar;
+      }
+      return res;
+    } catch {
+      if (!tmdbApi) {
+        throw new Error('Failed to fetch TMDB base info for AnimeKai mapping');
+      }
+
+      const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+      const baseUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${tmdbApi}&language=en-US`;
+      const direct = await axios.get(baseUrl);
+      const raw = direct?.data || {};
+
+      const rescued: any = {
+        id: raw.id,
+        title: raw.title || raw.name || 'Unknown',
+        name: raw.name || raw.title || 'Unknown',
+        releaseDate: raw.release_date || raw.first_air_date || null,
+        firstAirDate: raw.first_air_date || null,
+        image: raw.poster_path || null,
+        cover: raw.backdrop_path || null,
+        description: raw.overview || '',
+        genres: Array.isArray(raw.genres) ? raw.genres : [],
+        seasons: [],
+        episodes: [],
+      };
+
+      if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
+        const seasonRows = raw.seasons
+          .filter((season: any) => Number(season?.season_number || 0) > 0)
+          .sort(
+            (a: any, b: any) =>
+              Number(a?.season_number || 0) - Number(b?.season_number || 0),
+          );
+
+        const seasonDetails = await Promise.all(
+          seasonRows.map(async (season: any) => {
+            const seasonNo = Number(season?.season_number || 0);
+            try {
+              const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
+              const seasonRes = await axios.get(seasonUrl);
+              const eps = Array.isArray(seasonRes?.data?.episodes)
+                ? seasonRes.data.episodes.map((ep: any) => ({
+                    id: '',
+                    episode: Number(ep?.episode_number || 0),
+                    number: Number(ep?.episode_number || 0),
+                    title: ep?.name || `Episode ${ep?.episode_number || 0}`,
+                  }))
+                : [];
+              return {
+                season: seasonNo,
+                number: seasonNo,
+                name: season?.name || `Season ${seasonNo}`,
+                episodes: eps,
+              };
+            } catch {
+              return {
+                season: seasonNo,
+                number: seasonNo,
+                name: season?.name || `Season ${seasonNo}`,
+                episodes: [],
+              };
+            }
+          }),
+        );
+
+        rescued.seasons = seasonDetails;
+      }
+
+      return rescued;
+    }
   };
 
-  const inferAnimekaiSeasonNumber = (value: string): number => {
-    const raw = String(value || '').toLowerCase();
-    if (!raw) return 1;
+  const baseInfo: any = redis
+    ? await cache.fetch(
+        redis as Redis,
+        `tmdb:info:${type}:${id}:animekai-mapped:v3`,
+        fetchBase,
+        REDIS_TTL,
+      )
+    : await fetchBase();
 
-    const seasonMatch = raw.match(/season\s*(\d+)/i);
-    if (seasonMatch?.[1]) {
-      const n = Number(seasonMatch[1]);
-      if (Number.isFinite(n) && n > 0) return n;
-    }
+  await attachBestTrailer(baseInfo, id, type);
 
-    const ordinalMatch = raw.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
-    if (ordinalMatch?.[1]) {
-      const n = Number(ordinalMatch[1]);
-      if (Number.isFinite(n) && n > 0) return n;
-    }
+  if (String(type || '').toLowerCase() === 'tv' && tmdbApi) {
+    const currentSeasons = Array.isArray(baseInfo?.seasons) ? baseInfo.seasons : [];
+    const nonSpecialCount = currentSeasons.filter(
+      (season: any) => Number(season?.season || season?.number || 0) > 0,
+    ).length;
+    const looksCollapsed = nonSpecialCount <= 1;
 
-    const partMatch = raw.match(/\bpart\s*(\d+)\b/i);
-    if (partMatch?.[1]) {
-      const n = Number(partMatch[1]);
-      if (Number.isFinite(n) && n > 0) return n;
-    }
-
-    return 1;
-  };
-
-  const buildAnimekaiTmdbInfo = async (request: any, id: string, type: string) => {
-    const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-    const fetchBase = async () => {
+    if (looksCollapsed) {
       try {
-        const res = await baseTmdb.fetchMediaInfo(id, type);
-        if (res && typeof res === 'object') {
-          delete (res as any).cast;
-          delete (res as any).characters;
-          delete (res as any).recommendations;
-          delete (res as any).similar;
-        }
-        return res;
-      } catch {
-        if (!tmdbApi) {
-          throw new Error('Failed to fetch TMDB base info for AnimeKai mapping');
-        }
+        const tmdbSeriesUrl = `https://api.themoviedb.org/3/tv/${id}?api_key=${tmdbApi}&language=en-US`;
+        const seriesRes = await axios.get(tmdbSeriesUrl);
+        const rawSeasons = Array.isArray(seriesRes?.data?.seasons)
+          ? seriesRes.data.seasons
+          : [];
+        const seasonRows = rawSeasons
+          .filter((season: any) => Number(season?.season_number || 0) > 0)
+          .sort(
+            (a: any, b: any) =>
+              Number(a?.season_number || 0) - Number(b?.season_number || 0),
+          );
 
-        const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
-        const baseUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${tmdbApi}&language=en-US`;
-        const direct = await axios.get(baseUrl);
-        const raw = direct?.data || {};
-
-        const rescued: any = {
-          id: raw.id,
-          title: raw.title || raw.name || 'Unknown',
-          name: raw.name || raw.title || 'Unknown',
-          releaseDate: raw.release_date || raw.first_air_date || null,
-          firstAirDate: raw.first_air_date || null,
-          image: raw.poster_path || null,
-          cover: raw.backdrop_path || null,
-          description: raw.overview || '',
-          genres: Array.isArray(raw.genres) ? raw.genres : [],
-          seasons: [],
-          episodes: [],
-        };
-
-        if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
-          const seasonRows = raw.seasons
-            .filter((season: any) => Number(season?.season_number || 0) > 0)
-            .sort((a: any, b: any) => Number(a?.season_number || 0) - Number(b?.season_number || 0));
-
-          const seasonDetails = await Promise.all(
+        if (seasonRows.length > 1) {
+          const rebuilt = await Promise.all(
             seasonRows.map(async (season: any) => {
               const seasonNo = Number(season?.season_number || 0);
               try {
@@ -1200,387 +1725,389 @@ const convertTmdbImagesToUrls = (data: any) => {
             }),
           );
 
-          rescued.seasons = seasonDetails;
+          baseInfo.seasons = rebuilt;
         }
-
-        return rescued;
-      }
-    };
-
-    const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:animekai-mapped:v3`, fetchBase, REDIS_TTL)
-      : await fetchBase();
-
-    await attachBestTrailer(baseInfo, id, type);
-
-    if (String(type || '').toLowerCase() === 'tv' && tmdbApi) {
-      const currentSeasons = Array.isArray(baseInfo?.seasons) ? baseInfo.seasons : [];
-      const nonSpecialCount = currentSeasons.filter((season: any) => Number(season?.season || season?.number || 0) > 0).length;
-      const looksCollapsed = nonSpecialCount <= 1;
-
-      if (looksCollapsed) {
-        try {
-          const tmdbSeriesUrl = `https://api.themoviedb.org/3/tv/${id}?api_key=${tmdbApi}&language=en-US`;
-          const seriesRes = await axios.get(tmdbSeriesUrl);
-          const rawSeasons = Array.isArray(seriesRes?.data?.seasons) ? seriesRes.data.seasons : [];
-          const seasonRows = rawSeasons
-            .filter((season: any) => Number(season?.season_number || 0) > 0)
-            .sort((a: any, b: any) => Number(a?.season_number || 0) - Number(b?.season_number || 0));
-
-          if (seasonRows.length > 1) {
-            const rebuilt = await Promise.all(
-              seasonRows.map(async (season: any) => {
-                const seasonNo = Number(season?.season_number || 0);
-                try {
-                  const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
-                  const seasonRes = await axios.get(seasonUrl);
-                  const eps = Array.isArray(seasonRes?.data?.episodes)
-                    ? seasonRes.data.episodes.map((ep: any) => ({
-                        id: '',
-                        episode: Number(ep?.episode_number || 0),
-                        number: Number(ep?.episode_number || 0),
-                        title: ep?.name || `Episode ${ep?.episode_number || 0}`,
-                      }))
-                    : [];
-                  return {
-                    season: seasonNo,
-                    number: seasonNo,
-                    name: season?.name || `Season ${seasonNo}`,
-                    episodes: eps,
-                  };
-                } catch {
-                  return {
-                    season: seasonNo,
-                    number: seasonNo,
-                    name: season?.name || `Season ${seasonNo}`,
-                    episodes: [],
-                  };
-                }
-              }),
-            );
-
-            baseInfo.seasons = rebuilt;
-          }
-        } catch {
-          // Keep existing base seasons when direct TMDB season rebuild fails.
-        }
+      } catch {
+        // Keep existing base seasons when direct TMDB season rebuild fails.
       }
     }
+  }
 
-    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-    if (!titleCandidates.length) return baseInfo;
+  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+  if (!titleCandidates.length) return baseInfo;
 
-    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-    const sequelTerms = titleCandidates.slice(0, 2).flatMap((title) => {
-      const clean = String(title || '').trim();
-      if (!clean) return [];
-      const baseParts = [
-        // Standard season patterns
-        `${clean} season 2`,
-        `${clean} 2nd season`,
-        `${clean} season 3`,
-        `${clean} season 4`,
-        `${clean} season 5`,
-        `${clean} season 6`,
-        // Arc-based patterns (common for anime)
-        `${clean} part 1`,
-        `${clean} part 2`,
-        `${clean} part 3`,
-        // Alternate numbering
-        `${clean} 2`,
-        `${clean} 3`,
-        `${clean} 4`,
-      ];
-      
-      // Add numeric year variants for modern animes
-      return baseParts;
-    });
+  const yearGuess = Number(
+    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
+  );
+  const sequelTerms = titleCandidates.slice(0, 2).flatMap((title) => {
+    const clean = String(title || '').trim();
+    if (!clean) return [];
+    const baseParts = [
+      // Standard season patterns
+      `${clean} season 2`,
+      `${clean} 2nd season`,
+      `${clean} season 3`,
+      `${clean} season 4`,
+      `${clean} season 5`,
+      `${clean} season 6`,
+      // Arc-based patterns (common for anime)
+      `${clean} part 1`,
+      `${clean} part 2`,
+      `${clean} part 3`,
+      // Alternate numbering
+      `${clean} 2`,
+      `${clean} 3`,
+      `${clean} 4`,
+    ];
 
-    const searchTerms = Array.from(
-      new Set([
+    // Add numeric year variants for modern animes
+    return baseParts;
+  });
+
+  const searchTerms = Array.from(
+    new Set(
+      [
         ...titleCandidates.slice(0, 2),
-        ...titleCandidates.slice(0, 2).map((title) => String(title || '').replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()),
-        ...sequelTerms,
-        ...(
-          Number.isFinite(yearGuess) && yearGuess > 1900
-            ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
-            : []
+        ...titleCandidates.slice(0, 2).map((title) =>
+          String(title || '')
+            .replace(/[^\w\s]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim(),
         ),
-      ].filter(Boolean)),
-    ).slice(0, 24);  // Increased to 24 to cover expanded sequel terms
+        ...sequelTerms,
+        ...(Number.isFinite(yearGuess) && yearGuess > 1900
+          ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
+          : []),
+      ].filter(Boolean),
+    ),
+  ).slice(0, 24); // Increased to 24 to cover expanded sequel terms
 
-    const candidateMap = new Map<string, any>();
-    for (const term of searchTerms) {
-      try {
-        const searchRes = await request.server.inject({
-          method: 'GET',
-          url: `/anime/animekai/search/${encodeURIComponent(term)}?page=1`,
-        });
-        if (searchRes.statusCode >= 400) continue;
+  const candidateMap = new Map<string, any>();
+  for (const term of searchTerms) {
+    try {
+      const searchRes = await request.server.inject({
+        method: 'GET',
+        url: `/anime/animekai/search/${encodeURIComponent(term)}?page=1`,
+      });
+      if (searchRes.statusCode >= 400) continue;
 
-        const payload = safeJsonParse(searchRes.body || '{}');
-        const rows: any[] = Array.isArray(payload?.results) ? payload.results : [];
-        for (const row of rows.slice(0, 8)) {
-          const rowId = String(row?.id || '').trim();
-          if (!rowId || candidateMap.has(rowId)) continue;
-          const rowTitle = String(row?.title || row?.name || '').trim();
-          let score = titleMatchScore(rowTitle, titleCandidates);
+      const payload = safeJsonParse(searchRes.body || '{}');
+      const rows: any[] = Array.isArray(payload?.results) ? payload.results : [];
+      for (const row of rows.slice(0, 8)) {
+        const rowId = String(row?.id || '').trim();
+        if (!rowId || candidateMap.has(rowId)) continue;
+        const rowTitle = String(row?.title || row?.name || '').trim();
+        let score = titleMatchScore(rowTitle, titleCandidates);
 
-          const seasonHint = inferAnimekaiSeasonNumber(rowTitle);
-          if (seasonHint === 1) score += 5;
+        const seasonHint = inferAnimekaiSeasonNumber(rowTitle);
+        if (seasonHint === 1) score += 5;
 
-          if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-            const y = Number(String(row?.year || row?.releaseDate || '').slice(0, 4));
-            if (y === yearGuess) score += 50;
-            else if (Number.isFinite(y) && Math.abs(y - yearGuess) <= 1) score += 20;
-          }
-
-          candidateMap.set(rowId, {
-            ...row,
-            _score: score,
-            _seasonHint: seasonHint,
-          });
+        if (Number.isFinite(yearGuess) && yearGuess > 1900) {
+          const y = Number(String(row?.year || row?.releaseDate || '').slice(0, 4));
+          if (y === yearGuess) score += 50;
+          else if (Number.isFinite(y) && Math.abs(y - yearGuess) <= 1) score += 20;
         }
-      } catch {
-        continue;
+
+        candidateMap.set(rowId, {
+          ...row,
+          _score: score,
+          _seasonHint: seasonHint,
+        });
       }
+    } catch {
+      continue;
     }
+  }
 
-    const candidates = Array.from(candidateMap.values())
-      .sort((a, b) => Number(b?._score || 0) - Number(a?._score || 0))
-      .slice(0, 20);  // Increased from 10 to 20 to catch more season-specific entries
+  const candidates = Array.from(candidateMap.values())
+    .sort((a, b) => Number(b?._score || 0) - Number(a?._score || 0))
+    .slice(0, 20); // Increased from 10 to 20 to catch more season-specific entries
 
-    if (!candidates.length) {
-      convertTmdbImagesToUrls(baseInfo);
-      return baseInfo;
-    }
+  if (!candidates.length) {
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+  }
 
-    const infos: Array<{ id: string; title: string; seasonHint: number; episodes: any[]; anilistId?: string }> = [];
-    const assignedSeasonHints = new Set<number>();
-    
-    for (const candidate of candidates) {
-      const candidateId = String(candidate?.id || '').trim();
-      if (!candidateId) continue;
-      try {
-        const infoRes = await request.server.inject({
-          method: 'GET',
-          url: `/anime/animekai/info?id=${encodeURIComponent(candidateId)}`,
-        });
-        if (infoRes.statusCode >= 400) continue;
-        const infoPayload = safeJsonParse(infoRes.body || '{}');
-        const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
-        const episodeCount = episodes.length;
-        
-        // Skip candidates with VERY few episodes (likely specials/shorts, not full seasons)
-        // Accept 8+ episodes OR anything that looks like 10+ continuous episodes
-        if (!episodeCount) continue;
-        if (episodeCount < 8) {
-          // Only skip if it's clearly too small (less than 50% of typical season average ~13 eps)
-          const minAcceptable = Math.max(8, Math.floor((Number(baseInfo?.seasons?.at(0)?.episode_count || 13)) / 2));
-          if (episodeCount < minAcceptable) continue;
-        }
+  const infos: Array<{
+    id: string;
+    title: string;
+    seasonHint: number;
+    episodes: any[];
+    anilistId?: string;
+  }> = [];
+  const assignedSeasonHints = new Set<number>();
 
-        let seasonHint = Number(candidate?._seasonHint || inferAnimekaiSeasonNumber(infoPayload?.title || candidate?.title || '')) || 1;
-        
-        // IMPROVED: Match by episode count against TMDB seasons for anime-specific sequels
-        // Many anime use arc names (Jujutsu Kaisen: Culling Game) instead of "Season 3"
-        if (Array.isArray(baseInfo?.seasons) && baseInfo.seasons.length > 1) {
-          const tmdbSeasons = baseInfo.seasons
-            .filter((s: any) => Number(s?.season || s?.number || 0) > 0)
-            .map((s: any) => {
-              const seasonNo = Number(s?.season || s?.number || 0);
-              // Try episodes array first, fallback to episode_count field
-              const epCount = Array.isArray(s?.episodes) 
-                ? s.episodes.length 
-                : (Number(s?.episode_count || 0) || 0);
-              return { seasonNo, epCount };
-            })
-            .sort((a: any, b: any) => a.seasonNo - b.seasonNo);
-          
-          // Try to match by episode count first (most reliable for arc-named seasons)
-          const matchedBySeason = tmdbSeasons.find((s: any) => s.epCount === episodeCount);
-          if (matchedBySeason && !assignedSeasonHints.has(matchedBySeason.seasonNo)) {
-            seasonHint = matchedBySeason.seasonNo;
-          } else if (Math.abs(seasonHint - 1) < tmdbSeasons.length && !assignedSeasonHints.has(seasonHint)) {
-            // Use inferred hint if it's within valid season range and not yet assigned
-          } else {
-            // Last resort: find first unassigned season number
-            const unassignedSeason = tmdbSeasons.find((s: any) => !assignedSeasonHints.has(s.seasonNo));
-            if (unassignedSeason) {
-              seasonHint = unassignedSeason.seasonNo;
-            }
-          }
-        }
-        
-        // Avoid duplicate season hints (prefer first/highest-episode candidate for each season)
-        if (assignedSeasonHints.has(seasonHint)) continue;
-        assignedSeasonHints.add(seasonHint);
+  for (const candidate of candidates) {
+    const candidateId = String(candidate?.id || '').trim();
+    if (!candidateId) continue;
+    try {
+      const infoRes = await request.server.inject({
+        method: 'GET',
+        url: `/anime/animekai/info?id=${encodeURIComponent(candidateId)}`,
+      });
+      if (infoRes.statusCode >= 400) continue;
+      const infoPayload = safeJsonParse(infoRes.body || '{}');
+      const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
+      const episodeCount = episodes.length;
 
-        infos.push({
-          id: candidateId,
-          title: String(infoPayload?.title || candidate?.title || '').trim(),
-          seasonHint,
-          episodes,
-          anilistId: String(candidate?.anilistId || '').trim() || undefined,
-        });
-      } catch {
-        continue;
-      }
-    }
-
-    if (!infos.length) {
-      try {
-        const anilistRes = await request.server.inject({
-          method: 'GET',
-          url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || '')}`,
-        });
-        if (anilistRes.statusCode < 400) {
-          const anilistPayload = safeJsonParse(anilistRes.body || '{}');
-          const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
-          const picked = anilistRows
-            .map((item: any) => ({ item, score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates) }))
-            .sort((a: any, b: any) => b.score - a.score)[0]?.item;
-          const pickedId = String(picked?.id || '').trim();
-          if (pickedId) baseInfo.anilistId = pickedId;
-        }
-      } catch {
-        // Ignore AniList fallback errors
-      }
-      convertTmdbImagesToUrls(baseInfo);
-      return baseInfo;
-    }
-
-    const best = infos[0];
-    baseInfo.id = best.id;
-    if (best.anilistId) {
-      baseInfo.anilistId = best.anilistId;
-    } else {
-      try {
-        const anilistRes = await request.server.inject({
-          method: 'GET',
-          url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || best.title || '')}`,
-        });
-        if (anilistRes.statusCode < 400) {
-          const anilistPayload = safeJsonParse(anilistRes.body || '{}');
-          const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
-          const picked = anilistRows
-            .map((item: any) => ({ item, score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates) }))
-            .sort((a: any, b: any) => b.score - a.score)[0]?.item;
-          const pickedId = String(picked?.id || '').trim();
-          if (pickedId) baseInfo.anilistId = pickedId;
-        }
-      } catch {
-        // Ignore AniList enrichment errors
-      }
-    }
-
-    if (String(type || '').toLowerCase() === 'tv' && Array.isArray(baseInfo?.seasons)) {
-      const existingSeasons = baseInfo.seasons
-        .filter((season: any) => Number(season?.season || season?.number || 0) > 0)
-        .map((season: any) => Number(season?.season || season?.number || 0));
-      const uniqueHints = Array.from(new Set(infos.map((info) => Number(info.seasonHint || 0)).filter((n) => Number.isFinite(n) && n > 0))).sort((a, b) => a - b);
-
-      if (existingSeasons.length <= 1 && uniqueHints.length > 1) {
-        baseInfo.seasons = uniqueHints.map((seasonNo) => {
-          const seasonInfo = infos.find((info) => Number(info.seasonHint || 0) === seasonNo);
-          const seasonEpisodes = Array.isArray(seasonInfo?.episodes) ? seasonInfo.episodes : [];
-
-          return {
-            season: seasonNo,
-            number: seasonNo,
-            name: `Season ${seasonNo}`,
-            id: seasonInfo?.id,
-            providerAnimeId: seasonInfo?.id,
-            episodes: seasonEpisodes.map((ep: any, idx: number) => ({
-              id: String(ep?.id || ''),
-              episode: Number(ep?.number || ep?.episode || idx + 1),
-              number: Number(ep?.number || ep?.episode || idx + 1),
-              title: String(ep?.title || `Episode ${idx + 1}`),
-            })),
-          };
-        });
+      // Skip candidates with VERY few episodes (likely specials/shorts, not full seasons)
+      // Accept 8+ episodes OR anything that looks like 10+ continuous episodes
+      if (!episodeCount) continue;
+      if (episodeCount < 8) {
+        // Only skip if it's clearly too small (less than 50% of typical season average ~13 eps)
+        const minAcceptable = Math.max(
+          8,
+          Math.floor(Number(baseInfo?.seasons?.at(0)?.episode_count || 13) / 2),
+        );
+        if (episodeCount < minAcceptable) continue;
       }
 
-      const nonSpecialSeasons = baseInfo.seasons
-        .filter((season: any) => Number(season?.season || season?.number || 0) > 0)
-        .sort((a: any, b: any) => Number(a?.season || a?.number || 0) - Number(b?.season || b?.number || 0));
+      let seasonHint =
+        Number(
+          candidate?._seasonHint ||
+            inferAnimekaiSeasonNumber(infoPayload?.title || candidate?.title || ''),
+        ) || 1;
 
-      const assigned = new Map<number, typeof infos[number]>();
-      const unassigned = [...infos];
+      // IMPROVED: Match by episode count against TMDB seasons for anime-specific sequels
+      // Many anime use arc names (Jujutsu Kaisen: Culling Game) instead of "Season 3"
+      if (Array.isArray(baseInfo?.seasons) && baseInfo.seasons.length > 1) {
+        const tmdbSeasons = baseInfo.seasons
+          .filter((s: any) => Number(s?.season || s?.number || 0) > 0)
+          .map((s: any) => {
+            const seasonNo = Number(s?.season || s?.number || 0);
+            // Try episodes array first, fallback to episode_count field
+            const epCount = Array.isArray(s?.episodes)
+              ? s.episodes.length
+              : Number(s?.episode_count || 0) || 0;
+            return { seasonNo, epCount };
+          })
+          .sort((a: any, b: any) => a.seasonNo - b.seasonNo);
 
-      // 1) Assign direct season hints first.
-      for (const info of infos) {
-        const hint = Number(info.seasonHint || 0);
-        if (!Number.isFinite(hint) || hint <= 0) continue;
-        if (assigned.has(hint)) continue;
-        assigned.set(hint, info);
-      }
-
-      // 2) Assign remaining infos by season order.
-      for (const season of nonSpecialSeasons) {
-        const seasonNo = Number(season?.season || season?.number || 0);
-        if (assigned.has(seasonNo)) continue;
-        const next = unassigned.find((item) => {
-          return !Array.from(assigned.values()).includes(item);
-        });
-        if (!next) continue;
-        assigned.set(seasonNo, next);
-      }
-
-      const singleInfoSequentialMode = infos.length === 1;
-      let globalEpisodeOffset = 0;
-
-      baseInfo.seasons = baseInfo.seasons.map((season: any) => {
-        if (!Array.isArray(season?.episodes)) return season;
-        const seasonNo = Number(season?.season || season?.number || 0);
-        const mappedInfo = assigned.get(seasonNo);
-        if (!mappedInfo) {
-          return season;
-        }
-
-        if (singleInfoSequentialMode) {
-          // Some AnimeKai titles expose all seasons as one continuous episode list.
-          // Distribute IDs by TMDB season episode counts to keep season watch mapping accurate.
-          const mappedEpisodes = Array.isArray(mappedInfo.episodes) ? mappedInfo.episodes : [];
-          const sortedMapped = [...mappedEpisodes].sort(
-            (a: any, b: any) => Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0),
+        // Try to match by episode count first (most reliable for arc-named seasons)
+        const matchedBySeason = tmdbSeasons.find((s: any) => s.epCount === episodeCount);
+        if (matchedBySeason && !assignedSeasonHints.has(matchedBySeason.seasonNo)) {
+          seasonHint = matchedBySeason.seasonNo;
+        } else if (
+          Math.abs(seasonHint - 1) < tmdbSeasons.length &&
+          !assignedSeasonHints.has(seasonHint)
+        ) {
+          // Use inferred hint if it's within valid season range and not yet assigned
+        } else {
+          // Last resort: find first unassigned season number
+          const unassignedSeason = tmdbSeasons.find(
+            (s: any) => !assignedSeasonHints.has(s.seasonNo),
           );
-          // Get expected episode count from TMDB season - try episodes array first, then episode_count field
-          const seasonEpisodeCount = Array.isArray(season?.episodes) 
-            ? season.episodes.length 
-            : (Number(season?.episode_count || 0) || sortedMapped.length);
-          const seasonSlice = sortedMapped.slice(globalEpisodeOffset, globalEpisodeOffset + seasonEpisodeCount);
-          globalEpisodeOffset += seasonEpisodeCount;
-
-          const byIndex = new Map<number, any>();
-          for (let i = 0; i < seasonSlice.length; i++) {
-            byIndex.set(i + 1, seasonSlice[i]);
+          if (unassignedSeason) {
+            seasonHint = unassignedSeason.seasonNo;
           }
+        }
+      }
 
-          return {
-            ...season,
-            id: mappedInfo.id,
-            providerAnimeId: mappedInfo.id,
-            episodes: season.episodes.map((ep: any, idx: number) => {
-              const mapped = byIndex.get(idx + 1);
-              if (!mapped?.id) return ep;
-              return {
-                ...ep,
-                id: String(mapped.id),
-              };
-            }),
-          };
+      // Avoid duplicate season hints (prefer first/highest-episode candidate for each season)
+      if (assignedSeasonHints.has(seasonHint)) continue;
+      assignedSeasonHints.add(seasonHint);
+
+      infos.push({
+        id: candidateId,
+        title: String(infoPayload?.title || candidate?.title || '').trim(),
+        seasonHint,
+        episodes,
+        anilistId: String(candidate?.anilistId || '').trim() || undefined,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  if (!infos.length) {
+    try {
+      const anilistRes = await request.server.inject({
+        method: 'GET',
+        url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || '')}`,
+      });
+      if (anilistRes.statusCode < 400) {
+        const anilistPayload = safeJsonParse(anilistRes.body || '{}');
+        const anilistRows = Array.isArray(anilistPayload?.results)
+          ? anilistPayload.results
+          : [];
+        const picked = anilistRows
+          .map((item: any) => ({
+            item,
+            score: titleMatchScore(
+              String(item?.title || item?.name || ''),
+              titleCandidates,
+            ),
+          }))
+          .sort((a: any, b: any) => b.score - a.score)[0]?.item;
+        const pickedId = String(picked?.id || '').trim();
+        if (pickedId) baseInfo.anilistId = pickedId;
+      }
+    } catch {
+      // Ignore AniList fallback errors
+    }
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+  }
+
+  const best = infos[0];
+  baseInfo.id = best.id;
+  if (best.anilistId) {
+    baseInfo.anilistId = best.anilistId;
+  } else {
+    try {
+      const anilistRes = await request.server.inject({
+        method: 'GET',
+        url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || best.title || '')}`,
+      });
+      if (anilistRes.statusCode < 400) {
+        const anilistPayload = safeJsonParse(anilistRes.body || '{}');
+        const anilistRows = Array.isArray(anilistPayload?.results)
+          ? anilistPayload.results
+          : [];
+        const picked = anilistRows
+          .map((item: any) => ({
+            item,
+            score: titleMatchScore(
+              String(item?.title || item?.name || ''),
+              titleCandidates,
+            ),
+          }))
+          .sort((a: any, b: any) => b.score - a.score)[0]?.item;
+        const pickedId = String(picked?.id || '').trim();
+        if (pickedId) baseInfo.anilistId = pickedId;
+      }
+    } catch {
+      // Ignore AniList enrichment errors
+    }
+  }
+
+  if (String(type || '').toLowerCase() === 'tv' && Array.isArray(baseInfo?.seasons)) {
+    const existingSeasons = baseInfo.seasons
+      .filter((season: any) => Number(season?.season || season?.number || 0) > 0)
+      .map((season: any) => Number(season?.season || season?.number || 0));
+    const uniqueHints = Array.from(
+      new Set(
+        infos
+          .map((info) => Number(info.seasonHint || 0))
+          .filter((n) => Number.isFinite(n) && n > 0),
+      ),
+    ).sort((a, b) => a - b);
+
+    if (existingSeasons.length <= 1 && uniqueHints.length > 1) {
+      baseInfo.seasons = uniqueHints.map((seasonNo) => {
+        const seasonInfo = infos.find(
+          (info) => Number(info.seasonHint || 0) === seasonNo,
+        );
+        const seasonEpisodes = Array.isArray(seasonInfo?.episodes)
+          ? seasonInfo.episodes
+          : [];
+
+        return {
+          season: seasonNo,
+          number: seasonNo,
+          name: `Season ${seasonNo}`,
+          id: seasonInfo?.id,
+          providerAnimeId: seasonInfo?.id,
+          episodes: seasonEpisodes.map((ep: any, idx: number) => ({
+            id: String(ep?.id || ''),
+            episode: Number(ep?.number || ep?.episode || idx + 1),
+            number: Number(ep?.number || ep?.episode || idx + 1),
+            title: String(ep?.title || `Episode ${idx + 1}`),
+          })),
+        };
+      });
+    }
+
+    const nonSpecialSeasons = baseInfo.seasons
+      .filter((season: any) => Number(season?.season || season?.number || 0) > 0)
+      .sort(
+        (a: any, b: any) =>
+          Number(a?.season || a?.number || 0) - Number(b?.season || b?.number || 0),
+      );
+
+    const assigned = new Map<number, (typeof infos)[number]>();
+    const unassigned = [...infos];
+
+    // 1) Assign direct season hints first.
+    for (const info of infos) {
+      const hint = Number(info.seasonHint || 0);
+      if (!Number.isFinite(hint) || hint <= 0) continue;
+      if (assigned.has(hint)) continue;
+      assigned.set(hint, info);
+    }
+
+    // 2) Assign remaining infos by season order.
+    for (const season of nonSpecialSeasons) {
+      const seasonNo = Number(season?.season || season?.number || 0);
+      if (assigned.has(seasonNo)) continue;
+      const next = unassigned.find((item) => {
+        return !Array.from(assigned.values()).includes(item);
+      });
+      if (!next) continue;
+      assigned.set(seasonNo, next);
+    }
+
+    const singleInfoSequentialMode = infos.length === 1;
+    let globalEpisodeOffset = 0;
+
+    baseInfo.seasons = baseInfo.seasons.map((season: any) => {
+      if (!Array.isArray(season?.episodes)) return season;
+      const seasonNo = Number(season?.season || season?.number || 0);
+      const mappedInfo = assigned.get(seasonNo);
+      if (!mappedInfo) {
+        return season;
+      }
+
+      if (singleInfoSequentialMode) {
+        // Some AnimeKai titles expose all seasons as one continuous episode list.
+        // Distribute IDs by TMDB season episode counts to keep season watch mapping accurate.
+        const mappedEpisodes = Array.isArray(mappedInfo.episodes)
+          ? mappedInfo.episodes
+          : [];
+        const sortedMapped = [...mappedEpisodes].sort(
+          (a: any, b: any) =>
+            Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0),
+        );
+        // Get expected episode count from TMDB season - try episodes array first, then episode_count field
+        const seasonEpisodeCount = Array.isArray(season?.episodes)
+          ? season.episodes.length
+          : Number(season?.episode_count || 0) || sortedMapped.length;
+        const seasonSlice = sortedMapped.slice(
+          globalEpisodeOffset,
+          globalEpisodeOffset + seasonEpisodeCount,
+        );
+        globalEpisodeOffset += seasonEpisodeCount;
+
+        const byIndex = new Map<number, any>();
+        for (let i = 0; i < seasonSlice.length; i++) {
+          byIndex.set(i + 1, seasonSlice[i]);
         }
 
-        const byEpNumber = new Map<number, any>();
-        for (const ep of mappedInfo.episodes) {
-          const n = Number(ep?.number || ep?.episode || 0);
-          if (!Number.isFinite(n) || n <= 0) continue;
-          if (!byEpNumber.has(n)) byEpNumber.set(n, ep);
-        }
+        return {
+          ...season,
+          id: mappedInfo.id,
+          providerAnimeId: mappedInfo.id,
+          episodes: season.episodes.map((ep: any, idx: number) => {
+            const mapped = byIndex.get(idx + 1);
+            if (!mapped?.id) return ep;
+            return {
+              ...ep,
+              id: String(mapped.id),
+            };
+          }),
+        };
+      }
 
-        // If TMDB season has no episodes populated, use the AnimeKai episodes directly
-        const seasonEpisodes = !Array.isArray(season?.episodes) || season.episodes.length === 0
+      const byEpNumber = new Map<number, any>();
+      for (const ep of mappedInfo.episodes) {
+        const n = Number(ep?.number || ep?.episode || 0);
+        if (!Number.isFinite(n) || n <= 0) continue;
+        if (!byEpNumber.has(n)) byEpNumber.set(n, ep);
+      }
+
+      // If TMDB season has no episodes populated, use the AnimeKai episodes directly
+      const seasonEpisodes =
+        !Array.isArray(season?.episodes) || season.episodes.length === 0
           ? Array.isArray(mappedInfo.episodes)
             ? mappedInfo.episodes.map((ep: any, idx: number) => ({
                 id: String(ep?.id || ''),
@@ -1588,372 +2115,419 @@ const convertTmdbImagesToUrls = (data: any) => {
                 number: Number(ep?.number || ep?.episode || idx + 1),
                 title: String(ep?.title || `Episode ${idx + 1}`),
               }))
-            : (season?.episodes || [])
+            : season?.episodes || []
           : season.episodes.map((ep: any, idx: number) => {
-            const epNo = Number(ep?.episode || ep?.number || idx + 1);
-            const mapped = byEpNumber.get(epNo);
-            if (!mapped?.id) return ep;
-            return {
-              ...ep,
-              id: String(mapped.id),
-            };
-          });
+              const epNo = Number(ep?.episode || ep?.number || idx + 1);
+              const mapped = byEpNumber.get(epNo);
+              if (!mapped?.id) return ep;
+              return {
+                ...ep,
+                id: String(mapped.id),
+              };
+            });
 
-        return {
-          ...season,
-          id: mappedInfo.id,
-          providerAnimeId: mappedInfo.id,
-          episodes: seasonEpisodes,
-        };
-      });
-    } else if (Array.isArray(baseInfo?.episodes)) {
-      const byEpNumber = new Map<number, any>();
-      for (const ep of best.episodes) {
-        const n = Number(ep?.number || ep?.episode || 0);
-        if (!Number.isFinite(n) || n <= 0) continue;
-        if (!byEpNumber.has(n)) byEpNumber.set(n, ep);
-      }
-      baseInfo.episodes = baseInfo.episodes.map((ep: any, idx: number) => {
-        const epNo = Number(ep?.episode || ep?.number || idx + 1);
-        const mapped = byEpNumber.get(epNo);
-        if (!mapped?.id) return ep;
-        return {
-          ...ep,
-          id: String(mapped.id),
-        };
-      });
+      return {
+        ...season,
+        id: mappedInfo.id,
+        providerAnimeId: mappedInfo.id,
+        episodes: seasonEpisodes,
+      };
+    });
+  } else if (Array.isArray(baseInfo?.episodes)) {
+    const byEpNumber = new Map<number, any>();
+    for (const ep of best.episodes) {
+      const n = Number(ep?.number || ep?.episode || 0);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      if (!byEpNumber.has(n)) byEpNumber.set(n, ep);
     }
+    baseInfo.episodes = baseInfo.episodes.map((ep: any, idx: number) => {
+      const epNo = Number(ep?.episode || ep?.number || idx + 1);
+      const mapped = byEpNumber.get(epNo);
+      if (!mapped?.id) return ep;
+      return {
+        ...ep,
+        id: String(mapped.id),
+      };
+    });
+  }
 
-    convertTmdbImagesToUrls(baseInfo);
-    return baseInfo;
-  };
+  convertTmdbImagesToUrls(baseInfo);
+  return baseInfo;
+};
 
-  const buildFlixhqTmdbInfo = async (request: any, id: string, type: string) => {
-    const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+const buildFlixhqTmdbInfo = async (request: any, id: string, type: string) => {
+  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
 
-    const fetchBase = async () => {
-      let res: any = null;
-      try {
-        res = await baseTmdb.fetchMediaInfo(id, type);
-      } catch {
-        if (tmdbApi) {
-          const directUrl = `https://api.themoviedb.org/3/${type}/${id}?api_key=${tmdbApi}`;
-          const directRes = await axios.get(directUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-          if (directRes?.data) {
-            const direct = directRes.data;
-            const isTv = String(type || '').toLowerCase() === 'tv';
+  const fetchBase = async () => {
+    let res: any = null;
+    try {
+      res = await baseTmdb.fetchMediaInfo(id, type);
+    } catch {
+      if (tmdbApi) {
+        const directUrl = `https://api.themoviedb.org/3/${type}/${id}?api_key=${tmdbApi}`;
+        const directRes = await axios.get(directUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        });
+        if (directRes?.data) {
+          const direct = directRes.data;
+          const isTv = String(type || '').toLowerCase() === 'tv';
 
-            let seasons = Array.isArray(direct?.seasons)
-              ? direct.seasons.map((s: any) => ({
-                  id: String(s?.id || ''),
-                  name: s?.name,
-                  season: s?.season_number,
-                  image: s?.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
-                  episodes: [],
-                }))
-              : [];
+          let seasons = Array.isArray(direct?.seasons)
+            ? direct.seasons.map((s: any) => ({
+                id: String(s?.id || ''),
+                name: s?.name,
+                season: s?.season_number,
+                image: s?.poster_path
+                  ? `https://image.tmdb.org/t/p/original${s.poster_path}`
+                  : null,
+                episodes: [],
+              }))
+            : [];
 
-            if (isTv && seasons.length) {
-              const seasonDetails = await Promise.all(
-                seasons
-                  .filter((s: any) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0)
-                  .slice(0, 25)
-                  .map(async (s: any) => {
-                    try {
-                      const seasonNo = Number(s.season);
-                      const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
-                      const seasonRes = await axios.get(seasonUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-                      const episodes = Array.isArray(seasonRes?.data?.episodes)
-                        ? seasonRes.data.episodes.map((ep: any, idx: number) => {
-                            const epNo = Number(ep?.episode_number || ep?.number || idx + 1);
-                            return {
-                              id: `${id}-s${seasonNo}e${epNo}`,
-                              episode: epNo,
-                              number: epNo,
-                              title: ep?.name || `Episode ${epNo}`,
-                              season: seasonNo,
-                            };
-                          })
-                        : [];
-                      return { seasonNo, episodes };
-                    } catch {
-                      return null;
-                    }
-                  }),
+          if (isTv && seasons.length) {
+            const seasonDetails = await Promise.all(
+              seasons
+                .filter(
+                  (s: any) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0,
+                )
+                .slice(0, 25)
+                .map(async (s: any) => {
+                  try {
+                    const seasonNo = Number(s.season);
+                    const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
+                    const seasonRes = await axios.get(seasonUrl, {
+                      headers: { 'User-Agent': 'Mozilla/5.0' },
+                    });
+                    const episodes = Array.isArray(seasonRes?.data?.episodes)
+                      ? seasonRes.data.episodes.map((ep: any, idx: number) => {
+                          const epNo = Number(
+                            ep?.episode_number || ep?.number || idx + 1,
+                          );
+                          return {
+                            id: `${id}-s${seasonNo}e${epNo}`,
+                            episode: epNo,
+                            number: epNo,
+                            title: ep?.name || `Episode ${epNo}`,
+                            season: seasonNo,
+                          };
+                        })
+                      : [];
+                    return { seasonNo, episodes };
+                  } catch {
+                    return null;
+                  }
+                }),
+            );
+
+            const bySeasonNo = new Map<number, any[]>();
+            seasonDetails.forEach((entry: any) => {
+              if (!entry || !Number.isFinite(Number(entry.seasonNo))) return;
+              bySeasonNo.set(
+                Number(entry.seasonNo),
+                Array.isArray(entry.episodes) ? entry.episodes : [],
               );
+            });
 
-              const bySeasonNo = new Map<number, any[]>();
-              seasonDetails.forEach((entry: any) => {
-                if (!entry || !Number.isFinite(Number(entry.seasonNo))) return;
-                bySeasonNo.set(Number(entry.seasonNo), Array.isArray(entry.episodes) ? entry.episodes : []);
-              });
+            seasons = seasons.map((s: any) => {
+              const seasonNo = Number(s?.season || 0);
+              return { ...s, episodes: bySeasonNo.get(seasonNo) || [] };
+            });
+          }
 
-              seasons = seasons.map((s: any) => {
-                const seasonNo = Number(s?.season || 0);
-                return { ...s, episodes: bySeasonNo.get(seasonNo) || [] };
-              });
-            }
-
-            const movieRuntime = Number(direct?.runtime || 0);
-            const tvEpisodeRuntime = Array.isArray(direct?.episode_run_time) && direct.episode_run_time.length
+          const movieRuntime = Number(direct?.runtime || 0);
+          const tvEpisodeRuntime =
+            Array.isArray(direct?.episode_run_time) && direct.episode_run_time.length
               ? Number(direct.episode_run_time[0] || 0)
               : 0;
-            const normalizedRuntime = movieRuntime > 0 ? movieRuntime : tvEpisodeRuntime;
+          const normalizedRuntime = movieRuntime > 0 ? movieRuntime : tvEpisodeRuntime;
 
-            res = {
-              id: String(direct?.id || id),
-              title: direct?.title || direct?.name || 'Unknown',
-              type,
-              media_type: type,
-              description: direct?.overview,
-              image: direct?.poster_path ? `https://image.tmdb.org/t/p/original${direct.poster_path}` : null,
-              cover: direct?.backdrop_path ? `https://image.tmdb.org/t/p/original${direct.backdrop_path}` : null,
-              status: direct?.status,
-              releaseDate: direct?.release_date || direct?.first_air_date,
-              runtime: normalizedRuntime,
-              duration: normalizedRuntime,
-              rating: direct?.vote_average,
-              genres: Array.isArray(direct?.genres) ? direct.genres.map((g: any) => g?.name).filter(Boolean) : [],
-              totalEpisodes: Number(direct?.number_of_episodes || 0),
-              seasons,
-            };
-          }
+          res = {
+            id: String(direct?.id || id),
+            title: direct?.title || direct?.name || 'Unknown',
+            type,
+            media_type: type,
+            description: direct?.overview,
+            image: direct?.poster_path
+              ? `https://image.tmdb.org/t/p/original${direct.poster_path}`
+              : null,
+            cover: direct?.backdrop_path
+              ? `https://image.tmdb.org/t/p/original${direct.backdrop_path}`
+              : null,
+            status: direct?.status,
+            releaseDate: direct?.release_date || direct?.first_air_date,
+            runtime: normalizedRuntime,
+            duration: normalizedRuntime,
+            rating: direct?.vote_average,
+            genres: Array.isArray(direct?.genres)
+              ? direct.genres.map((g: any) => g?.name).filter(Boolean)
+              : [],
+            totalEpisodes: Number(direct?.number_of_episodes || 0),
+            seasons,
+          };
         }
       }
-      if (!res) {
-        throw new Error('Failed to fetch base metadata for FlixHQ mapping');
-      }
-      if (res && typeof res === 'object') {
-        delete (res as any).cast;
-        delete (res as any).characters;
-        delete (res as any).recommendations;
-        delete (res as any).similar;
-      }
-      return res;
-    };
+    }
+    if (!res) {
+      throw new Error('Failed to fetch base metadata for FlixHQ mapping');
+    }
+    if (res && typeof res === 'object') {
+      delete (res as any).cast;
+      delete (res as any).characters;
+      delete (res as any).recommendations;
+      delete (res as any).similar;
+    }
+    return res;
+  };
 
-    const baseInfo: any = redis
-      ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:flixhq-mapped:v3`, fetchBase, REDIS_TTL)
-      : await fetchBase();
+  const baseInfo: any = redis
+    ? await cache.fetch(
+        redis as Redis,
+        `tmdb:info:${type}:${id}:flixhq-mapped:v3`,
+        fetchBase,
+        REDIS_TTL,
+      )
+    : await fetchBase();
 
-    await attachBestTrailer(baseInfo, id, type);
+  await attachBestTrailer(baseInfo, id, type);
 
-    const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-    if (!titleCandidates.length) return baseInfo;
+  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
+  if (!titleCandidates.length) return baseInfo;
 
-    const yearGuess = Number(String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4));
-    const expectedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
-    const resolveAniListId = async () => {
-      const queries = titleCandidates.slice(0, 2);
-      for (const query of queries) {
-        try {
-          const anilistRes = await request.server.inject({
-            method: 'GET',
-            url: `/meta/anilist/${encodeURIComponent(query)}`,
-          });
-          if (anilistRes.statusCode >= 400) continue;
-          const anilistPayload = safeJsonParse(anilistRes.body || '{}');
-          const anilistRows = Array.isArray(anilistPayload?.results) ? anilistPayload.results : [];
-          if (!anilistRows.length) continue;
-
-          const picked = anilistRows
-            .map((item: any) => ({
-              item,
-              score: titleMatchScore(String(item?.title || item?.name || ''), titleCandidates),
-            }))
-            .sort((a: any, b: any) => b.score - a.score)[0]?.item;
-          const pickedId = String(picked?.id || '').trim();
-          if (pickedId) return pickedId;
-        } catch {
-          continue;
-        }
-      }
-      return null;
-    };
-
-    const animeId = await resolveAniListId();
-    if (animeId) baseInfo.anilistId = animeId;
-
-    // Build search terms, prioritizing exact titles over year variants
-    const mainTerms = titleCandidates.slice(0, 2); // First 2 most relevant titles
-    const searchTerms = Array.from(
-      new Set([
-        ...mainTerms, // Prioritize exact title matches first
-        ...mainTerms.flatMap((title) =>
-          Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : []
-        ),
-      ]),
-    ).slice(0, 4); // Limit to top 4 search terms for speed
-
-    // Parallelize all searches instead of sequential
-    const searchPromises = searchTerms.map(async (term) => {
+  const yearGuess = Number(
+    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
+  );
+  const expectedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+  const resolveAniListId = async () => {
+    const queries = titleCandidates.slice(0, 2);
+    for (const query of queries) {
       try {
-        const searchRes = await request.server.inject({
+        const anilistRes = await request.server.inject({
           method: 'GET',
-          url: `/movies/flixhq/${encodeURIComponent(term)}`,
+          url: `/meta/anilist/${encodeURIComponent(query)}`,
         });
-        if (searchRes.statusCode >= 400) return [];
-        const payload = safeJsonParse(searchRes.body || '{}');
-        return Array.isArray(payload?.data) ? payload.data : [];
+        if (anilistRes.statusCode >= 400) continue;
+        const anilistPayload = safeJsonParse(anilistRes.body || '{}');
+        const anilistRows = Array.isArray(anilistPayload?.results)
+          ? anilistPayload.results
+          : [];
+        if (!anilistRows.length) continue;
+
+        const picked = anilistRows
+          .map((item: any) => ({
+            item,
+            score: titleMatchScore(
+              String(item?.title || item?.name || ''),
+              titleCandidates,
+            ),
+          }))
+          .sort((a: any, b: any) => b.score - a.score)[0]?.item;
+        const pickedId = String(picked?.id || '').trim();
+        if (pickedId) return pickedId;
       } catch {
-        return [];
+        continue;
       }
-    });
+    }
+    return null;
+  };
 
-    const searchResults = await Promise.all(searchPromises);
-    const combinedResults = searchResults.flat();
+  const animeId = await resolveAniListId();
+  if (animeId) baseInfo.anilistId = animeId;
 
-    const seen = new Set<string>();
-    const deduped = combinedResults.filter((row) => {
-      const key = String(row?.id || '').trim();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  // Build search terms, prioritizing exact titles over year variants
+  const mainTerms = titleCandidates.slice(0, 2); // First 2 most relevant titles
+  const searchTerms = Array.from(
+    new Set([
+      ...mainTerms, // Prioritize exact title matches first
+      ...mainTerms.flatMap((title) =>
+        Number.isFinite(yearGuess) && yearGuess > 1900 ? [`${title} ${yearGuess}`] : [],
+      ),
+    ]),
+  ).slice(0, 4); // Limit to top 4 search terms for speed
 
-    const scored = deduped
-      .map((item) => {
-        const itemType = normalizeText(String(item?.type || ''));
-        const itemTitle = String(item?.name || item?.title || '');
-        const score =
-          titleMatchScore(itemTitle, titleCandidates) +
-          (itemType === expectedType ? 120 : -250) +
-          (() => {
-            const rowYear = Number(item?.releaseDate);
-            if (!Number.isFinite(yearGuess) || yearGuess <= 1900 || !Number.isFinite(rowYear)) return 0;
-            if (rowYear === yearGuess) return 30;
-            if (Math.abs(rowYear - yearGuess) === 1) return 10;
+  // Parallelize all searches instead of sequential
+  const searchPromises = searchTerms.map(async (term) => {
+    try {
+      const searchRes = await request.server.inject({
+        method: 'GET',
+        url: `/movies/flixhq/${encodeURIComponent(term)}`,
+      });
+      if (searchRes.statusCode >= 400) return [];
+      const payload = safeJsonParse(searchRes.body || '{}');
+      return Array.isArray(payload?.data) ? payload.data : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const searchResults = await Promise.all(searchPromises);
+  const combinedResults = searchResults.flat();
+
+  const seen = new Set<string>();
+  const deduped = combinedResults.filter((row) => {
+    const key = String(row?.id || '').trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const scored = deduped
+    .map((item) => {
+      const itemType = normalizeText(String(item?.type || ''));
+      const itemTitle = String(item?.name || item?.title || '');
+      const score =
+        titleMatchScore(itemTitle, titleCandidates) +
+        (itemType === expectedType ? 120 : -250) +
+        (() => {
+          const rowYear = Number(item?.releaseDate);
+          if (
+            !Number.isFinite(yearGuess) ||
+            yearGuess <= 1900 ||
+            !Number.isFinite(rowYear)
+          )
             return 0;
-          })() +
-          (() => {
-            if (expectedType !== 'tv') return 0;
-            const baseSeasons = Array.isArray(baseInfo?.seasons) ? baseInfo.seasons.length : 0;
-            const rowSeasons = Number(item?.seasons || 0);
-            if (!baseSeasons || !rowSeasons) return 0;
-            if (baseSeasons === rowSeasons) return 12;
-            if (Math.abs(baseSeasons - rowSeasons) <= 1) return 5;
-            return 0;
-          })();
-        return { item, score };
-      })
-      .sort((a, b) => b.score - a.score);
+          if (rowYear === yearGuess) return 30;
+          if (Math.abs(rowYear - yearGuess) === 1) return 10;
+          return 0;
+        })() +
+        (() => {
+          if (expectedType !== 'tv') return 0;
+          const baseSeasons = Array.isArray(baseInfo?.seasons)
+            ? baseInfo.seasons.length
+            : 0;
+          const rowSeasons = Number(item?.seasons || 0);
+          if (!baseSeasons || !rowSeasons) return 0;
+          if (baseSeasons === rowSeasons) return 12;
+          if (Math.abs(baseSeasons - rowSeasons) <= 1) return 5;
+          return 0;
+        })();
+      return { item, score };
+    })
+    .sort((a, b) => b.score - a.score);
 
-    // Early exit if top match is perfect (exact title + correct type + correct year)
-    const topMatch = scored[0];
-    if (topMatch && topMatch.score > 1100) {
-      // High confidence match: 1000 (exact) + 120 (type) + 30 (year) = 1150+
-      const pick = topMatch.item;
-      if (pick?.id) {
-        try {
-          const infoRes = await request.server.inject({
-            method: 'GET',
-            url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
-          });
-          if (infoRes.statusCode < 400) {
-            const payload = safeJsonParse(infoRes.body || '{}');
-            const providerEpisodes = Array.isArray(payload?.providerEpisodes)
-              ? payload.providerEpisodes
-              : Array.isArray(payload?.data?.providerEpisodes)
-                ? payload.data.providerEpisodes
-                : [];
-            if (providerEpisodes.length > 0) {
-              // Skip to the end of the function with early result
-              const bySeasonEpisode = new Map<string, any>();
-              for (const ep of providerEpisodes) {
-                const seasonNum = Number(ep?.seasonNumber || 0);
-                const episodeNum = Number(ep?.episodeNumber || 0);
-                if (!seasonNum || !episodeNum) continue;
-                bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
-              }
+  // Early exit if top match is perfect (exact title + correct type + correct year)
+  const topMatch = scored[0];
+  if (topMatch && topMatch.score > 1100) {
+    // High confidence match: 1000 (exact) + 120 (type) + 30 (year) = 1150+
+    const pick = topMatch.item;
+    if (pick?.id) {
+      try {
+        const infoRes = await request.server.inject({
+          method: 'GET',
+          url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
+        });
+        if (infoRes.statusCode < 400) {
+          const payload = safeJsonParse(infoRes.body || '{}');
+          const providerEpisodes = Array.isArray(payload?.providerEpisodes)
+            ? payload.providerEpisodes
+            : Array.isArray(payload?.data?.providerEpisodes)
+              ? payload.data.providerEpisodes
+              : [];
+          if (providerEpisodes.length > 0) {
+            // Skip to the end of the function with early result
+            const bySeasonEpisode = new Map<string, any>();
+            for (const ep of providerEpisodes) {
+              const seasonNum = Number(ep?.seasonNumber || 0);
+              const episodeNum = Number(ep?.episodeNumber || 0);
+              if (!seasonNum || !episodeNum) continue;
+              bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
+            }
 
-              if (Array.isArray(baseInfo?.seasons)) {
-                baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIndex: number) => {
+            if (Array.isArray(baseInfo?.seasons)) {
+              baseInfo.seasons = baseInfo.seasons.map(
+                (season: any, seasonIndex: number) => {
                   const seasonNum = Number(season?.season || seasonIndex + 1);
                   if (!Array.isArray(season?.episodes)) return season;
                   return {
                     ...season,
-                    episodes: season.episodes.map((episode: any, episodeIndex: number) => {
-                      const episodeNum = Number(episode?.episode || episode?.number || episodeIndex + 1);
-                      const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
-                      if (!mapped?.episodeId) return episode;
-                      return {
-                        ...episode,
-                        id: mapped.episodeId,
-                        url: mapped.episodeId,
-                      };
-                    }),
+                    episodes: season.episodes.map(
+                      (episode: any, episodeIndex: number) => {
+                        const episodeNum = Number(
+                          episode?.episode || episode?.number || episodeIndex + 1,
+                        );
+                        const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
+                        if (!mapped?.episodeId) return episode;
+                        return {
+                          ...episode,
+                          id: mapped.episodeId,
+                          url: mapped.episodeId,
+                        };
+                      },
+                    ),
                   };
-                });
-              }
-
-              baseInfo.provider = 'flixhq';
-              baseInfo.providerSourceId = pick.id;
-              return baseInfo; // Early return on perfect match
+                },
+              );
             }
+
+            baseInfo.provider = 'flixhq';
+            baseInfo.providerSourceId = pick.id;
+            return baseInfo; // Early return on perfect match
           }
-        } catch {
-          // Fall through to normal path
         }
+      } catch {
+        // Fall through to normal path
       }
     }
+  }
 
-    let pick = scored[0]?.item;
-    if (!pick?.id) return baseInfo;
+  let pick = scored[0]?.item;
+  if (!pick?.id) return baseInfo;
 
-    try {
-      const infoRes = await request.server.inject({
-        method: 'GET',
-        url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
+  try {
+    const infoRes = await request.server.inject({
+      method: 'GET',
+      url: `/movies/flixhq/info?id=${encodeURIComponent(String(pick.id))}`,
+    });
+
+    if (infoRes.statusCode >= 400) return baseInfo;
+    const payload = safeJsonParse(infoRes.body || '{}');
+    const providerEpisodes = Array.isArray(payload?.providerEpisodes)
+      ? payload.providerEpisodes
+      : Array.isArray(payload?.data?.providerEpisodes)
+        ? payload.data.providerEpisodes
+        : [];
+
+    if (!providerEpisodes.length) return baseInfo;
+
+    const bySeasonEpisode = new Map<string, any>();
+    for (const ep of providerEpisodes) {
+      const seasonNum = Number(ep?.seasonNumber || 0);
+      const episodeNum = Number(ep?.episodeNumber || 0);
+      if (!seasonNum || !episodeNum) continue;
+      bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
+    }
+
+    if (Array.isArray(baseInfo?.seasons)) {
+      baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIndex: number) => {
+        const seasonNum = Number(season?.season || seasonIndex + 1);
+        if (!Array.isArray(season?.episodes)) return season;
+        return {
+          ...season,
+          episodes: season.episodes.map((episode: any, episodeIndex: number) => {
+            const episodeNum = Number(
+              episode?.episode || episode?.number || episodeIndex + 1,
+            );
+            const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
+            if (!mapped?.episodeId) return episode;
+            return {
+              ...episode,
+              id: mapped.episodeId,
+              url: mapped.episodeId,
+            };
+          }),
+        };
       });
-
-      if (infoRes.statusCode >= 400) return baseInfo;
-      const payload = safeJsonParse(infoRes.body || '{}');
-      const providerEpisodes = Array.isArray(payload?.providerEpisodes)
-        ? payload.providerEpisodes
-        : Array.isArray(payload?.data?.providerEpisodes)
-          ? payload.data.providerEpisodes
-          : [];
-
-      if (!providerEpisodes.length) return baseInfo;
-
-      const bySeasonEpisode = new Map<string, any>();
-      for (const ep of providerEpisodes) {
-        const seasonNum = Number(ep?.seasonNumber || 0);
-        const episodeNum = Number(ep?.episodeNumber || 0);
-        if (!seasonNum || !episodeNum) continue;
-        bySeasonEpisode.set(`${seasonNum}:${episodeNum}`, ep);
-      }
-
-      if (Array.isArray(baseInfo?.seasons)) {
-        baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIndex: number) => {
-          const seasonNum = Number(season?.season || seasonIndex + 1);
-          if (!Array.isArray(season?.episodes)) return season;
-          return {
-            ...season,
-            episodes: season.episodes.map((episode: any, episodeIndex: number) => {
-              const episodeNum = Number(episode?.episode || episode?.number || episodeIndex + 1);
-              const mapped = bySeasonEpisode.get(`${seasonNum}:${episodeNum}`);
-              if (!mapped?.episodeId) return episode;
-              return {
-                ...episode,
-                id: mapped.episodeId,
-                url: mapped.episodeId,
-              };
-            }),
-          };
-        });
-      }
-
-      baseInfo.provider = 'flixhq';
-      baseInfo.providerSourceId = pick.id;
-      convertTmdbImagesToUrls(baseInfo);
-      return baseInfo;
-    } catch {
-      return baseInfo;
     }
-  };
 
-  const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
+    baseInfo.provider = 'flixhq';
+    baseInfo.providerSourceId = pick.id;
+    convertTmdbImagesToUrls(baseInfo);
+    return baseInfo;
+  } catch {
+    return baseInfo;
+  }
+};
+
+const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/', (_, rp) => {
     rp.status(200).send({
       intro:
@@ -1966,7 +2540,9 @@ const convertTmdbImagesToUrls = (data: any) => {
   fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
     const query = (request.params as { query: string }).query;
     const page = (request.query as { page: number }).page;
-    const tmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
+    const tmdb = configureMeta(
+      new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())),
+    );
 
     try {
       const fetchSearch = async () => {
@@ -1974,7 +2550,12 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       let res = redis
-        ? await cache.fetch(redis as Redis, `tmdb:search:${query}:${page || 1}`, fetchSearch, REDIS_TTL)
+        ? await cache.fetch(
+            redis as Redis,
+            `tmdb:search:${query}:${page || 1}`,
+            fetchSearch,
+            REDIS_TTL,
+          )
         : await fetchSearch();
 
       // If results are empty or error out, try direct rescue
@@ -1991,9 +2572,17 @@ const convertTmdbImagesToUrls = (data: any) => {
       // Catch-all rescue
       const rescued = await getDirectTmdbSearch(query, page);
       if (rescued) {
-        return reply.status(200).send({ ...rescued, message: 'Search results rescued after fetch failure' });
+        return reply
+          .status(200)
+          .send({ ...rescued, message: 'Search results rescued after fetch failure' });
       }
-      reply.status(200).send({ results: [], total_results: 0, message: 'Search failed, please try again or check TMDB key.' });
+      reply
+        .status(200)
+        .send({
+          results: [],
+          total_results: 0,
+          message: 'Search failed, please try again or check TMDB key.',
+        });
     }
   });
 
@@ -2005,15 +2594,17 @@ const convertTmdbImagesToUrls = (data: any) => {
       if (res.data && Array.isArray(res.data.results)) {
         return {
           results: res.data.results
-          .filter((item: any) => item?.id !== undefined && item?.id !== null)
-          .map((item: any) => ({
-            id: String(item.id),
-            title: item.title || item.name || 'Unknown',
-            image: item.poster_path ? `https://image.tmdb.org/t/p/original${item.poster_path}` : null,
-            type: item.media_type === 'tv' ? 'tv' : 'movie',
-            releaseDate: item.release_date || item.first_air_date,
-            rating: item.vote_average,
-          })),
+            .filter((item: any) => item?.id !== undefined && item?.id !== null)
+            .map((item: any) => ({
+              id: String(item.id),
+              title: item.title || item.name || 'Unknown',
+              image: item.poster_path
+                ? `https://image.tmdb.org/t/p/original${item.poster_path}`
+                : null,
+              type: item.media_type === 'tv' ? 'tv' : 'movie',
+              releaseDate: item.release_date || item.first_air_date,
+              rating: item.vote_average,
+            })),
           total_results: res.data.total_results,
           total_pages: res.data.total_pages,
         };
@@ -2024,34 +2615,74 @@ const convertTmdbImagesToUrls = (data: any) => {
     return null;
   };
 
+  const getAlternateTmdbType = (type: string) =>
+    String(type || '').toLowerCase() === 'tv' ? 'movie' : 'tv';
+
+  const fetchDirectTmdbPayload = async (id: string, type: string) => {
+    const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${tmdbApi}`;
+    return axios.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      timeout: 5000,
+    });
+  };
+
   const getDirectTmdbInfo = async (id: string, type: string, includeSeasons = false) => {
     try {
       if (!tmdbApi) return null;
-      const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${tmdbApi}`;
-      const res = await axios.get(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-        timeout: 5000,
-      });
+
+      let resolvedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+      let res: any = null;
+
+      try {
+        res = await fetchDirectTmdbPayload(id, resolvedType);
+      } catch (err: any) {
+        const status = Number(err?.response?.status || 0);
+        if (status === 404) {
+          const alternateType = getAlternateTmdbType(resolvedType);
+          try {
+            res = await fetchDirectTmdbPayload(id, alternateType);
+            resolvedType = alternateType;
+          } catch (altErr: any) {
+            const altStatus = Number(altErr?.response?.status || 0);
+            if (altStatus !== 404) {
+              console.error('Direct TMDB Fetch Error:', altErr);
+            }
+            return null;
+          }
+        } else {
+          console.error('Direct TMDB Fetch Error:', err);
+          return null;
+        }
+      }
+
       if (res.data) {
-        const isTv = String(type || '').toLowerCase() === 'tv';
+        const isTv = resolvedType === 'tv';
         const movieRuntime = Number(res.data.runtime || 0);
-        const tvEpisodeRuntime = Array.isArray(res.data.episode_run_time) && res.data.episode_run_time.length
-          ? Number(res.data.episode_run_time[0] || 0)
-          : 0;
+        const tvEpisodeRuntime =
+          Array.isArray(res.data.episode_run_time) && res.data.episode_run_time.length
+            ? Number(res.data.episode_run_time[0] || 0)
+            : 0;
         const normalizedRuntime = movieRuntime > 0 ? movieRuntime : tvEpisodeRuntime;
         let seasons = Array.isArray(res.data.seasons)
           ? res.data.seasons.map((s: any) => ({
-              id: s?.id !== undefined && s?.id !== null ? String(s.id) : `${id}-season-${s?.season_number ?? ''}`,
+              id:
+                s?.id !== undefined && s?.id !== null
+                  ? String(s.id)
+                  : `${id}-season-${s?.season_number ?? ''}`,
               name: s.name,
               season: s.season_number,
-              image: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
+              image: s.poster_path
+                ? `https://image.tmdb.org/t/p/original${s.poster_path}`
+                : null,
               episodes: [],
             }))
           : [];
 
         if (isTv && includeSeasons && seasons.length) {
           const seasonFetches = seasons
-            .filter((s: any) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0)
+            .filter(
+              (s: any) => Number.isFinite(Number(s?.season)) && Number(s.season) >= 0,
+            )
             .slice(0, 25)
             .map(async (s: any) => {
               try {
@@ -2083,7 +2714,10 @@ const convertTmdbImagesToUrls = (data: any) => {
           const bySeasonNo = new Map<number, any[]>();
           seasonDetails.forEach((entry: any) => {
             if (!entry || !Number.isFinite(Number(entry.seasonNo))) return;
-            bySeasonNo.set(Number(entry.seasonNo), Array.isArray(entry.episodes) ? entry.episodes : []);
+            bySeasonNo.set(
+              Number(entry.seasonNo),
+              Array.isArray(entry.episodes) ? entry.episodes : [],
+            );
           });
 
           seasons = seasons.map((s: any) => {
@@ -2093,10 +2727,13 @@ const convertTmdbImagesToUrls = (data: any) => {
         }
 
         return {
-          id: res.data?.id !== undefined && res.data?.id !== null ? String(res.data.id) : String(id),
+          id:
+            res.data?.id !== undefined && res.data?.id !== null
+              ? String(res.data.id)
+              : String(id),
           title: res.data.title || res.data.name || 'Unknown',
-          type: type,
-          media_type: type,
+          type: resolvedType,
+          media_type: resolvedType,
           description: res.data.overview,
           image: `https://image.tmdb.org/t/p/original${res.data.poster_path}`,
           cover: `https://image.tmdb.org/t/p/original${res.data.backdrop_path}`,
@@ -2106,7 +2743,9 @@ const convertTmdbImagesToUrls = (data: any) => {
           duration: normalizedRuntime,
           rating: res.data.vote_average,
           genres: res.data.genres?.map((g: any) => g.name) || [],
-          totalEpisodes: res.data.number_of_episodes || (res.data.episodes ? res.data.episodes.length : 0),
+          totalEpisodes:
+            res.data.number_of_episodes ||
+            (res.data.episodes ? res.data.episodes.length : 0),
           seasons,
           // Minimal info to keep UI working
         };
@@ -2155,7 +2794,11 @@ const convertTmdbImagesToUrls = (data: any) => {
     }
 
     if (!type) {
-      return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+      return reply
+        .status(400)
+        .send({
+          message: "The 'type' query is required and could not be auto-resolved.",
+        });
     }
 
     if (!tmdbApi) {
@@ -2180,7 +2823,11 @@ const convertTmdbImagesToUrls = (data: any) => {
     // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
     if (!providerLower) {
       const fetchDirect = async () => {
-        const direct = await getDirectTmdbInfo(id, type as string, String(type || '').toLowerCase() === 'tv');
+        const direct = await getDirectTmdbInfo(
+          id,
+          type as string,
+          String(type || '').toLowerCase() === 'tv',
+        );
         if (!direct) return null;
         await attachBestTrailer(direct, id, type as string);
         convertTmdbImagesToUrls(direct);
@@ -2188,7 +2835,12 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       const directRes = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:direct:${type}:${id}:seasons-v2`, fetchDirect, REDIS_TTL)
+        ? await cache.fetch(
+            redis as Redis,
+            `tmdb:info:direct:${type}:${id}:seasons-v2`,
+            fetchDirect,
+            REDIS_TTL,
+          )
         : await fetchDirect();
 
       if (directRes) {
@@ -2196,7 +2848,6 @@ const convertTmdbImagesToUrls = (data: any) => {
       }
       // Fall through to provider-backed path as a last resort.
     }
-
 
     if (providerLower === 'justanime') {
       try {
@@ -2253,7 +2904,16 @@ const convertTmdbImagesToUrls = (data: any) => {
       if (selectedProvider) {
         tmdb = createTmdbClient(selectedProvider);
         if (!tmdb) {
-          return reply.status(200).send({ id, title: 'Unknown', type, media_type: type, episodes: [], message: 'TMDB key not configured on the server.' });
+          return reply
+            .status(200)
+            .send({
+              id,
+              title: 'Unknown',
+              type,
+              media_type: type,
+              episodes: [],
+              message: 'TMDB key not configured on the server.',
+            });
         }
       } else {
         const possibleProvider = PROVIDERS_LIST.MOVIES.find(
@@ -2261,7 +2921,16 @@ const convertTmdbImagesToUrls = (data: any) => {
         );
         tmdb = createTmdbClient(possibleProvider);
         if (!tmdb) {
-          return reply.status(200).send({ id, title: 'Unknown', type, media_type: type, episodes: [], message: 'TMDB key not configured on the server.' });
+          return reply
+            .status(200)
+            .send({
+              id,
+              title: 'Unknown',
+              type,
+              media_type: type,
+              episodes: [],
+              message: 'TMDB key not configured on the server.',
+            });
         }
       }
     }
@@ -2283,7 +2952,12 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       let res = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`, fetchInfo, REDIS_TTL)
+        ? await cache.fetch(
+            redis as Redis,
+            `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`,
+            fetchInfo,
+            REDIS_TTL,
+          )
         : await fetchInfo();
 
       // If title is "Unknown" or missing, try to rescue it directly from TMDB
@@ -2292,7 +2966,11 @@ const convertTmdbImagesToUrls = (data: any) => {
         if (rescued) {
           await attachBestTrailer(rescued, id, type);
           convertTmdbImagesToUrls(rescued);
-          res = { ...(res || {}), ...rescued, message: 'Metadata partially rescued via direct fetch' };
+          res = {
+            ...(res || {}),
+            ...rescued,
+            message: 'Metadata partially rescued via direct fetch',
+          };
         }
       }
 
@@ -2304,9 +2982,22 @@ const convertTmdbImagesToUrls = (data: any) => {
       if (rescued) {
         await attachBestTrailer(rescued, id, type);
         convertTmdbImagesToUrls(rescued);
-        return reply.status(200).send({ ...rescued, episodes: [], message: 'Metadata rescued after fetch failure' });
+        return reply
+          .status(200)
+          .send({
+            ...rescued,
+            episodes: [],
+            message: 'Metadata rescued after fetch failure',
+          });
       }
-      reply.status(200).send({ id, title: 'Unknown', episodes: [], message: 'TMDB metadata fetch failed' });
+      reply
+        .status(200)
+        .send({
+          id,
+          title: 'Unknown',
+          episodes: [],
+          message: 'TMDB metadata fetch failed',
+        });
     }
   });
 
@@ -2345,7 +3036,11 @@ const convertTmdbImagesToUrls = (data: any) => {
     }
 
     if (!type) {
-      return reply.status(400).send({ message: "The 'type' query is required and could not be auto-resolved." });
+      return reply
+        .status(400)
+        .send({
+          message: "The 'type' query is required and could not be auto-resolved.",
+        });
     }
 
     if (!tmdbApi) {
@@ -2363,7 +3058,11 @@ const convertTmdbImagesToUrls = (data: any) => {
     // This avoids hard dependency on FlixHQ host resolution during basic info fetches.
     if (!providerLower) {
       const fetchDirect = async () => {
-        const direct = await getDirectTmdbInfo(id, type as string, String(type || '').toLowerCase() === 'tv');
+        const direct = await getDirectTmdbInfo(
+          id,
+          type as string,
+          String(type || '').toLowerCase() === 'tv',
+        );
         if (!direct) return null;
         await attachBestTrailer(direct, id, type as string);
         convertTmdbImagesToUrls(direct);
@@ -2371,7 +3070,12 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       const directRes = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:direct:${type}:${id}:seasons-v2`, fetchDirect, REDIS_TTL)
+        ? await cache.fetch(
+            redis as Redis,
+            `tmdb:info:direct:${type}:${id}:seasons-v2`,
+            fetchDirect,
+            REDIS_TTL,
+          )
         : await fetchDirect();
 
       if (directRes) {
@@ -2379,7 +3083,6 @@ const convertTmdbImagesToUrls = (data: any) => {
       }
       // Fall through to provider-backed path as a last resort.
     }
-
 
     if (providerLower === 'justanime') {
       try {
@@ -2459,7 +3162,12 @@ const convertTmdbImagesToUrls = (data: any) => {
       };
 
       let res = redis
-        ? await cache.fetch(redis as Redis, `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`, fetchInfo, REDIS_TTL)
+        ? await cache.fetch(
+            redis as Redis,
+            `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`,
+            fetchInfo,
+            REDIS_TTL,
+          )
         : await fetchInfo();
 
       // If title is "Unknown" or missing, try to rescue it directly from TMDB
@@ -2468,7 +3176,11 @@ const convertTmdbImagesToUrls = (data: any) => {
         if (rescued) {
           await attachBestTrailer(rescued, id, type);
           convertTmdbImagesToUrls(rescued);
-          res = { ...(res || {}), ...rescued, message: 'Metadata partially rescued via direct fetch' };
+          res = {
+            ...(res || {}),
+            ...rescued,
+            message: 'Metadata partially rescued via direct fetch',
+          };
         }
       }
 
@@ -2480,9 +3192,22 @@ const convertTmdbImagesToUrls = (data: any) => {
       if (rescued) {
         await attachBestTrailer(rescued, id, type);
         convertTmdbImagesToUrls(rescued);
-        return reply.status(200).send({ ...rescued, episodes: [], message: 'Metadata rescued after fetch failure' });
+        return reply
+          .status(200)
+          .send({
+            ...rescued,
+            episodes: [],
+            message: 'Metadata rescued after fetch failure',
+          });
       }
-      reply.status(200).send({ id, title: 'Unknown', episodes: [], message: 'TMDB metadata fetch failed' });
+      reply
+        .status(200)
+        .send({
+          id,
+          title: 'Unknown',
+          episodes: [],
+          message: 'TMDB metadata fetch failed',
+        });
     }
   });
 
@@ -2514,7 +3239,7 @@ const convertTmdbImagesToUrls = (data: any) => {
 
     try {
       let res = await getDirectTmdbTrending(type, timePeriod, page);
-      
+
       // If direct TMDB is empty, fall back to the extension provider.
       if (!res || !Array.isArray(res.results) || res.results.length === 0) {
         const tmdb = createTmdbClient(configureProvider(new MOVIES.FlixHQ()));
@@ -2535,13 +3260,24 @@ const convertTmdbImagesToUrls = (data: any) => {
       // Catch-all rescue
       const rescued = await getDirectTmdbTrending(type, timePeriod, page);
       if (rescued) {
-        return reply.status(200).send({ ...rescued, message: 'Trending rescued after fetch failure' });
+        return reply
+          .status(200)
+          .send({ ...rescued, message: 'Trending rescued after fetch failure' });
       }
-      reply.status(200).send({ results: [], message: 'Trending currently unavailable, please check TMDB key.' });
+      reply
+        .status(200)
+        .send({
+          results: [],
+          message: 'Trending currently unavailable, please check TMDB key.',
+        });
     }
   });
 
-  const getDirectTmdbTrending = async (type: string = 'all', timePeriod: string = 'day', page: number = 1) => {
+  const getDirectTmdbTrending = async (
+    type: string = 'all',
+    timePeriod: string = 'day',
+    page: number = 1,
+  ) => {
     try {
       if (!tmdbApi) return null;
       const url = `https://api.themoviedb.org/3/trending/${type}/${timePeriod}?api_key=${tmdbApi}&page=${page}`;
@@ -2549,15 +3285,17 @@ const convertTmdbImagesToUrls = (data: any) => {
       if (res.data && Array.isArray(res.data.results)) {
         return {
           results: res.data.results
-          .filter((item: any) => item?.id !== undefined && item?.id !== null)
-          .map((item: any) => ({
-            id: String(item.id),
-            title: item.title || item.name || 'Unknown',
-            image: item.poster_path ? `https://image.tmdb.org/t/p/original${item.poster_path}` : null,
-            type: item.media_type || (type === 'all' ? 'movie' : type),
-            releaseDate: item.release_date || item.first_air_date,
-            rating: item.vote_average,
-          })),
+            .filter((item: any) => item?.id !== undefined && item?.id !== null)
+            .map((item: any) => ({
+              id: String(item.id),
+              title: item.title || item.name || 'Unknown',
+              image: item.poster_path
+                ? `https://image.tmdb.org/t/p/original${item.poster_path}`
+                : null,
+              type: item.media_type || (type === 'all' ? 'movie' : type),
+              releaseDate: item.release_date || item.first_air_date,
+              rating: item.vote_average,
+            })),
           page: res.data.page,
         };
       }
@@ -2582,13 +3320,26 @@ const convertTmdbImagesToUrls = (data: any) => {
     const provider = (request.query as { provider?: string }).provider;
     const providerLower = provider?.toLowerCase();
     const server = (request.query as { server?: StreamingServers }).server;
-    const directOnlyRaw = String((request.query as { directOnly?: string }).directOnly || '').toLowerCase();
-    const directOnly = directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
-    const sourceType = String((request.query as { source_type?: string; category?: string }).source_type || (request.query as { category?: string }).category || '').toLowerCase();
-    const requestedSeasonForCache = String((request.query as { season?: string }).season || '');
-    const requestedEpisodeForCache = String((request.query as { episode?: string }).episode || '');
+    const directOnlyRaw = String(
+      (request.query as { directOnly?: string }).directOnly || '',
+    ).toLowerCase();
+    const directOnly =
+      directOnlyRaw === '1' || directOnlyRaw === 'true' || directOnlyRaw === 'yes';
+    const sourceType = String(
+      (request.query as { source_type?: string; category?: string }).source_type ||
+        (request.query as { category?: string }).category ||
+        '',
+    ).toLowerCase();
+    const requestedSeasonForCache = String(
+      (request.query as { season?: string }).season || '',
+    );
+    const requestedEpisodeForCache = String(
+      (request.query as { episode?: string }).episode || '',
+    );
 
-    console.log(`[tmdb.ts] watch hit: id=${id}, type=${type}, provider=${provider}, providerLower=${providerLower}`);
+    console.log(
+      `[tmdb.ts] watch hit: id=${id}, type=${type}, provider=${provider}, providerLower=${providerLower}`,
+    );
 
     // Build cache key for watch results (skip caching if server is specified since that changes results)
     const cacheKey = !server
@@ -2601,50 +3352,112 @@ const convertTmdbImagesToUrls = (data: any) => {
         const cached = await (redis as Redis).get(cacheKey);
         if (cached) {
           const payload = JSON.parse(cached);
+          const cachedCookie = String(payload?.headers?.Cookie || '').trim();
+          if (providerLower === 'hdstream4u' && !cachedCookie) {
+            // Older cached HDStream4u watch payloads are missing the browser-session
+            // cookie needed by hubstream manifests. Recompute instead of serving stale data.
+          } else {
           return reply.status(200).send(payload);
+          }
         }
       } catch {
         // Ignore cache read errors and proceed with normal flow
       }
     }
 
+    if (providerLower === 'hdstream4u' && type === 'movie' && id) {
+      try {
+        const infoRes = await request.server.inject({
+          method: 'GET',
+          url: `/movies/hdstream4u/info?id=${encodeURIComponent(String(id))}&type=movie`,
+        });
+
+        if (infoRes.statusCode < 400) {
+          const infoPayload = safeJsonParse(infoRes.body || '{}');
+          const candidates = extractHdstreamMovieCandidateIds(infoPayload).slice(0, 3);
+
+          if (candidates.length) {
+            const candidatePayloads = candidates.map(async (candidateId) => {
+              const delegated = await withSoftTimeout(
+                request.server.inject({
+                  method: 'GET',
+                  url: `/movies/hdstream4u/watch?episodeId=${encodeURIComponent(candidateId)}&mediaId=${encodeURIComponent(String(id))}`,
+                }),
+                4500,
+              );
+              if (!delegated || delegated.statusCode >= 400) throw new Error('candidate failed');
+              const payload = safeJsonParse(delegated.body || '{}');
+              const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+              if (!sources.length) throw new Error('candidate empty');
+              return payload;
+            });
+
+            const fastest = await Promise.any(candidatePayloads).catch(() => null);
+            if (fastest) {
+              if (cacheKey && redis) {
+                (redis as Redis)
+                  .setex(cacheKey, REDIS_TTL, JSON.stringify(fastest))
+                  .catch(() => {});
+              }
+              return reply.status(200).send(fastest);
+            }
+          }
+        }
+      } catch {
+        // Fall through to the standard provider flow below.
+      }
+    }
+
     // Check if it's an anime provider
     if (providerLower && ANIME_PROVIDER_ROUTES[providerLower]) {
       let resolvedEpisodeId = episodeId;
-      
+
       // Attempt to resolve episodeId from season/episode if it's a provider-specific mapping provider
-      if ((providerLower === 'justanime' || providerLower === 'animesalt' || providerLower === 'animekai' || providerLower === 'animetsu') && (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))) {
-         try {
-           const info: any = providerLower === 'justanime'
-             ? await buildJustanimeTmdbInfo(request, id, type || 'tv')
-             : providerLower === 'animesalt'
-             ? await buildAnimesaltTmdbInfo(request, id, type || 'tv')
-             : providerLower === 'animetsu'
-             ? await buildAnimetsuTmdbInfo(request, id, type || 'tv')
-             : await buildAnimekaiTmdbInfo(request, id, type || 'tv');
-           
-           const requestedSeason = Number((request.query as { season?: number }).season || 1);
-           const requestedEpisode = Number((request.query as { episode?: number }).episode || 1);
-           
-           const seasonMatch = Array.isArray(info?.seasons)
-             ? info.seasons.find((s: any) => Number(s?.season || 1) === requestedSeason)
-             : undefined;
-           const epMatch = Array.isArray(seasonMatch?.episodes)
-             ? seasonMatch.episodes.find(
-               (ep: any) => Number(ep?.episode || ep?.number || 0) === requestedEpisode,
-             )
-             : undefined;
-           
-           if (epMatch?.id) {
-             resolvedEpisodeId = epMatch.id;
-           }
-         } catch {
-           // Fallback to default redirect
-         }
+      if (
+        (providerLower === 'justanime' ||
+          providerLower === 'animesalt' ||
+          providerLower === 'animekai' ||
+          providerLower === 'animetsu') &&
+        (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))
+      ) {
+        try {
+          const info: any =
+            providerLower === 'justanime'
+              ? await buildJustanimeTmdbInfo(request, id, type || 'tv')
+              : providerLower === 'animesalt'
+                ? await buildAnimesaltTmdbInfo(request, id, type || 'tv')
+                : providerLower === 'animetsu'
+                  ? await buildAnimetsuTmdbInfo(request, id, type || 'tv')
+                  : await buildAnimekaiTmdbInfo(request, id, type || 'tv');
+
+          const requestedSeason = Number(
+            (request.query as { season?: number }).season || 1,
+          );
+          const requestedEpisode = Number(
+            (request.query as { episode?: number }).episode || 1,
+          );
+
+          const seasonMatch = Array.isArray(info?.seasons)
+            ? info.seasons.find((s: any) => Number(s?.season || 1) === requestedSeason)
+            : undefined;
+          const epMatch = Array.isArray(seasonMatch?.episodes)
+            ? seasonMatch.episodes.find(
+                (ep: any) => Number(ep?.episode || ep?.number || 0) === requestedEpisode,
+              )
+            : undefined;
+
+          if (epMatch?.id) {
+            resolvedEpisodeId = epMatch.id;
+          }
+        } catch {
+          // Fallback to default redirect
+        }
       }
 
       if (!resolvedEpisodeId) {
-        return reply.status(400).send({ message: `episodeId is required for ${providerLower} watch` });
+        return reply
+          .status(400)
+          .send({ message: `episodeId is required for ${providerLower} watch` });
       }
 
       const animeBaseUrl = ANIME_PROVIDER_ROUTES[providerLower];
@@ -2654,7 +3467,10 @@ const convertTmdbImagesToUrls = (data: any) => {
         queryParts.push(`${serverKey}=${encodeURIComponent(server)}`);
       }
       if (providerLower === 'hianime') queryParts.push('category=both');
-      if (providerLower === 'animetsu' && (sourceType === 'dub' || sourceType === 'sub')) {
+      if (
+        providerLower === 'animetsu' &&
+        (sourceType === 'dub' || sourceType === 'sub')
+      ) {
         queryParts.push(`source_type=${encodeURIComponent(sourceType)}`);
       }
       if (directOnly) queryParts.push('directOnly=true');
@@ -2663,7 +3479,12 @@ const convertTmdbImagesToUrls = (data: any) => {
       return reply.redirect(redirectUrl);
     }
 
-    if (type === 'movie' && id && (!providerLower || providerLower === 'flixhq') && !episodeId) {
+    if (
+      type === 'movie' &&
+      id &&
+      providerLower === 'flixhq' &&
+      !episodeId
+    ) {
       // FAST PATH: For movies, skip full episode mapping and go straight to FlixHQ watch
       // This cuts response time by 60-70% compared to full buildFlixhqTmdbInfo
       try {
@@ -2697,13 +3518,17 @@ const convertTmdbImagesToUrls = (data: any) => {
               const payload = safeJsonParse(searchRes.body || '{}');
               const results = Array.isArray(payload?.data) ? payload.data : [];
               const movieMatch = results
-                .filter((item: any) => normalizeText(String(item?.type || '')) === 'movie')
+                .filter(
+                  (item: any) => normalizeText(String(item?.type || '')) === 'movie',
+                )
                 .map((item: any) => ({
                   item,
-                  score: titleMatchScore(String(item?.name || item?.title || ''), [titleForSearch]),
+                  score: titleMatchScore(String(item?.name || item?.title || ''), [
+                    titleForSearch,
+                  ]),
                 }))
                 .sort((a: any, b: any) => b.score - a.score)[0]?.item;
-              
+
               if (movieMatch?.id) {
                 // Found movie! Directly call FlixHQ watch
                 const queryParts = [`episodeId=${encodeURIComponent(movieMatch.id)}`];
@@ -2711,7 +3536,7 @@ const convertTmdbImagesToUrls = (data: any) => {
                 if (server) queryParts.push('strictServer=true');
                 if (directOnly) queryParts.push('directOnly=true');
                 if (!directOnly) queryParts.push('allowEmbedFallback=true');
-                
+
                 const watchRes = await request.server.inject({
                   method: 'GET',
                   url: `/movies/flixhq/watch?${queryParts.join('&')}`,
@@ -2719,11 +3544,20 @@ const convertTmdbImagesToUrls = (data: any) => {
 
                 if (watchRes.statusCode < 400) {
                   const watchPayload = safeJsonParse(watchRes.body || '{}');
-                  const sources = Array.isArray(watchPayload?.sources) ? watchPayload.sources : [];
+                  const sources = Array.isArray(watchPayload?.sources)
+                    ? watchPayload.sources
+                    : [];
                   if (sources.length > 0) {
-                    if (!directOnly || sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
+                    if (
+                      !directOnly ||
+                      sources.some((src: any) =>
+                        /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')),
+                      )
+                    ) {
                       if (cacheKey && redis) {
-                        (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(watchPayload)).catch(() => {});
+                        (redis as Redis)
+                          .setex(cacheKey, REDIS_TTL, JSON.stringify(watchPayload))
+                          .catch(() => {});
                       }
                       return reply.status(200).send(watchPayload);
                     }
@@ -2742,43 +3576,57 @@ const convertTmdbImagesToUrls = (data: any) => {
 
     const resolveFlixhqTvEpisodeId = async () => {
       const requestedSeason = Number((request.query as { season?: number }).season || 1);
-      const requestedEpisode = Number((request.query as { episode?: number }).episode || 1);
+      const requestedEpisode = Number(
+        (request.query as { episode?: number }).episode || 1,
+      );
       const pickEpisodeId = (info: any) => {
         const seasonMatch = Array.isArray(info?.seasons)
-          ? info.seasons.find((s: any) => Number(s?.season || s?.number || 1) === requestedSeason)
+          ? info.seasons.find(
+              (s: any) => Number(s?.season || s?.number || 1) === requestedSeason,
+            )
           : undefined;
         const epMatch = Array.isArray(seasonMatch?.episodes)
           ? seasonMatch.episodes.find(
-            (ep: any) => Number(ep?.episode || ep?.number || ep?.episodeNumber || 0) === requestedEpisode,
-          )
+              (ep: any) =>
+                Number(ep?.episode || ep?.number || ep?.episodeNumber || 0) ===
+                requestedEpisode,
+            )
           : undefined;
         const providerEpisodeMatch = Array.isArray(info?.providerEpisodes)
           ? info.providerEpisodes.find(
-            (ep: any) =>
-              Number(ep?.seasonNumber || ep?.season || 1) === requestedSeason &&
-              Number(ep?.episodeNumber || ep?.episode || ep?.number || 0) === requestedEpisode,
-          )
+              (ep: any) =>
+                Number(ep?.seasonNumber || ep?.season || 1) === requestedSeason &&
+                Number(ep?.episodeNumber || ep?.episode || ep?.number || 0) ===
+                  requestedEpisode,
+            )
           : undefined;
         return String(
           epMatch?.id ||
-          epMatch?.episodeId ||
-          epMatch?.url ||
-          providerEpisodeMatch?.episodeId ||
-          providerEpisodeMatch?.id ||
-          providerEpisodeMatch?.url ||
-          '',
+            epMatch?.episodeId ||
+            epMatch?.url ||
+            providerEpisodeMatch?.episodeId ||
+            providerEpisodeMatch?.id ||
+            providerEpisodeMatch?.url ||
+            '',
         ).trim();
       };
 
       try {
-        const info: any = await buildFlixhqTmdbInfo(request, String(id || ''), String(type || 'tv'));
+        const info: any = await buildFlixhqTmdbInfo(
+          request,
+          String(id || ''),
+          String(type || 'tv'),
+        );
         const mapped = pickEpisodeId(info);
         if (mapped) return mapped;
       } catch {
         // Try title search fallback below.
       }
 
-      const mediaInfo: any = await getDirectTmdbInfo(String(id || ''), String(type || 'tv'));
+      const mediaInfo: any = await getDirectTmdbInfo(
+        String(id || ''),
+        String(type || 'tv'),
+      );
       const title = String(mediaInfo?.title || mediaInfo?.name || '').trim();
       if (!title) return '';
 
@@ -2789,7 +3637,9 @@ const convertTmdbImagesToUrls = (data: any) => {
       if (searchRes.statusCode >= 400) return '';
       const searchPayload = safeJsonParse(searchRes.body || '{}');
       const results = Array.isArray(searchPayload?.data) ? searchPayload.data : [];
-      const yearGuess = Number(String(mediaInfo?.releaseDate || mediaInfo?.firstAirDate || '').slice(0, 4));
+      const yearGuess = Number(
+        String(mediaInfo?.releaseDate || mediaInfo?.firstAirDate || '').slice(0, 4),
+      );
       const scored = results
         .filter((row: any) => String(row?.id || '').trim())
         .map((row: any) => ({
@@ -2797,7 +3647,11 @@ const convertTmdbImagesToUrls = (data: any) => {
           score:
             titleMatchScore(String(row?.name || row?.title || ''), [title]) +
             (Number(String(row?.releaseDate || '').slice(0, 4)) === yearGuess ? 50 : 0) +
-            (String(row?.type || '').toLowerCase().includes('tv') ? 20 : 0),
+            (String(row?.type || '')
+              .toLowerCase()
+              .includes('tv')
+              ? 20
+              : 0),
         }))
         .sort((a: any, b: any) => b.score - a.score);
       const flixId = String(scored[0]?.row?.id || '').trim();
@@ -2811,17 +3665,42 @@ const convertTmdbImagesToUrls = (data: any) => {
       return pickEpisodeId(safeJsonParse(infoRes.body || '{}'));
     };
 
-    if (!episodeId && type === 'tv' && id && (!providerLower || providerLower === 'flixhq')) {
+    if (
+      !episodeId &&
+      type === 'tv' &&
+      id &&
+      (!providerLower || providerLower === 'flixhq')
+    ) {
       try {
-        episodeId = await resolveFlixhqTvEpisodeId() || episodeId;
+        episodeId = (await resolveFlixhqTvEpisodeId()) || episodeId;
       } catch {
         // Ignore mapping fallback failures and allow normal flow to return extraction errors.
       }
     }
 
-    if (type === 'movie' && !providerLower && id) {
+    if (!episodeId && type === 'tv' && id && providerLower === 'hdstream4u') {
       try {
-        const discoveryTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
+        episodeId =
+          (await resolveHdstream4uTvEpisodeId(
+            request,
+            String(id || ''),
+            String(type || 'tv'),
+            Number((request.query as { season?: number }).season || 1),
+            Number((request.query as { episode?: number }).episode || 1),
+          )) || episodeId;
+      } catch {
+        // Ignore mapping failures and continue.
+      }
+    }
+
+    let discoveredMovieOrTvInfo: any = null;
+
+    if ((type === 'movie' || type === 'tv') && (!providerLower || providerLower === 'hdstream4u') && id) {
+      try {
+        const discoveryTmdb = new META.TMDB(
+          tmdbApi,
+          configureProvider(new MOVIES.FlixHQ()),
+        );
         let mediaInfo: any;
         try {
           mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
@@ -2829,6 +3708,7 @@ const convertTmdbImagesToUrls = (data: any) => {
           // Rescue directly if discovery fails
           mediaInfo = await getDirectTmdbInfo(id, type);
         }
+        discoveredMovieOrTvInfo = mediaInfo;
 
         // Final check for "Unknown" title after fetch
         if (!mediaInfo || !mediaInfo.title || mediaInfo.title === 'Unknown') {
@@ -2837,7 +3717,7 @@ const convertTmdbImagesToUrls = (data: any) => {
         }
 
         const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
-        if (isAnimeLikeMovie(mediaInfo) && titleCandidates.length) {
+        if (type === 'movie' && isAnimeLikeMovie(mediaInfo) && titleCandidates.length) {
           const animeFallback = await tryAnimeProvidersForMovie(request, {
             titleCandidates,
             server,
@@ -2845,9 +3725,37 @@ const convertTmdbImagesToUrls = (data: any) => {
           if (animeFallback) {
             // Cache watch result for fast subsequent loads
             if (cacheKey && redis) {
-              (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback)).catch(() => {});
+              (redis as Redis)
+                .setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback))
+                .catch(() => {});
             }
             return reply.status(200).send(animeFallback);
+          }
+        }
+
+        if (titleCandidates.length) {
+          try {
+            const hdstreamEpisodeId = (type === 'tv' && episodeId) ? episodeId : await resolveHdstream4uEpisodeId(request, mediaInfo);
+            if (hdstreamEpisodeId) {
+              const delegated = await request.server.inject({
+                method: 'GET',
+                url: `/movies/hdstream4u/watch?episodeId=${encodeURIComponent(hdstreamEpisodeId)}${type === 'movie' && id ? `&mediaId=${encodeURIComponent(String(id))}` : ''}`,
+              });
+              if (delegated.statusCode < 400) {
+                const payload = safeJsonParse(delegated.body || '{}');
+                const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+                if (sources.length > 0) {
+                  if (cacheKey && redis) {
+                    (redis as Redis)
+                      .setex(cacheKey, REDIS_TTL, JSON.stringify(payload))
+                      .catch(() => {});
+                  }
+                  return reply.status(200).send(payload);
+                }
+              }
+            }
+          } catch {
+            // Fall through to remaining providers.
           }
         }
       } catch {
@@ -2889,7 +3797,6 @@ const convertTmdbImagesToUrls = (data: any) => {
           const lowerSourceId = sourceId.toLowerCase();
           const foreignProviderUrl = /^https?:\/\//i.test(sourceId);
           const foreignProviderHint =
-
             lowerSourceId.includes('animesalt') ||
             lowerSourceId.includes('hianime') ||
             lowerSourceId.includes('satoru');
@@ -2935,10 +3842,17 @@ const convertTmdbImagesToUrls = (data: any) => {
           if (delegated.statusCode < 400) {
             const payload = safeJsonParse(delegated.body || '{}');
             const sources = Array.isArray(payload?.sources) ? payload.sources : [];
-            if (!directOnly || sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
+            if (
+              !directOnly ||
+              sources.some((src: any) =>
+                /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')),
+              )
+            ) {
               // Cache watch result for fast subsequent loads
               if (cacheKey && redis) {
-                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+                (redis as Redis)
+                  .setex(cacheKey, REDIS_TTL, JSON.stringify(payload))
+                  .catch(() => {});
               }
               return reply.status(200).send(payload);
             }
@@ -2948,15 +3862,36 @@ const convertTmdbImagesToUrls = (data: any) => {
         }
       }
 
+      if (providerLower === 'hdstream4u' && sourceId) {
+        try {
+          const delegated = await request.server.inject({
+            method: 'GET',
+            url: `/movies/hdstream4u/watch?episodeId=${encodeURIComponent(sourceId)}${mediaId ? `&mediaId=${encodeURIComponent(mediaId)}` : ''}`,
+          });
+          if (delegated.statusCode < 400) {
+            const payload = safeJsonParse(delegated.body || '{}');
+            const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+            if (sources.length > 0) {
+              if (cacheKey && redis) {
+                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+              }
+              return reply.status(200).send(payload);
+            }
+          }
+        } catch {
+          // Fall through.
+        }
+      }
+
+      if (providerLower === 'hdstream4u' && !sourceId) {
+        throw new Error('HDStream4u: no episode ID found for requested TV episode');
+      }
+
       const res = await fetchWithServerFallback(
-        async (selectedServer) => await tmdb.fetchEpisodeSources(sourceId, mediaId, selectedServer),
+        async (selectedServer) =>
+          await tmdb.fetchEpisodeSources(sourceId, mediaId, selectedServer),
         server,
-        server
-          ? [server]
-          : [
-            StreamingServers.VidCloud,
-            StreamingServers.UpCloud,
-          ],
+        server ? [server] : [StreamingServers.VidCloud, StreamingServers.UpCloud],
         {
           attemptTimeoutMs: MOVIE_WATCH_ATTEMPT_TIMEOUT_MS,
           requireDirectPlayable: directOnly,
@@ -2969,7 +3904,11 @@ const convertTmdbImagesToUrls = (data: any) => {
       }
       reply.status(200).send(res);
     } catch (err: any) {
-      if ((type === 'tv' || type === 'movie') && sourceId && (!providerLower || providerLower === 'flixhq')) {
+      if (
+        (type === 'tv' || type === 'movie') &&
+        sourceId &&
+        (!providerLower || providerLower === 'flixhq')
+      ) {
         try {
           const queryParts = [`episodeId=${encodeURIComponent(sourceId)}`];
           if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
@@ -2984,10 +3923,17 @@ const convertTmdbImagesToUrls = (data: any) => {
           if (delegated.statusCode < 400) {
             const payload = safeJsonParse(delegated.body || '{}');
             const sources = Array.isArray(payload?.sources) ? payload.sources : [];
-            if (!directOnly || sources.some((src: any) => /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')))) {
+            if (
+              !directOnly ||
+              sources.some((src: any) =>
+                /\.(m3u8|mp4|mpd)(\?|$)/i.test(String(src?.url || '')),
+              )
+            ) {
               // Cache watch result for fast subsequent loads
               if (cacheKey && redis) {
-                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+                (redis as Redis)
+                  .setex(cacheKey, REDIS_TTL, JSON.stringify(payload))
+                  .catch(() => {});
               }
               return reply.status(200).send(payload);
             }
@@ -2999,12 +3945,14 @@ const convertTmdbImagesToUrls = (data: any) => {
 
       if (type === 'movie' && id) {
         try {
-          const discoveryTmdb = configureMeta(new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())));
+          const discoveryTmdb = configureMeta(
+            new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())),
+          );
           let mediaInfo: any;
           try {
-             mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
+            mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
           } catch {
-             mediaInfo = await getDirectTmdbInfo(id, type);
+            mediaInfo = await getDirectTmdbInfo(id, type);
           }
 
           if (!mediaInfo || !mediaInfo.title || mediaInfo.title === 'Unknown') {
@@ -3021,7 +3969,9 @@ const convertTmdbImagesToUrls = (data: any) => {
             if (animeFallback) {
               // Cache watch result for fast subsequent loads
               if (cacheKey && redis) {
-                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback)).catch(() => {});
+                (redis as Redis)
+                  .setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback))
+                  .catch(() => {});
               }
               return reply.status(200).send(animeFallback);
             }
@@ -3043,7 +3993,9 @@ const convertTmdbImagesToUrls = (data: any) => {
           if (fallback) {
             // Cache watch result for fast subsequent loads
             if (cacheKey && redis) {
-              (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(fallback)).catch(() => {});
+              (redis as Redis)
+                .setex(cacheKey, REDIS_TTL, JSON.stringify(fallback))
+                .catch(() => {});
             }
             return reply.status(200).send(fallback);
           }

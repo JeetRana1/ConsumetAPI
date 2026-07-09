@@ -129,8 +129,23 @@ const tryExtractor = async (provider, embedUrl, requestedServer) => {
                                         : server === models_1.StreamingServers.Mp4Upload
                                             ? [extractors_1.Mp4Upload, extractors_1.MixDrop, extractors_1.StreamTape, extractors_1.VidCloud, extractors_1.MegaCloud, extractors_1.RapidCloud]
                                             : server === models_1.StreamingServers.StreamTape
-                                                ? [extractors_1.StreamTape, extractors_1.MixDrop, extractors_1.Mp4Upload, extractors_1.VidCloud, extractors_1.MegaCloud, extractors_1.RapidCloud]
-                                                : [extractors_1.VidCloud, extractors_1.RapidCloud, extractors_1.MegaCloud, extractors_1.VideoStr, extractors_1.MixDrop, extractors_1.Mp4Upload, extractors_1.StreamTape];
+                                                ? [
+                                                    extractors_1.StreamTape,
+                                                    extractors_1.MixDrop,
+                                                    extractors_1.Mp4Upload,
+                                                    extractors_1.VidCloud,
+                                                    extractors_1.MegaCloud,
+                                                    extractors_1.RapidCloud,
+                                                ]
+                                                : [
+                                                    extractors_1.VidCloud,
+                                                    extractors_1.RapidCloud,
+                                                    extractors_1.MegaCloud,
+                                                    extractors_1.VideoStr,
+                                                    extractors_1.MixDrop,
+                                                    extractors_1.Mp4Upload,
+                                                    extractors_1.StreamTape,
+                                                ];
         for (const Extractor of extractors) {
             try {
                 const raw = await new Extractor(provider.proxyConfig, provider.adapter).extract(url);
@@ -171,7 +186,9 @@ const extractFirstIframe = (html) => {
 const fetchHtml = async (provider, url, referer) => {
     try {
         if (provider.client?.get) {
-            const res = await provider.client.get(url, { headers: { Referer: referer } });
+            const res = await provider.client.get(url, {
+                headers: { Referer: referer },
+            });
             const html = String(res?.data || '');
             if (html)
                 return html;
@@ -272,7 +289,9 @@ const promoteEmbedSourcesToDirect = async (provider, payload, preferredServer) =
             return {
                 ...payload,
                 ...extracted,
-                subtitles: Array.isArray(payload.subtitles) ? payload.subtitles : extracted?.subtitles,
+                subtitles: Array.isArray(payload.subtitles)
+                    ? payload.subtitles
+                    : extracted?.subtitles,
                 embedURL: payload.embedURL || candidate,
             };
         }

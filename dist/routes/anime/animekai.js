@@ -195,7 +195,8 @@ const extractStreams = async (iframeUrl) => {
     const sources = Array.isArray(decrypted?.sources)
         ? decrypted.sources.map((s) => ({
             url: String(s?.file || ''),
-            isM3U8: String(s?.file || '').includes('.m3u8') || String(s?.file || '').endsWith('m3u8'),
+            isM3U8: String(s?.file || '').includes('.m3u8') ||
+                String(s?.file || '').endsWith('m3u8'),
         }))
         : [];
     const subtitles = Array.isArray(decrypted?.tracks)
@@ -221,10 +222,17 @@ const routes = async (fastify, _options) => {
             const res = await akGet(`${BASE_URL}/browser?keyword=${encodeURIComponent(query.replace(/[\W_]+/g, '+'))}&page=${page}`, { headers: pageHeaders(), timeout: 12000 });
             const $ = cheerio.load(String(res.data || ''));
             const pagination = $('ul.pagination');
-            const currentPage = parseInt(pagination.find('.page-item.active span.page-link').text().trim(), 10) || page;
-            const nextPageHref = pagination.find('.page-item.active').next().find('a.page-link').attr('href');
+            const currentPage = parseInt(pagination.find('.page-item.active span.page-link').text().trim(), 10) ||
+                page;
+            const nextPageHref = pagination
+                .find('.page-item.active')
+                .next()
+                .find('a.page-link')
+                .attr('href');
             const hasNextPage = !!(nextPageHref && nextPageHref.includes('page='));
-            const lastPageHref = pagination.find('.page-item:last-child a.page-link').attr('href');
+            const lastPageHref = pagination
+                .find('.page-item:last-child a.page-link')
+                .attr('href');
             const totalPages = parseInt(String(lastPageHref || '').split('page=')[1] || String(currentPage), 10) || currentPage;
             const results = [];
             $('.aitem').each((_, ele) => {
@@ -262,7 +270,12 @@ const routes = async (fastify, _options) => {
             return reply.status(200).send({ currentPage, hasNextPage, totalPages, results });
         }
         catch (err) {
-            return reply.status(500).send({ message: 'Error searching AnimeKai', error: err?.message || String(err) });
+            return reply
+                .status(500)
+                .send({
+                message: 'Error searching AnimeKai',
+                error: err?.message || String(err),
+            });
         }
     };
     // Docs-compatible path.
@@ -331,7 +344,12 @@ const routes = async (fastify, _options) => {
             return reply.status(200).send(info);
         }
         catch (err) {
-            return reply.status(500).send({ message: 'Error fetching AnimeKai info', error: err?.message || String(err) });
+            return reply
+                .status(500)
+                .send({
+                message: 'Error fetching AnimeKai info',
+                error: err?.message || String(err),
+            });
         }
     });
     fastify.get('/servers/:episodeId', async (request, reply) => {
@@ -383,7 +401,12 @@ const routes = async (fastify, _options) => {
             return reply.status(200).send({ servers });
         }
         catch (err) {
-            return reply.status(500).send({ message: 'Error fetching AnimeKai servers', error: err?.message || String(err) });
+            return reply
+                .status(500)
+                .send({
+                message: 'Error fetching AnimeKai servers',
+                error: err?.message || String(err),
+            });
         }
     });
     fastify.get('/watch/:episodeId', async (request, reply) => {
@@ -395,7 +418,9 @@ const routes = async (fastify, _options) => {
         try {
             const token = episodeId.split('$token=')[1];
             if (!token)
-                return reply.status(200).send({ headers: { Referer: BASE_URL }, sources: [], subtitles: [] });
+                return reply
+                    .status(200)
+                    .send({ headers: { Referer: BASE_URL }, sources: [], subtitles: [] });
             const ajaxToken = await generateToken(token);
             const linksRes = await akGet(`${BASE_URL}/ajax/links/list?token=${token}&_=${ajaxToken}`, {
                 headers: ajaxHeaders(`${BASE_URL}/watch/${episodeId.split('$')[0] || ''}`),
@@ -403,12 +428,17 @@ const routes = async (fastify, _options) => {
             });
             const serverHtml = linksRes.data?.result;
             if (typeof serverHtml !== 'string') {
-                return reply.status(200).send({ headers: { Referer: BASE_URL }, sources: [], subtitles: [] });
+                return reply
+                    .status(200)
+                    .send({ headers: { Referer: BASE_URL }, sources: [], subtitles: [] });
             }
             const $ = cheerio.load(serverHtml);
             const selectors = subOrDub === 'dub'
                 ? [".server-items.lang-group[data-id='dub']"]
-                : [".server-items.lang-group[data-id='softsub']", ".lang-group[data-id='softsub']"];
+                : [
+                    ".server-items.lang-group[data-id='softsub']",
+                    ".lang-group[data-id='softsub']",
+                ];
             const allSources = [];
             const allSubtitles = [];
             let intro = null;
@@ -471,7 +501,12 @@ const routes = async (fastify, _options) => {
             });
         }
         catch (err) {
-            return reply.status(500).send({ message: 'Error fetching AnimeKai watch sources', error: err?.message || String(err) });
+            return reply
+                .status(500)
+                .send({
+                message: 'Error fetching AnimeKai watch sources',
+                error: err?.message || String(err),
+            });
         }
     });
 };

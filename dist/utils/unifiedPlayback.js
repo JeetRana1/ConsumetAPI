@@ -33,7 +33,9 @@ const toNumericQualityScore = (quality) => {
 const detectSourceType = (source, url) => {
     const lower = url.toLowerCase();
     const embed = Boolean(source?.isEmbed);
-    const isM3u8 = Boolean(source?.isM3U8) || /\.m3u8(\?|$)/i.test(lower) || /\/m3u8-proxy\?/i.test(lower);
+    const isM3u8 = Boolean(source?.isM3U8) ||
+        /\.m3u8(\?|$)/i.test(lower) ||
+        /\/m3u8-proxy\?/i.test(lower);
     const isDash = Boolean(source?.isDASH) || /\.mpd(\?|$)/i.test(lower);
     const isMp4 = /\.mp4(\?|$)/i.test(lower);
     if (isM3u8)

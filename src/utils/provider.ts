@@ -1,5 +1,10 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
-import { MegaCloud, RapidCloud, VidCloud, VideoStr } from '@consumet/extensions/dist/extractors';
+import {
+  MegaCloud,
+  RapidCloud,
+  VidCloud,
+  VideoStr,
+} from '@consumet/extensions/dist/extractors';
 import { getProxyCandidatesSync } from './outboundProxy';
 import https from 'https';
 
@@ -60,9 +65,12 @@ const applyTimeoutConfig = (provider: ProviderWithClient) => {
 
   const isProduction = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
   const envTimeout = Number(process.env.PROVIDER_FETCH_TIMEOUT_MS || '');
-  const timeoutMs = Number.isFinite(envTimeout) && envTimeout > 0
-    ? envTimeout
-    : (isProduction ? 12000 : 10000);
+  const timeoutMs =
+    Number.isFinite(envTimeout) && envTimeout > 0
+      ? envTimeout
+      : isProduction
+        ? 12000
+        : 10000;
 
   defaults.timeout = timeoutMs;
 };
@@ -128,13 +136,18 @@ const buildFlixhqWatchUrl = (
 };
 
 const wrapFlixhqServerFetcher = (provider: ProviderWithClient) => {
-  if (provider.__flixhqServersWrapped || typeof provider.fetchEpisodeServers !== 'function') return;
+  if (
+    provider.__flixhqServersWrapped ||
+    typeof provider.fetchEpisodeServers !== 'function'
+  )
+    return;
   if (!isFlixhqProvider(provider) || !provider.client?.get || !provider.baseUrl) return;
 
   const original = provider.fetchEpisodeServers.bind(provider);
 
   const hasUsableServerList = (value: unknown): boolean =>
-    Array.isArray(value) && value.some((entry) => {
+    Array.isArray(value) &&
+    value.some((entry) => {
       if (!entry || typeof entry !== 'object') return false;
       const server = entry as { id?: string; url?: string; name?: string };
       return Boolean(String(server.id || server.url || server.name || '').trim());
@@ -184,7 +197,10 @@ const wrapFlixhqServerFetcher = (provider: ProviderWithClient) => {
   provider.__flixhqServersWrapped = true;
 };
 
-const toServerName = (value?: unknown): string => String(value || '').toLowerCase().trim();
+const toServerName = (value?: unknown): string =>
+  String(value || '')
+    .toLowerCase()
+    .trim();
 
 const parsePossibleServer = (value: unknown): StreamingServers | undefined => {
   const raw = toServerName(value);
@@ -234,7 +250,10 @@ const resolveEpisodeLink = async (
     return episodeId;
   }
 
-  if (typeof selectedServer?.url === 'string' && /^https?:\/\//i.test(selectedServer.url)) {
+  if (
+    typeof selectedServer?.url === 'string' &&
+    /^https?:\/\//i.test(selectedServer.url)
+  ) {
     return selectedServer.url;
   }
 
@@ -282,16 +301,18 @@ const extractWithFallback = async (
   const host = String(url.hostname || '').toLowerCase();
   const isVideoStr = host.includes('videostr.');
 
-  const primary =
-    isVideoStr
-      ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
-      : requestedServer === StreamingServers.MegaCloud
-        ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
-        : [VidCloud, RapidCloud, MegaCloud, VideoStr];
+  const primary = isVideoStr
+    ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
+    : requestedServer === StreamingServers.MegaCloud
+      ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
+      : [VidCloud, RapidCloud, MegaCloud, VideoStr];
 
   for (const Extractor of primary) {
     try {
-      const extracted = await new Extractor(provider.proxyConfig as any, provider.adapter as any).extract(url);
+      const extracted = await new Extractor(
+        provider.proxyConfig as any,
+        provider.adapter as any,
+      ).extract(url);
       if (hasUsableSources(extracted)) {
         return {
           headers: { Referer: url.href },
@@ -339,7 +360,8 @@ const rescueMovieSources = async (provider: ProviderWithClient, args: any[]) => 
   }
 
   for (const server of candidates) {
-    const selectedServer = servers.length > 0 ? (findServerByName(servers, server) ?? servers[0]) : undefined;
+    const selectedServer =
+      servers.length > 0 ? (findServerByName(servers, server) ?? servers[0]) : undefined;
     const link = await resolveEpisodeLink(provider, episodeId, mediaId, selectedServer);
     if (!link) continue;
 
@@ -353,7 +375,11 @@ const rescueMovieSources = async (provider: ProviderWithClient, args: any[]) => 
 };
 
 const wrapMovieSourceFetcher = (provider: ProviderWithClient) => {
-  if (provider.__sourceRescueWrapped || typeof provider.fetchEpisodeSources !== 'function') return;
+  if (
+    provider.__sourceRescueWrapped ||
+    typeof provider.fetchEpisodeSources !== 'function'
+  )
+    return;
 
   const original = provider.fetchEpisodeSources.bind(provider);
 

@@ -1,16 +1,60 @@
 import { Provider } from './Provider.mjs';
 import { load as cheerioLoad } from 'cheerio';
 
+const BUFFSTREAMS_KNOWN_DOMAINS = [
+    ...(globalThis.process?.env?.BUFFSTREAMS_BASE_URL ? [globalThis.process.env.BUFFSTREAMS_BASE_URL.replace(/\/+$/, '')] : []),
+    'https://ibuffstreams.app',
+    'https://buffstreams.plus',
+];
+
+let buffstreamsResolvedUrl = BUFFSTREAMS_KNOWN_DOMAINS[0];
+let buffstreamsProbing = null;
+let buffstreamsLastProbe = 0;
+const BUFFSTREAMS_PROBE_TTL = 10 * 60 * 1000;
+
+async function probeBuffstreamsDomain(url) {
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
+        const res = await fetch(`${url}/index7`, {
+            method: 'HEAD',
+            signal: controller.signal,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' },
+        });
+        clearTimeout(timeout);
+        return res.ok || res.status === 403 || res.status === 429;
+    } catch { return false; }
+}
+
+async function probeAllBuffstreams() {
+    for (const domain of BUFFSTREAMS_KNOWN_DOMAINS) {
+        if (await probeBuffstreamsDomain(domain)) return domain;
+    }
+    return BUFFSTREAMS_KNOWN_DOMAINS[0];
+}
+
+function ensureBuffstreamsProbe() {
+    if (buffstreamsProbing) return;
+    if (Date.now() - buffstreamsLastProbe < BUFFSTREAMS_PROBE_TTL) return;
+    buffstreamsProbing = probeAllBuffstreams().then(url => {
+        buffstreamsResolvedUrl = url;
+        buffstreamsLastProbe = Date.now();
+        buffstreamsProbing = null;
+    }).catch(() => { buffstreamsProbing = null; });
+}
+
+function getBuffstreamsBaseUrl() {
+    ensureBuffstreamsProbe();
+    return buffstreamsResolvedUrl;
+}
+
 class BuffStreams extends Provider {
     constructor() {
         super();
-        this.baseUrl = 'https://buffstreams.plus';
-        this.homeUrl = `${this.baseUrl}/index7`;
-        this.directoryUrls = [this.homeUrl, `${this.baseUrl}/index18`];
         this.name = 'BuffStreams';
         this.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
         this.backendApiBase = (globalThis.process?.env?.CONSUMET_API_BASE || globalThis.process?.env?.SITE_API_BASE || 'http://localhost:3000').replace(/\/$/, '');
-        this.categoryLogos = {
+        this._categoryLogos = {
             soccer: '/images/soccer.webp?v3e32',
             f1: '/images/f1.webp?v3e32',
             nfl: '/images/nfl.webp?v3e32',
@@ -24,16 +68,24 @@ class BuffStreams extends Provider {
             ncaa: '/images/ncaa.webp?v3e32',
             sports: '/images/mlb.webp?v3e32'
         };
-        this.categoryPages = {
-            nfl: `${this.baseUrl}/nflstreams2`,
-            soccer: `${this.baseUrl}/soccer-live-streams`,
-            mma: `${this.baseUrl}/mmastreams2`,
-            boxing: `${this.baseUrl}/boxingstreams2`,
-            f1: `${this.baseUrl}/f1streams2`,
-            nba: `${this.baseUrl}/nbastreams2`,
-            nhl: `${this.baseUrl}/nhlstreams2`,
-            mlb: `${this.baseUrl}/mlb-live-streams`,
-            ncaa: `${this.baseUrl}/ncaastreams`
+    }
+
+    get baseUrl() { return getBuffstreamsBaseUrl(); }
+    get homeUrl() { return `${this.baseUrl}/index7`; }
+    get directoryUrls() { return [this.homeUrl, `${this.baseUrl}/index18`]; }
+    get categoryLogos() { return this._categoryLogos; }
+    get categoryPages() {
+        const b = this.baseUrl;
+        return {
+            nfl: `${b}/nflstreams2`,
+            soccer: `${b}/soccer-live-streams`,
+            mma: `${b}/mmastreams2`,
+            boxing: `${b}/boxingstreams2`,
+            f1: `${b}/f1streams2`,
+            nba: `${b}/nbastreams2`,
+            nhl: `${b}/nhlstreams2`,
+            mlb: `${b}/mlb-live-streams`,
+            ncaa: `${b}/ncaastreams`
         };
     }
 

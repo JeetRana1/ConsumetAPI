@@ -1,4 +1,4 @@
-require('dotenv').config(); 
+require('dotenv').config();
 
 import Redis from 'ioredis';
 import Fastify from 'fastify';
@@ -10,7 +10,8 @@ import { getProxyCandidatesSync, toAxiosProxyOptions } from './utils/outboundPro
 // --- Global Axios Optimization ---
 // Solves ECONNRESET and 403 blocks by forcing IPv4 and setting a browser User-Agent
 axios.defaults.httpsAgent = new https.Agent({ family: 4, keepAlive: true });
-axios.defaults.headers.common['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+axios.defaults.headers.common['User-Agent'] =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 axios.defaults.headers.common['Accept'] = 'application/json, text/plain, */*';
 
 import books from './routes/books';
@@ -181,7 +182,12 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     return appendQueryParam(path, 'referer', safeReferer);
   };
 
-  const buildProxyPath = (targetUrl: string, referer?: string, isSegment = false, baseUrl?: string): string => {
+  const buildProxyPath = (
+    targetUrl: string,
+    referer?: string,
+    isSegment = false,
+    baseUrl?: string,
+  ): string => {
     const raw = String(targetUrl || '').trim();
     if (!raw) return raw;
     if (/^\/proxy\/hls\//i.test(raw)) {
@@ -200,13 +206,23 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     }
   };
 
-  const rewriteHlsManifest = (manifest: string, manifestUrl: string, referer?: string, baseUrl?: string): string => {
+  const rewriteHlsManifest = (
+    manifest: string,
+    manifestUrl: string,
+    referer?: string,
+    baseUrl?: string,
+  ): string => {
     const resolveAndProxy = (value: string, isSegment = false): string => {
       const trimmed = String(value || '').trim();
       if (!trimmed) return trimmed;
 
       try {
-        return buildProxyPath(new URL(trimmed, manifestUrl).toString(), referer, isSegment, baseUrl);
+        return buildProxyPath(
+          new URL(trimmed, manifestUrl).toString(),
+          referer,
+          isSegment,
+          baseUrl,
+        );
       } catch {
         return trimmed;
       }
@@ -214,8 +230,14 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
     let output = String(manifest || '');
 
-    output = output.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${resolveAndProxy(uri)}"`);
-    output = output.replace(/URI='([^']+)'/g, (_match, uri) => `URI='${resolveAndProxy(uri)}'`);
+    output = output.replace(
+      /URI="([^"]+)"/g,
+      (_match, uri) => `URI="${resolveAndProxy(uri)}"`,
+    );
+    output = output.replace(
+      /URI='([^']+)'/g,
+      (_match, uri) => `URI='${resolveAndProxy(uri)}'`,
+    );
 
     let previousTag = '';
     output = output
@@ -241,7 +263,11 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const text = String(body || '').trim();
     if (!text) return false;
 
-    if (/application\/(vnd\.apple\.mpegurl|x-mpegURL)|audio\/x-mpegurl/i.test(String(contentType || ''))) {
+    if (
+      /application\/(vnd\.apple\.mpegurl|x-mpegURL)|audio\/x-mpegurl/i.test(
+        String(contentType || ''),
+      )
+    ) {
       return true;
     }
 
@@ -255,19 +281,33 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     return /\/(?:hls|oppai)\//i.test(url);
   };
 
-  const fetchHlsResource = async (url: string, isManifest: boolean, incomingRange: string, referer: string) => {
+  const fetchHlsResource = async (
+    url: string,
+    isManifest: boolean,
+    incomingRange: string,
+    referer: string,
+    cookieHeader: string,
+  ) => {
     const proxyCandidates = [...getProxyCandidatesSync(), ''];
     let lastError: unknown = null;
 
     for (const proxyUrl of proxyCandidates) {
       try {
         const proxyOptions = proxyUrl ? toAxiosProxyOptions(proxyUrl) : {};
+        const upstreamOrigin = (() => {
+          try { return new URL(referer).origin; } catch { return ''; }
+        })();
         const response = await axios.get(url, {
           headers: {
-            'Referer': referer || 'https://streameeeeee.site/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            Referer: referer || 'https://streameeeeee.site/',
+            ...(upstreamOrigin ? { Origin: upstreamOrigin } : {}),
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            ...(cookieHeader ? { Cookie: cookieHeader } : {}),
             ...(incomingRange ? { Range: incomingRange } : {}),
-            ...(isManifest ? {} : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
+            ...(isManifest
+              ? {}
+              : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
             ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
           },
           timeout: 15000,
@@ -278,7 +318,10 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
         const responseContentType = String(response.headers['content-type'] || '');
 
-        if (isManifest && !isLikelyHlsManifest(String(response.data || ''), responseContentType)) {
+        if (
+          isManifest &&
+          !isLikelyHlsManifest(String(response.data || ''), responseContentType)
+        ) {
           lastError = new Error(`Invalid HLS manifest response (${response.status})`);
           continue;
         }
@@ -297,21 +340,54 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const rawRequestUrl = String(request.url || '');
     const [rawPath, rawQuery = ''] = rawRequestUrl.split('?');
     const wildcardPath = rawPath.replace(/^\/proxy\/hls\//i, '').trim();
-    const refererParam = String(new URLSearchParams(rawQuery).get('referer') || '').trim();
-    const segmentParam = String(new URLSearchParams(rawQuery).get('segment') || '').trim() === '1';
+    const refererParam = String(
+      new URLSearchParams(rawQuery).get('referer') || '',
+    ).trim();
+    const cookieParam = String(new URLSearchParams(rawQuery).get('cookie') || '').trim();
+    const segmentParam =
+      String(new URLSearchParams(rawQuery).get('segment') || '').trim() === '1';
     const passthroughQuery = rawQuery
       .split('&')
-      .filter((part) => part && !/^(referer|segment)=/i.test(part))
+      .filter((part) => part && !/^(referer|segment|cookie)=/i.test(part))
       .join('&');
 
     const url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ''}`;
     const incomingRange = String(request.headers.range || '');
     const isManifest = !segmentParam && shouldTreatAsManifestRequest(url, incomingRange);
-    const incomingReferer = String(request.headers.referer || request.headers.referrer || '').trim();
-    const requestReferer = refererParam || incomingReferer || 'https://streameeeeee.site/';
-    
+    const incomingReferer = String(
+      request.headers.referer || request.headers.referrer || '',
+    )
+      .trim()
+      .replace(/#.*$/, '');
+    const requestReferer = (
+      refererParam || incomingReferer || 'https://streameeeeee.site/'
+    ).replace(/#.*$/, '');
+
+    // Serve from Playwright-captured HLS manifest cache to avoid expired tokens.
+    if (isManifest && !incomingRange) {
+      try {
+        const { getCachedHlsManifest } = await import('./utils/browserRuntimeExtractor');
+        const cached = getCachedHlsManifest(url);
+        if (cached) {
+          const content = rewriteHlsManifest(cached.body, url, requestReferer, `${request.protocol}://${request.headers.host || 'localhost:3000'}`);
+          reply.header('Content-Type', cached.contentType || 'application/vnd.apple.mpegurl');
+          reply.header('Access-Control-Allow-Origin', '*');
+          reply.header('Cache-Control', 'public, max-age=60');
+          return reply.send(content);
+        }
+      } catch {
+        // Cache lookup is best-effort.
+      }
+    }
+
     try {
-      const response = await fetchHlsResource(url, isManifest, incomingRange, requestReferer);
+      const response = await fetchHlsResource(
+        url,
+        isManifest,
+        incomingRange,
+        requestReferer,
+        cookieParam,
+      );
 
       const responseContentType = String(response.headers['content-type'] || '');
       const responseBuffer = Buffer.isBuffer(response.data)
@@ -319,12 +395,17 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         : response.data instanceof ArrayBuffer
           ? Buffer.from(response.data)
           : ArrayBuffer.isView(response.data)
-            ? Buffer.from(response.data.buffer, response.data.byteOffset, response.data.byteLength)
+            ? Buffer.from(
+                response.data.buffer,
+                response.data.byteOffset,
+                response.data.byteLength,
+              )
             : null;
       const responseText = responseBuffer
         ? responseBuffer.toString('utf8')
         : String(response.data || '');
-      const responseIsManifest = isManifest || isLikelyHlsManifest(responseText, responseContentType);
+      const responseIsManifest =
+        isManifest || isLikelyHlsManifest(responseText, responseContentType);
 
       // If it's an M3U8 manifest, rewrite relative URLs to absolute/proxied URLs.
       // Some AnimeSalt variant playlists are extensionless /hls/<token> URLs, so
@@ -337,7 +418,10 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
         reply.header('Content-Type', 'application/vnd.apple.mpegurl');
         reply.header('Access-Control-Allow-Origin', '*');
-        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+        reply.header(
+          'Access-Control-Allow-Headers',
+          'Content-Type, Authorization, Range',
+        );
         reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
         return reply.send(content);
       }
@@ -346,10 +430,16 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       reply.header('Access-Control-Allow-Origin', '*');
       reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
       reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      reply.header('Content-Type', response.headers['content-type'] || 'application/octet-stream');
-      if (response.headers['content-length']) reply.header('Content-Length', response.headers['content-length']);
-      if (response.headers['content-range']) reply.header('Content-Range', response.headers['content-range']);
-      if (response.headers['accept-ranges']) reply.header('Accept-Ranges', response.headers['accept-ranges']);
+      reply.header(
+        'Content-Type',
+        response.headers['content-type'] || 'application/octet-stream',
+      );
+      if (response.headers['content-length'])
+        reply.header('Content-Length', response.headers['content-length']);
+      if (response.headers['content-range'])
+        reply.header('Content-Range', response.headers['content-range']);
+      if (response.headers['accept-ranges'])
+        reply.header('Accept-Ranges', response.headers['accept-ranges']);
 
       // Optional verbose debug to inspect proxied HLS segment responses
       if (String(process.env.HLS_PROXY_DEBUG || '').toLowerCase() === 'true') {
@@ -373,7 +463,6 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       }
 
       return reply.send(Buffer.from(response.data));
-
     } catch (error: any) {
       console.error('HLS Proxy error:', error.message);
       return reply.status(500).send({ error: 'Proxy failed' });
@@ -397,7 +486,8 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       });
     });
 
-    const shouldUsePortFallback = String(process.env.ALLOW_PORT_FALLBACK || 'false').toLowerCase() === 'true';
+    const shouldUsePortFallback =
+      String(process.env.ALLOW_PORT_FALLBACK || 'false').toLowerCase() === 'true';
 
     const startServer = async (initialPort: number, maxRetries = 5) => {
       if (!shouldUsePortFallback) {

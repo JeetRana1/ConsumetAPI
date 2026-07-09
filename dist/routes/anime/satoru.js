@@ -28,7 +28,8 @@ class SatoruProvider extends models_1.AnimeParser {
             (process.env.NODE_ENV === 'production' ? 2000 : 2000);
         this.maxProxyAttempts = Number(process.env.SATORU_PROXY_MAX_ATTEMPTS || '') ||
             (process.env.NODE_ENV === 'production' ? 2 : 2);
-        this.preferWindowsCurl = process.platform === 'win32' && !['1', 'true', 'yes'].includes(String(process.env.SATORU_DISABLE_CURL || '').toLowerCase());
+        this.preferWindowsCurl = process.platform === 'win32' &&
+            !['1', 'true', 'yes'].includes(String(process.env.SATORU_DISABLE_CURL || '').toLowerCase());
         this.satoruCookieHeader = (() => {
             const rawCookie = String(process.env.SATORU_COOKIE || '').trim();
             const cfClearance = String(process.env.SATORU_CF_CLEARANCE || '').trim();
@@ -109,7 +110,7 @@ class SatoruProvider extends models_1.AnimeParser {
     }
     async search(query, page = 1) {
         const data = await this.fetch(`${this.baseUrl}/filter?keyword=${encodeURIComponent(query)}&page=${page}`, {
-            'Referer': this.baseUrl,
+            Referer: this.baseUrl,
         });
         const $ = (0, cheerio_1.load)(data);
         const results = [];
@@ -146,11 +147,13 @@ class SatoruProvider extends models_1.AnimeParser {
         // Add AniList IDs in parallel
         const anilistPromises = results.map(async (result) => {
             try {
-                const anilistId = main_1.redis ? await cache_1.default.fetch(main_1.redis, `anilist:title:${result.title}`, async () => {
-                    const anilist = new anilist_1.default();
-                    const searchRes = await anilist.search(String(result.title), 1, 1);
-                    return searchRes.results[0]?.id || null;
-                }, main_1.REDIS_TTL) : null;
+                const anilistId = main_1.redis
+                    ? await cache_1.default.fetch(main_1.redis, `anilist:title:${result.title}`, async () => {
+                        const anilist = new anilist_1.default();
+                        const searchRes = await anilist.search(String(result.title), 1, 1);
+                        return searchRes.results[0]?.id || null;
+                    }, main_1.REDIS_TTL)
+                    : null;
                 if (anilistId)
                     result.anilistId = anilistId;
             }
@@ -171,7 +174,7 @@ class SatoruProvider extends models_1.AnimeParser {
         const slug = parts[0];
         let movieId = parts[1] || '';
         const data = await this.fetch(`${this.baseUrl}/watch/${slug}`, {
-            'Referer': this.baseUrl,
+            Referer: this.baseUrl,
         });
         const $ = (0, cheerio_1.load)(data);
         // Extract movieId from the inline script: const movieId = 3;
@@ -181,7 +184,10 @@ class SatoruProvider extends models_1.AnimeParser {
         }
         const animeInfo = {
             id,
-            title: $('h2.film-name a.dynamic-name, .anisc-detail h2.film-name a').first().text().trim(),
+            title: $('h2.film-name a.dynamic-name, .anisc-detail h2.film-name a')
+                .first()
+                .text()
+                .trim(),
             image: $('.anisc-poster .film-poster-img').attr('src'),
             description: $('.film-description p.text').text().trim(),
             episodes: [],
@@ -203,7 +209,9 @@ class SatoruProvider extends models_1.AnimeParser {
             if (label.includes('duration'))
                 animeInfo.duration = parseInt(value);
         });
-        animeInfo.genres = $('.item-list a').map((i, el) => $(el).text().trim()).get();
+        animeInfo.genres = $('.item-list a')
+            .map((i, el) => $(el).text().trim())
+            .get();
         animeInfo.related = [];
         const relatedMap = new Map();
         const normalizeFamilyTitle = (value) => String(value || '')
@@ -225,7 +233,9 @@ class SatoruProvider extends models_1.AnimeParser {
                 return;
             if (!/\/watch\//i.test(href))
                 return;
-            const absoluteUrl = href.startsWith('http') ? href : `${this.baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
+            const absoluteUrl = href.startsWith('http')
+                ? href
+                : `${this.baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
             const slugPart = absoluteUrl.split('/watch/')[1]?.split('?')[0]?.replace(/\/$/, '') || '';
             if (!slugPart)
                 return;
@@ -255,7 +265,7 @@ class SatoruProvider extends models_1.AnimeParser {
             // Correct endpoint: /ajax/episode/list/{movieId} (path param, not query)
             const episodeDataStr = await this.fetch(`${this.baseUrl}/ajax/episode/list/${movieId}`, {
                 'X-Requested-With': 'XMLHttpRequest',
-                'Referer': `${this.baseUrl}/watch/${slug}`,
+                Referer: `${this.baseUrl}/watch/${slug}`,
             });
             try {
                 const episodeData = JSON.parse(episodeDataStr);
@@ -278,11 +288,13 @@ class SatoruProvider extends models_1.AnimeParser {
         }
         // Add AniList ID
         try {
-            const anilistId = main_1.redis ? await cache_1.default.fetch(main_1.redis, `anilist:title:${animeInfo.title}`, async () => {
-                const anilist = new anilist_1.default();
-                const searchRes = await anilist.search(String(animeInfo.title), 1, 1);
-                return searchRes.results[0]?.id || null;
-            }, main_1.REDIS_TTL) : null;
+            const anilistId = main_1.redis
+                ? await cache_1.default.fetch(main_1.redis, `anilist:title:${animeInfo.title}`, async () => {
+                    const anilist = new anilist_1.default();
+                    const searchRes = await anilist.search(String(animeInfo.title), 1, 1);
+                    return searchRes.results[0]?.id || null;
+                }, main_1.REDIS_TTL)
+                : null;
             if (anilistId)
                 animeInfo.anilistId = anilistId;
         }
@@ -295,7 +307,7 @@ class SatoruProvider extends models_1.AnimeParser {
         const normalizedEpisodeId = this.normalizeEpisodeId(episodeId);
         const dataStr = await this.fetch(`${this.baseUrl}/ajax/episode/servers?episodeId=${normalizedEpisodeId}`, {
             'X-Requested-With': 'XMLHttpRequest',
-            'Referer': this.baseUrl,
+            Referer: this.baseUrl,
         });
         const data = JSON.parse(dataStr);
         const $ = (0, cheerio_1.load)(data.html);
@@ -332,7 +344,7 @@ class SatoruProvider extends models_1.AnimeParser {
         const tryServer = async (candidate) => {
             const dataStr = await this.fetch(`${this.baseUrl}/ajax/episode/sources?id=${candidate}`, {
                 'X-Requested-With': 'XMLHttpRequest',
-                'Referer': this.baseUrl,
+                Referer: this.baseUrl,
             });
             const parsed = JSON.parse(dataStr);
             const link = String(parsed?.link || '').trim();
@@ -357,13 +369,13 @@ class SatoruProvider extends models_1.AnimeParser {
             {
                 url: data.link,
                 isM3U8: String(data.link).includes('.m3u8'),
-            }
+            },
         ];
         let embedURL = data.type === 'iframe' ? data.link : undefined;
         if (embedURL) {
             try {
                 // Follow the embed link to see if we can scrape a direct video file from the HTML
-                const embedHtml = await this.fetch(embedURL, { 'Referer': this.baseUrl });
+                const embedHtml = await this.fetch(embedURL, { Referer: this.baseUrl });
                 // Try to find m3u8 or mp4
                 const m3u8Match = embedHtml.match(/(https?:\/\/[^\s"'<>]+?\.m3u8[^\s"'<>]*)/i);
                 if (m3u8Match) {
@@ -425,7 +437,10 @@ const routes = async (fastify, options) => {
         return raw;
     };
     const pickByTitle = (results, title) => {
-        const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const norm = (v) => String(v || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
         const q = norm(title);
         if (!q)
             return results[0];
@@ -458,7 +473,9 @@ const routes = async (fastify, options) => {
         if (!payload || typeof payload !== 'object')
             return null;
         const direct = (Array.isArray(payload?.sources) ? payload.sources : []).filter((src) => {
-            const url = String(src?.url || '').trim().toLowerCase();
+            const url = String(src?.url || '')
+                .trim()
+                .toLowerCase();
             if (!url)
                 return false;
             if (Boolean(src?.isEmbed))
@@ -508,7 +525,9 @@ const routes = async (fastify, options) => {
         .replace(/\s+/g, ' ')
         .trim();
     const titleWords = (value) => normalizeTitle(value).split(' ').filter(Boolean);
-    const uniqueStrings = (values) => [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+    const uniqueStrings = (values) => [
+        ...new Set(values.map((value) => String(value || '').trim()).filter(Boolean)),
+    ];
     const detectSeasonNumber = (...values) => {
         for (const rawValue of values) {
             const value = normalizeTitle(String(rawValue || ''));
@@ -530,7 +549,14 @@ const routes = async (fastify, options) => {
             const romanSuffix = value.match(/\b(?:season|part|cour)\s+(i|ii|iii|iv|v|vi)\b/i);
             if (romanSuffix) {
                 const roman = romanSuffix[1].toUpperCase();
-                const romanMap = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+                const romanMap = {
+                    I: 1,
+                    II: 2,
+                    III: 3,
+                    IV: 4,
+                    V: 5,
+                    VI: 6,
+                };
                 return romanMap[roman] ?? null;
             }
             const compactSeason = value.match(/\bs(\d{1,2})\b/i);
@@ -602,17 +628,22 @@ const routes = async (fastify, options) => {
         else if (hiSeason === null && candidateSeason === 1) {
             score += 10;
         }
-        const candidateEpisodeCount = Array.isArray(candidateInfo?.episodes) ? candidateInfo.episodes.length : 0;
+        const candidateEpisodeCount = Array.isArray(candidateInfo?.episodes)
+            ? candidateInfo.episodes.length
+            : 0;
         if (hiEpisodeCount > 0 && candidateEpisodeCount > 0) {
             const diff = Math.abs(candidateEpisodeCount - hiEpisodeCount);
             score += Math.max(0, 50 - diff * 2);
         }
         const normalizedHiSlug = normalizeTitle(hiSlug.replace(/-/g, ' '));
-        const normalizedCandidateId = normalizeTitle(String(candidateInfo?.id || '').split(':')[0].replace(/-/g, ' '));
+        const normalizedCandidateId = normalizeTitle(String(candidateInfo?.id || '')
+            .split(':')[0]
+            .replace(/-/g, ' '));
         if (normalizedHiSlug && normalizedCandidateId) {
             if (normalizedHiSlug === normalizedCandidateId)
                 score += 140;
-            else if (normalizedCandidateId.includes(normalizedHiSlug) || normalizedHiSlug.includes(normalizedCandidateId))
+            else if (normalizedCandidateId.includes(normalizedHiSlug) ||
+                normalizedHiSlug.includes(normalizedCandidateId))
                 score += 50;
         }
         return score;
@@ -632,7 +663,8 @@ const routes = async (fastify, options) => {
                 continue;
             if (normalizedHi === normalizedEntry)
                 score += 120;
-            else if (normalizedHi.includes(normalizedEntry) || normalizedEntry.includes(normalizedHi))
+            else if (normalizedHi.includes(normalizedEntry) ||
+                normalizedEntry.includes(normalizedHi))
                 score += 70;
             score += countSharedWords(hiTitle, entryTitle) * 8;
         }
@@ -662,7 +694,8 @@ const routes = async (fastify, options) => {
     const normalizeSeasonLabel = (value) => normalizeLooseTitle(String(value || '').replace(/\bseason\s*\d+\b/gi, ' '));
     const getSeasonAliases = (title, season) => {
         const normalizedTitle = normalizeLooseTitle(title);
-        if (normalizedTitle.includes('demon slayer') || normalizedTitle.includes('kimetsu no yaiba')) {
+        if (normalizedTitle.includes('demon slayer') ||
+            normalizedTitle.includes('kimetsu no yaiba')) {
             if (season === 2)
                 return ['entertainment district arc', 'mugen train arc'];
             if (season === 3)
@@ -674,7 +707,8 @@ const routes = async (fastify, options) => {
     };
     const getKnownSatoruIdsForTitleSeason = (title, season) => {
         const normalizedTitle = normalizeLooseTitle(title);
-        if (normalizedTitle.includes('demon slayer') || normalizedTitle.includes('kimetsu no yaiba')) {
+        if (normalizedTitle.includes('demon slayer') ||
+            normalizedTitle.includes('kimetsu no yaiba')) {
             if (season === 1)
                 return ['demon-slayer-kimetsu-no-yaiba'];
             if (season === 2) {
@@ -707,7 +741,8 @@ const routes = async (fastify, options) => {
             ...(Array.isArray(info?.synonyms) ? info.synonyms : []),
         ].join(' '));
         const normalizedTitle = normalizeLooseTitle(title);
-        if (normalizedTitle.includes('demon slayer') || normalizedTitle.includes('kimetsu no yaiba')) {
+        if (normalizedTitle.includes('demon slayer') ||
+            normalizedTitle.includes('kimetsu no yaiba')) {
             if (season === 2) {
                 if (haystack.includes('mugen train'))
                     return 0;
@@ -763,7 +798,8 @@ const routes = async (fastify, options) => {
             score += countSharedWords(candidateJoined, targetSeasonLabel) * 28;
         }
         for (const alias of aliases) {
-            if (candidateTitle.includes(alias) || variants.some((variant) => normalizeLooseTitle(variant).includes(alias))) {
+            if (candidateTitle.includes(alias) ||
+                variants.some((variant) => normalizeLooseTitle(variant).includes(alias))) {
                 score += 260;
             }
         }
@@ -807,7 +843,11 @@ const routes = async (fastify, options) => {
             .map((entry) => entry.value)
             .filter((info) => Array.isArray(info?.episodes) && info.episodes.length);
         if (knownInfos.length) {
-            const strictKnown = knownInfos.filter((info) => candidateMatchesRequestedSeason(info, { title, season, seasonLabel: seasonLabel || '' }));
+            const strictKnown = knownInfos.filter((info) => candidateMatchesRequestedSeason(info, {
+                title,
+                season,
+                seasonLabel: seasonLabel || '',
+            }));
             const knownPool = strictKnown.length ? strictKnown : knownInfos;
             const knownOrderMap = new Map(knownCandidateIds.map((id, index) => [String(id), index]));
             const orderedKnown = knownPool
@@ -822,7 +862,9 @@ const routes = async (fastify, options) => {
                 if (candidate.len <= 0)
                     continue;
                 if (remainingKnownEpisode <= candidate.len) {
-                    const knownEpisodes = Array.isArray(candidate.info?.episodes) ? candidate.info.episodes : [];
+                    const knownEpisodes = Array.isArray(candidate.info?.episodes)
+                        ? candidate.info.episodes
+                        : [];
                     const exactKnownEpisode = knownEpisodes.find((ep) => toEpisodeNum(ep) === remainingKnownEpisode) ||
                         knownEpisodes[Math.max(0, Math.min(knownEpisodes.length - 1, remainingKnownEpisode - 1))];
                     if (exactKnownEpisode?.id) {
@@ -866,12 +908,16 @@ const routes = async (fastify, options) => {
             if (info?.id)
                 allInfos.set(String(info.id), info);
             const relatedRows = Array.isArray(info?.related) ? info.related : [];
-            const relatedSettled = await Promise.allSettled(relatedRows.slice(0, 8).map(async (row) => await satoru.fetchAnimeInfo(String(row.id))));
+            const relatedSettled = await Promise.allSettled(relatedRows
+                .slice(0, 8)
+                .map(async (row) => await satoru.fetchAnimeInfo(String(row.id))));
             for (const related of relatedSettled) {
                 if (related.status !== 'fulfilled')
                     continue;
                 const relatedInfo = related.value;
-                if (relatedInfo?.id && Array.isArray(relatedInfo?.episodes) && relatedInfo.episodes.length) {
+                if (relatedInfo?.id &&
+                    Array.isArray(relatedInfo?.episodes) &&
+                    relatedInfo.episodes.length) {
                     allInfos.set(String(relatedInfo.id), relatedInfo);
                 }
             }
@@ -881,11 +927,18 @@ const routes = async (fastify, options) => {
             season,
             seasonLabel: seasonLabel || '',
         }));
-        const candidatesToRank = strictCandidates.length ? strictCandidates : [...allInfos.values()];
+        const candidatesToRank = strictCandidates.length
+            ? strictCandidates
+            : [...allInfos.values()];
         const ranked = candidatesToRank
             .map((info) => ({
             info,
-            score: scoreResolvedSatoruEntry(info, { title, season, seasonLabel: seasonLabel || '', preferredYear }),
+            score: scoreResolvedSatoruEntry(info, {
+                title,
+                season,
+                seasonLabel: seasonLabel || '',
+                preferredYear,
+            }),
         }))
             .sort((left, right) => right.score - left.score);
         let picked = ranked[0]?.info;
@@ -897,7 +950,12 @@ const routes = async (fastify, options) => {
         const normalizedRequestedSeasonLabel = normalizeSeasonLabel(seasonLabel || '');
         if (normalizedRequestedSeasonLabel && sameSeasonCandidates.length > 1) {
             const explicitArcMatch = sameSeasonCandidates.find((info) => {
-                const haystack = normalizeSeasonLabel([info?.id, info?.title, info?.japaneseTitle, ...(Array.isArray(info?.synonyms) ? info.synonyms : [])]
+                const haystack = normalizeSeasonLabel([
+                    info?.id,
+                    info?.title,
+                    info?.japaneseTitle,
+                    ...(Array.isArray(info?.synonyms) ? info.synonyms : []),
+                ]
                     .filter(Boolean)
                     .join(' '));
                 if (normalizedRequestedSeasonLabel.includes('mugen train')) {
@@ -976,7 +1034,12 @@ const routes = async (fastify, options) => {
     };
     const resolveSatoruSeriesByTitle = async ({ title, preferredYear, }) => {
         const knownIds = getKnownSatoruIdsForTitleSeason(title, 1);
-        const searchTerms = uniqueStrings([title, ...getSeasonAliases(title, 2), ...getSeasonAliases(title, 3), ...getSeasonAliases(title, 4)]);
+        const searchTerms = uniqueStrings([
+            title,
+            ...getSeasonAliases(title, 2),
+            ...getSeasonAliases(title, 3),
+            ...getSeasonAliases(title, 4),
+        ]);
         const candidateIds = new Set(knownIds);
         const searchSettled = await Promise.allSettled(searchTerms.slice(0, 6).map((term) => satoru.search(term, 1)));
         for (const settled of searchSettled) {
@@ -1026,8 +1089,13 @@ const routes = async (fastify, options) => {
         }
         const ordered = [...allInfos.values()]
             .filter((info) => {
-            const joined = normalizeLooseTitle([info?.title, info?.japaneseTitle, ...(Array.isArray(info?.synonyms) ? info.synonyms : [])].join(' '));
-            return joined.includes(titleNorm.split(' ').slice(0, 2).join(' ')) || familyRoot(joined) === familyRoot(titleNorm);
+            const joined = normalizeLooseTitle([
+                info?.title,
+                info?.japaneseTitle,
+                ...(Array.isArray(info?.synonyms) ? info.synonyms : []),
+            ].join(' '));
+            return (joined.includes(titleNorm.split(' ').slice(0, 2).join(' ')) ||
+                familyRoot(joined) === familyRoot(titleNorm));
         })
             .map((info) => ({
             id: String(info.id),
@@ -1077,9 +1145,7 @@ const routes = async (fastify, options) => {
             reply.status(200).send(res);
         }
         catch (err) {
-            reply
-                .status(500)
-                .send({ message: err.message });
+            reply.status(500).send({ message: err.message });
         }
     });
     fastify.get('/resolve', async (request, reply) => {
@@ -1158,9 +1224,7 @@ const routes = async (fastify, options) => {
             reply.status(200).send(res);
         }
         catch (err) {
-            reply
-                .status(500)
-                .send({ message: err.message });
+            reply.status(500).send({ message: err.message });
         }
     });
     fastify.get('/servers/:episodeId', async (request, reply) => {
@@ -1178,9 +1242,7 @@ const routes = async (fastify, options) => {
                     { name: 'VidStreaming (fallback)', url: 'vidstreaming' },
                 ]);
             }
-            reply
-                .status(500)
-                .send({ message: err.message });
+            reply.status(500).send({ message: err.message });
         }
     });
 };

@@ -26,7 +26,8 @@ const isUsableSourceUrl = (value: string): boolean => {
 const sortAndLimitSources = (rawSources: any[]): any[] => {
   const usable = rawSources.filter((item) => isUsableSourceUrl(String(item?.url || '')));
   const deduped = usable.filter(
-    (item, idx, arr) => arr.findIndex((v) => String(v?.url || '') === String(item?.url || '')) === idx,
+    (item, idx, arr) =>
+      arr.findIndex((v) => String(v?.url || '') === String(item?.url || '')) === idx,
   );
 
   const hasMasterForBase = new Set(
@@ -292,16 +293,27 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/watch', async (request: FastifyRequest, reply: FastifyReply) => {
     const episodeId = (request.query as { episodeId: string }).episodeId;
     const server = (request.query as { server: string }).server || 'vidking';
-    const serverName = String(server || '').trim().toLowerCase();
+    const serverName = String(server || '')
+      .trim()
+      .toLowerCase();
     const hasExplicitServer =
       typeof (request.query as { server?: string }).server !== 'undefined' &&
       serverName !== 'auto';
-    const strictServer = String((request.query as { strictServer?: string }).strictServer || '').toLowerCase() === 'true' || hasExplicitServer;
+    const strictServer =
+      String(
+        (request.query as { strictServer?: string }).strictServer || '',
+      ).toLowerCase() === 'true' || hasExplicitServer;
     const allowEmbedFallback =
-      String((request.query as { allowEmbedFallback?: string }).allowEmbedFallback || '').toLowerCase() === 'true';
-    const extractionTimeoutMs = Number((request.query as { extractionTimeoutMs?: string }).extractionTimeoutMs);
+      String(
+        (request.query as { allowEmbedFallback?: string }).allowEmbedFallback || '',
+      ).toLowerCase() === 'true';
+    const extractionTimeoutMs = Number(
+      (request.query as { extractionTimeoutMs?: string }).extractionTimeoutMs,
+    );
     const requestedExtractionTimeoutMs =
-      Number.isFinite(extractionTimeoutMs) && extractionTimeoutMs > 0 ? extractionTimeoutMs : undefined;
+      Number.isFinite(extractionTimeoutMs) && extractionTimeoutMs > 0
+        ? extractionTimeoutMs
+        : undefined;
 
     if (typeof episodeId === 'undefined') {
       return reply.status(400).send({ message: 'episodeId is required' });
@@ -328,8 +340,15 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           allowEmbedFallback,
           extractionTimeoutMs: requestedExtractionTimeoutMs,
         });
-        if (redis && Array.isArray(res?.sources) && res.sources.length > 0 && !res?.error) {
-          (redis as Redis).setex(watchCacheKey, REDIS_TTL, JSON.stringify(res)).catch(() => {});
+        if (
+          redis &&
+          Array.isArray(res?.sources) &&
+          res.sources.length > 0 &&
+          !res?.error
+        ) {
+          (redis as Redis)
+            .setex(watchCacheKey, REDIS_TTL, JSON.stringify(res))
+            .catch(() => {});
         }
       }
 
@@ -349,5 +368,3 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 };
 
 export default routes;
-
-

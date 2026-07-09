@@ -57,7 +57,9 @@ const fetcher = async (url, _detectCfCache = false, _cachePrefix = 'default', co
             const normalized = {
                 success: response.status >= 200 && response.status < 300,
                 status: response.status,
-                text: typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
+                text: typeof response.data === 'string'
+                    ? response.data
+                    : JSON.stringify(response.data),
             };
             if (shouldUseCache && normalized.success) {
                 responseCache.set(cacheKey, {
@@ -72,7 +74,9 @@ const fetcher = async (url, _detectCfCache = false, _cachePrefix = 'default', co
                 return {
                     success: false,
                     status: error.response.status,
-                    text: typeof error.response.data === 'string' ? error.response.data : JSON.stringify(error.response.data),
+                    text: typeof error.response.data === 'string'
+                        ? error.response.data
+                        : JSON.stringify(error.response.data),
                 };
             }
             return undefined;

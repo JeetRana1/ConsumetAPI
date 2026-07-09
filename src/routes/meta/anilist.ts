@@ -51,7 +51,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const status = (request.query as { status: string }).status;
       const year = (request.query as { year: number }).year;
       const season = (request.query as { season: string }).season;
-      const countryOfOrigin = (request.query as { countryOfOrigin: string }).countryOfOrigin;
+      const countryOfOrigin = (request.query as { countryOfOrigin: string })
+        .countryOfOrigin;
 
       const anilist = generateAnilistMeta();
 
@@ -94,7 +95,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         year,
         status,
         season,
-        countryOfOrigin
+        countryOfOrigin,
       );
 
       reply.status(200).send(res);
@@ -109,15 +110,15 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     redis
       ? reply
-        .status(200)
-        .send(
-          await cache.fetch(
-            redis as Redis,
-            `anilist:trending;${page};${perPage}`,
-            async () => await anilist.fetchTrendingAnime(page, perPage),
-            60 * 60,
-          ),
-        )
+          .status(200)
+          .send(
+            await cache.fetch(
+              redis as Redis,
+              `anilist:trending;${page};${perPage}`,
+              async () => await anilist.fetchTrendingAnime(page, perPage),
+              60 * 60,
+            ),
+          )
       : reply.status(200).send(await anilist.fetchTrendingAnime(page, perPage));
   });
 
@@ -129,15 +130,15 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     redis
       ? reply
-        .status(200)
-        .send(
-          await cache.fetch(
-            redis as Redis,
-            `anilist:popular;${page};${perPage}`,
-            async () => await anilist.fetchPopularAnime(page, perPage),
-            60 * 60,
-          ),
-        )
+          .status(200)
+          .send(
+            await cache.fetch(
+              redis as Redis,
+              `anilist:popular;${page};${perPage}`,
+              async () => await anilist.fetchPopularAnime(page, perPage),
+              60 * 60,
+            ),
+          )
       : reply.status(200).send(await anilist.fetchPopularAnime(page, perPage));
   });
 
@@ -194,7 +195,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const anilist = generateAnilistMeta(provider);
       const res = await anilist.fetchRecentEpisodes(provider as any, page, perPage);
       reply.status(200).send(res);
-    }
+    },
   );
 
   fastify.get('/random-anime', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -224,20 +225,25 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     let anilist = generateAnilistMeta(provider);
 
-    dub = (dub === 'true' || dub === '1');
-    fetchFiller = (fetchFiller === 'true' || fetchFiller === '1');
+    dub = dub === 'true' || dub === '1';
+    fetchFiller = fetchFiller === 'true' || fetchFiller === '1';
 
     try {
       if (redis) {
         const data = await cache.fetch(
           redis,
           `anilist:episodes;${id};${dub};${fetchFiller};${anilist.provider.name.toLowerCase()}`,
-          async () => anilist.fetchEpisodesListById(id, dub as boolean, fetchFiller as boolean),
+          async () =>
+            anilist.fetchEpisodesListById(id, dub as boolean, fetchFiller as boolean),
           dayOfWeek === 0 || dayOfWeek === 6 ? 60 * 120 : (60 * 60) / 2,
         );
         reply.status(200).send(data);
       } else {
-        const data = await anilist.fetchEpisodesListById(id, dub as boolean, fetchFiller as boolean);
+        const data = await anilist.fetchEpisodesListById(
+          id,
+          dub as boolean,
+          fetchFiller as boolean,
+        );
         reply.status(200).send(data);
       }
     } catch (err) {
@@ -262,20 +268,25 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     let anilist = generateAnilistMeta(provider);
 
-    isDub = (isDub === 'true' || isDub === '1');
-    fetchFiller = (fetchFiller === 'true' || fetchFiller === '1');
+    isDub = isDub === 'true' || isDub === '1';
+    fetchFiller = fetchFiller === 'true' || fetchFiller === '1';
 
     try {
       if (redis) {
         const data = await cache.fetch(
           redis,
           `anilist:info;${id};${isDub};${fetchFiller};${anilist.provider.name.toLowerCase()}`,
-          async () => anilist.fetchAnimeInfo(id, isDub as boolean, fetchFiller as boolean),
+          async () =>
+            anilist.fetchAnimeInfo(id, isDub as boolean, fetchFiller as boolean),
           dayOfWeek === 0 || dayOfWeek === 6 ? 60 * 120 : (60 * 60) / 2,
         );
         reply.status(200).send(data);
       } else {
-        const data = await anilist.fetchAnimeInfo(id, isDub as boolean, fetchFiller as boolean);
+        const data = await anilist.fetchAnimeInfo(
+          id,
+          isDub as boolean,
+          fetchFiller as boolean,
+        );
         reply.status(200).send(data);
       }
     } catch (err: any) {
@@ -301,17 +312,17 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       if (server && !Object.values(StreamingServers).includes(server))
         return reply.status(400).send('Invalid server');
 
-      isDub = (isDub === 'true' || isDub === '1');
+      isDub = isDub === 'true' || isDub === '1';
       let anilist = generateAnilistMeta(provider);
 
       try {
         const fetchSources = async (selectedServer?: StreamingServers) => {
           return provider === 'zoro'
             ? await anilist.fetchEpisodeSources(
-              episodeId,
-              selectedServer,
-              isDub ? SubOrSub.DUB : SubOrSub.SUB,
-            )
+                episodeId,
+                selectedServer,
+                isDub ? SubOrSub.DUB : SubOrSub.SUB,
+              )
             : await anilist.fetchEpisodeSources(episodeId, selectedServer);
         };
 

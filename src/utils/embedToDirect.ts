@@ -33,7 +33,8 @@ type ProviderLike = {
   };
 };
 
-const isDirectMediaUrl = (value: string): boolean => /\.(m3u8|mp4|mpd)(\?|$)/i.test(value);
+const isDirectMediaUrl = (value: string): boolean =>
+  /\.(m3u8|mp4|mpd)(\?|$)/i.test(value);
 
 const isEmbedLikeUrl = (value: string): boolean => {
   const lower = String(value || '').toLowerCase();
@@ -76,7 +77,9 @@ const getServerOrder = (preferred?: StreamingServers): StreamingServers[] => {
 
 const hasUsableSources = (payload: unknown): boolean => {
   if (Array.isArray(payload)) {
-    return payload.some((src) => typeof (src as any)?.url === 'string' && (src as any).url.length > 0);
+    return payload.some(
+      (src) => typeof (src as any)?.url === 'string' && (src as any).url.length > 0,
+    );
   }
   if (!payload || typeof payload !== 'object') return false;
   const record = payload as SourcePayload;
@@ -84,7 +87,10 @@ const hasUsableSources = (payload: unknown): boolean => {
   return record.sources.some((src) => typeof src?.url === 'string' && src.url.length > 0);
 };
 
-const normalizeExtractorResult = (result: unknown, embedUrl: string): SourcePayload | undefined => {
+const normalizeExtractorResult = (
+  result: unknown,
+  embedUrl: string,
+): SourcePayload | undefined => {
   if (!result) return undefined;
 
   if (Array.isArray(result)) {
@@ -123,28 +129,42 @@ const tryExtractor = async (
     const isMp4Upload = host.includes('mp4upload');
     const isStreamTape = host.includes('streamtape');
     const isVizCloud = host.includes('vizcloud');
-    const extractors =
-      isMixDrop
-        ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
-        : isMp4Upload
-          ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
-          : isStreamTape
-            ? [StreamTape, MixDrop, Mp4Upload, VidCloud, MegaCloud, RapidCloud]
-            : isVizCloud
-              ? [VidCloud, MegaCloud, RapidCloud, VideoStr]
-              : isVideoStr
-        ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
-        : server === StreamingServers.MegaCloud
-          ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
-          : server === StreamingServers.VizCloud
+    const extractors = isMixDrop
+      ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
+      : isMp4Upload
+        ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
+        : isStreamTape
+          ? [StreamTape, MixDrop, Mp4Upload, VidCloud, MegaCloud, RapidCloud]
+          : isVizCloud
             ? [VidCloud, MegaCloud, RapidCloud, VideoStr]
-            : server === StreamingServers.MixDrop
-              ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
-              : server === StreamingServers.Mp4Upload
-                ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
-                : server === StreamingServers.StreamTape
-                  ? [StreamTape, MixDrop, Mp4Upload, VidCloud, MegaCloud, RapidCloud]
-                  : [VidCloud, RapidCloud, MegaCloud, VideoStr, MixDrop, Mp4Upload, StreamTape];
+            : isVideoStr
+              ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
+              : server === StreamingServers.MegaCloud
+                ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
+                : server === StreamingServers.VizCloud
+                  ? [VidCloud, MegaCloud, RapidCloud, VideoStr]
+                  : server === StreamingServers.MixDrop
+                    ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
+                    : server === StreamingServers.Mp4Upload
+                      ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
+                      : server === StreamingServers.StreamTape
+                        ? [
+                            StreamTape,
+                            MixDrop,
+                            Mp4Upload,
+                            VidCloud,
+                            MegaCloud,
+                            RapidCloud,
+                          ]
+                        : [
+                            VidCloud,
+                            RapidCloud,
+                            MegaCloud,
+                            VideoStr,
+                            MixDrop,
+                            Mp4Upload,
+                            StreamTape,
+                          ];
 
     for (const Extractor of extractors) {
       try {
@@ -198,7 +218,9 @@ const fetchHtml = async (
 ): Promise<string | undefined> => {
   try {
     if (provider.client?.get) {
-      const res = await provider.client.get(url, { headers: { Referer: referer } } as any);
+      const res = await provider.client.get(url, {
+        headers: { Referer: referer },
+      } as any);
       const html = String((res as any)?.data || '');
       if (html) return html;
     }
@@ -280,19 +302,26 @@ export const promoteEmbedSourcesToDirect = async (
 
   const embedURL = String(payload.embedURL || '').trim();
   if (embedURL && isEmbedLikeUrl(embedURL)) candidates.add(embedURL);
-  const upstreamReferer = String(payload.headers?.Referer || payload.headers?.referer || '').trim();
+  const upstreamReferer = String(
+    payload.headers?.Referer || payload.headers?.referer || '',
+  ).trim();
 
   for (const candidate of candidates) {
     let extracted = await tryExtractor(provider, candidate, preferredServer);
-    
+
     if (!extracted || !hasDirectSources(extracted)) {
       extracted = await tryHtmlScrapeDirect(provider, candidate, upstreamReferer);
     }
-    
+
     if (!extracted || !hasDirectSources(extracted)) {
       try {
-        const { extractDirectSourcesWithPlaywright } = await import('./browserRuntimeExtractor');
-        const pwSources = await extractDirectSourcesWithPlaywright(candidate, upstreamReferer, 15000);
+        const { extractDirectSourcesWithPlaywright } =
+          await import('./browserRuntimeExtractor');
+        const pwSources = await extractDirectSourcesWithPlaywright(
+          candidate,
+          upstreamReferer,
+          15000,
+        );
         if (pwSources && pwSources.length > 0) {
           extracted = {
             headers: { Referer: candidate },
@@ -309,7 +338,9 @@ export const promoteEmbedSourcesToDirect = async (
       return {
         ...payload,
         ...extracted,
-        subtitles: Array.isArray(payload.subtitles) ? payload.subtitles : extracted?.subtitles,
+        subtitles: Array.isArray(payload.subtitles)
+          ? payload.subtitles
+          : extracted?.subtitles,
         embedURL: payload.embedURL || candidate,
       };
     }

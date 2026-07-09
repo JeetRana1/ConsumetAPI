@@ -71,10 +71,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     try {
       const res = await tryMany([
-        () =>
-          fromCache(`mangakakalot:info:${id}`, () =>
-            mangakakalot.fetchMangaInfo(id),
-          ),
+        () => fromCache(`mangakakalot:info:${id}`, () => mangakakalot.fetchMangaInfo(id)),
         () =>
           fromCache(`mangakakalot:fallback:mangapill:info:${id}`, () =>
             mangapill.fetchMangaInfo(id),
@@ -139,12 +136,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           ),
         () =>
           fromCache(`mangakakalot:fallback:mangahere:latestmanga:${page}`, async () => {
-            if (typeof mh.fetchLatestUpdates === 'function') return await mh.fetchLatestUpdates(page);
+            if (typeof mh.fetchLatestUpdates === 'function')
+              return await mh.fetchLatestUpdates(page);
             return await mangahere.search('one piece', page);
           }),
         () =>
           fromCache(`mangakakalot:fallback:mangapill:latestmanga:${page}`, async () => {
-            if (typeof mp.fetchLatestUpdates === 'function') return await mp.fetchLatestUpdates(page);
+            if (typeof mp.fetchLatestUpdates === 'function')
+              return await mp.fetchLatestUpdates(page);
             return await mangapill.search('one piece');
           }),
       ]);
@@ -205,7 +204,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           ),
         () =>
           fromCache(`mangakakalot:fallback:mangapill:suggestions:${query}`, async () => {
-            if (typeof mp.fetchSuggestions === 'function') return await mp.fetchSuggestions(query);
+            if (typeof mp.fetchSuggestions === 'function')
+              return await mp.fetchSuggestions(query);
             return await mangapill.search(query);
           }),
         () =>
@@ -229,7 +229,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     const ensureSearchShape = (payload: any) => {
       if (!payload) return null;
-      if (Array.isArray(payload)) return { currentPage: String(page), hasNextPage: false, results: payload };
+      if (Array.isArray(payload))
+        return { currentPage: String(page), hasNextPage: false, results: payload };
       if (Array.isArray(payload?.results)) return payload;
       if (Array.isArray(payload?.data?.results)) {
         return { ...payload, results: payload.data.results };

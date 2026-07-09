@@ -56,7 +56,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const provider = (request.query as { provider?: string }).provider;
 
       const possibleProvider = provider
-        ? PROVIDERS_LIST.ANIME.find((p) => p.name.toLowerCase() === provider.toLowerCase())
+        ? PROVIDERS_LIST.ANIME.find(
+            (p) => p.name.toLowerCase() === provider.toLowerCase(),
+          )
         : undefined;
 
       const mal = generateMalMeta(possibleProvider);

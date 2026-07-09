@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const provider = new BuffStreams();
 const streamAvailability = new Map();
+const sourcesCache = new Map();
 const HAS_LOCAL_FRONTEND = fs.existsSync(path.join(__dirname, 'index.html'));
 
 const ONE_YEAR_SECONDS = 31536000;
@@ -319,8 +320,7 @@ const buildMediaHeaders = (referer, rangeHeader) => stripConditionalHeaders({
     'Accept-Language': 'en-US,en;q=0.9',
     'Cache-Control': 'no-cache',
     'Pragma': 'no-cache',
-    'Referer': referer,
-    'Origin': new URL(referer).origin,
+    ...(referer ? { 'Referer': referer, 'Origin': new URL(referer).origin } : {}),
     ...(rangeHeader ? { 'Range': rangeHeader } : {})
 });
 
@@ -357,6 +357,14 @@ const fetchWithRefererFallbacks = async (targetUrl, referer, rootReferer, rangeH
         }
         lastResponse = response;
         if (response.status !== 403 && response.status !== 404) break;
+    }
+
+    // Try without any referer as last resort
+    if (lastResponse && (lastResponse.status === 403 || lastResponse.status === 404 || lastResponse.status >= 500)) {
+        const noRefResponse = await fetchWithRetry(targetUrl, { headers: buildMediaHeaders('', rangeHeader) });
+        if (noRefResponse.ok || noRefResponse.status === 206) {
+            return { response: noRefResponse, usedReferer: '' };
+        }
     }
 
     return { response: lastResponse, usedReferer: candidates[0] || targetUrl };
@@ -684,6 +692,15 @@ app.post('/api/fetchSources', async (req, res) => {
         const { eventUrl, embedUrl, background } = req.body;
         const target = eventUrl || embedUrl;
         const isBackground = Boolean(background);
+        const cacheKey = target;
+        const cacheTtlMs = 180000;
+        if (!isBackground && cacheKey) {
+            const cached = sourcesCache.get(cacheKey);
+            if (cached && Date.now() - cached.timestamp < cacheTtlMs) {
+                console.log('Cache hit for sources:', cacheKey);
+                return res.json({ success: true, data: cached.data });
+            }
+        }
         console.log('Fetching sources for:', target);
         const timeoutMs = 20000;
         const result = await Promise.race([
@@ -698,6 +715,9 @@ app.post('/api/fetchSources', async (req, res) => {
             setStreamAvailability(target, true, 'source_available');
         } else if (!isBackground) {
             setStreamAvailability(target, false, sources.error || 'no_sources');
+        }
+        if (!isBackground && cacheKey) {
+            sourcesCache.set(cacheKey, { data: sources, timestamp: Date.now() });
         }
         res.json({ success: true, data: sources });
     } catch (error) {
@@ -974,14 +994,41 @@ app.get('/api/media-proxy', async (req, res) => {
             pushUnique(normalizedTargetUrl);
             try { const o = new URL(normalizedTargetUrl).origin; if (o) pushUnique(o + '/'); } catch { }
 
+            // Also try without any referer
+            candidates.push('');
+
+            const targetHost = (() => { try { return new URL(normalizedTargetUrl).hostname; } catch { return ''; } })();
+
+            const quickFetch = async (url, opts) => {
+                // Rate-limit requests to the same host: wait at least 3s between attempts
+                if (targetHost) {
+                    const last = hostTimers.get(targetHost) || 0;
+                    const now = Date.now();
+                    const elapsed = now - last;
+                    if (elapsed < 3000) {
+                        await wait(3000 - elapsed);
+                    }
+                    hostTimers.set(targetHost, Date.now());
+                }
+                try {
+                    const ctrl = new AbortController();
+                    const to = setTimeout(() => ctrl.abort(), 15000);
+                    const r = await fetch(url, { ...opts, signal: ctrl.signal });
+                    clearTimeout(to);
+                    return r;
+                } catch { return new Response(null, { status: 503 }); }
+            };
+
+            let lastResponse = null;
             for (const ref of candidates) {
-                const resp = await fetchWithRetry(normalizedTargetUrl, {
-                    headers: { ...cleanHeaders, 'Referer': ref, 'Origin': (() => { try { return new URL(ref).origin; } catch { return ''; } })() }
-                });
+                const headers = ref
+                    ? { 'User-Agent': USER_AGENT, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': ref, 'Origin': (() => { try { return new URL(ref).origin; } catch { return ''; } })() }
+                    : { 'User-Agent': USER_AGENT, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9' };
+                const resp = await quickFetch(normalizedTargetUrl, { headers });
                 if (resp.ok || resp.status === 206) return { response: resp, usedReferer: ref };
-                if (resp.status !== 403 && resp.status !== 404) return { response: resp, usedReferer: ref };
+                lastResponse = resp;
             }
-            return { response: null, usedReferer: '' };
+            return { response: lastResponse, usedReferer: '' };
         };
 
         const cacheKey = normalizedTargetUrl;

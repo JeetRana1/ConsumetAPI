@@ -14,7 +14,10 @@ const routes = async (fastify, options) => {
     await fastify.register(mangapill_1.default, { prefix: '/mangapill' });
     await fastify.register(mangakakalot_1.default, { prefix: '/mangakakalot' });
     fastify.get('/', async (request, reply) => {
-        reply.status(200).send('Welcome to Consumet Manga our available providers are: ' + supportedProviders.join(', '));
+        reply
+            .status(200)
+            .send('Welcome to Consumet Manga our available providers are: ' +
+            supportedProviders.join(', '));
     });
     fastify.get('/:mangaProvider', async (request, reply) => {
         const mangaProvider = decodeURIComponent(request.params.mangaProvider);

@@ -107,13 +107,14 @@ const DEFAULT_SERVER_FALLBACKS: StreamingServers[] = [
   StreamingServers.StreamTape,
 ];
 
-const IS_PRODUCTION =
-  process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const envAttemptTimeout = Number(process.env.STREAMABLE_ATTEMPT_TIMEOUT_MS || '');
 const DEFAULT_ATTEMPT_TIMEOUT_MS =
   Number.isFinite(envAttemptTimeout) && envAttemptTimeout > 0
     ? envAttemptTimeout
-    : (IS_PRODUCTION ? 4500 : 7000);
+    : IS_PRODUCTION
+      ? 4500
+      : 7000;
 
 export const MOVIE_SERVER_FALLBACKS: StreamingServers[] = [
   StreamingServers.VidStreaming,
@@ -137,14 +138,22 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T
   return await Promise.race([
     promise,
     new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`Provider attempt timed out after ${timeoutMs}ms`)), timeoutMs),
+      setTimeout(
+        () => reject(new Error(`Provider attempt timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      ),
     ),
   ]);
 };
 
 const scoreSourceUrl = (source: unknown): number => {
   if (!source || typeof source !== 'object') return -1000;
-  const entry = source as { url?: string; isEmbed?: boolean; isM3U8?: boolean; isDASH?: boolean };
+  const entry = source as {
+    url?: string;
+    isEmbed?: boolean;
+    isM3U8?: boolean;
+    isDASH?: boolean;
+  };
   const url = String(normalizeUrl(entry.url) || '').toLowerCase();
   if (!url) return -1000;
 
@@ -161,7 +170,12 @@ const scoreSourceUrl = (source: unknown): number => {
   if (isM3U8) score += 70;
   if (isDASH) score += 60;
 
-  if (url.includes('googlevideo') || url.includes('akamaized') || url.includes('cloudfront')) score += 20;
+  if (
+    url.includes('googlevideo') ||
+    url.includes('akamaized') ||
+    url.includes('cloudfront')
+  )
+    score += 20;
   if (url.includes('megacloud') || url.includes('/embed')) score -= 25;
 
   return score;
@@ -223,7 +237,10 @@ export const fetchWithServerFallback = async <T>(
 
   if (typeof bestDirectResponse !== 'undefined') return bestDirectResponse;
   if (requireDirectPlayable) {
-    throw lastError ?? new Error('No direct playable stream found (embed-only sources were skipped).');
+    throw (
+      lastError ??
+      new Error('No direct playable stream found (embed-only sources were skipped).')
+    );
   }
   if (typeof firstWithSources !== 'undefined') return firstWithSources;
   if (typeof firstResponse !== 'undefined') return firstResponse;

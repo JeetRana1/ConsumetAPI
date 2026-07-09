@@ -57,7 +57,12 @@ const routes = async (fastify, options) => {
         const titleTokens = new Set(norm.split(' ').filter(Boolean));
         let best = { score: 0, item: null };
         for (const item of results || []) {
-            const name = String(item?.title || item?.name || item?.title_english || item?.titleEnglish || item?.japanese_title || '').trim();
+            const name = String(item?.title ||
+                item?.name ||
+                item?.title_english ||
+                item?.titleEnglish ||
+                item?.japanese_title ||
+                '').trim();
             const itemNorm = normalizeTitleForMatch(name);
             if (!itemNorm)
                 continue;
@@ -162,7 +167,7 @@ const routes = async (fastify, options) => {
                 return [
                     tokens.join('-'),
                     tokens.slice(0, 3).join('-'),
-                    tokens.slice(0, 2).join('-')
+                    tokens.slice(0, 2).join('-'),
                 ];
             };
             const slugCandidates = [...new Set(buildSlugCandidates(title))];
@@ -171,7 +176,9 @@ const routes = async (fastify, options) => {
             if (!aflIndexCache) {
                 try {
                     const { data } = await axios_1.default.get('https://www.animefillerlist.com/shows', {
-                        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36' },
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36',
+                        },
                         timeout: 10000,
                     });
                     const $ = cheerio.load(data);
@@ -197,12 +204,15 @@ const routes = async (fastify, options) => {
                     let score = 0;
                     if (entryNorm === normalizeTitleForMatch(title))
                         score += 100;
-                    if (entryNorm.includes(normalizeTitleForMatch(title)) || normalizeTitleForMatch(title).includes(entryNorm))
+                    if (entryNorm.includes(normalizeTitleForMatch(title)) ||
+                        normalizeTitleForMatch(title).includes(entryNorm))
                         score += 35;
                     const entryTokens = entryNorm.split(' ').filter(Boolean);
                     let overlap = 0;
-                    entryTokens.forEach(t => { if (titleTokens.has(t))
-                        overlap += 1; });
+                    entryTokens.forEach((t) => {
+                        if (titleTokens.has(t))
+                            overlap += 1;
+                    });
                     score += overlap * 8;
                     if (score > best.score)
                         best = { score, slug: entry.slug };
@@ -215,7 +225,9 @@ const routes = async (fastify, options) => {
             for (const slug of uniqueSlugs) {
                 try {
                     const { data } = await axios_1.default.get(`https://www.animefillerlist.com/shows/${slug}`, {
-                        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36' },
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36',
+                        },
                         timeout: 8000,
                     });
                     const $ = cheerio.load(data);
@@ -376,7 +388,11 @@ const routes = async (fastify, options) => {
             const refererForRequest = referer || `${target.protocol}//${target.host}/`;
             const baseRequestConfig = {
                 responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
-                timeout: looksLikeM3u8 ? 20000 : ((looksLikeMediaSegment || isSwiftstreamOppaiMedia) ? 25000 : 30000),
+                timeout: looksLikeM3u8
+                    ? 20000
+                    : looksLikeMediaSegment || isSwiftstreamOppaiMedia
+                        ? 25000
+                        : 30000,
                 headers: {
                     Referer: refererForRequest,
                     Origin: (() => {
@@ -413,7 +429,7 @@ const routes = async (fastify, options) => {
                     host.includes('sprintcdn') ||
                     host.includes('r66nv9ed');
                 const sticky = proxyAffinityByHost.get(host);
-                const stickyProxy = sticky && (Date.now() - sticky.at) < PROXY_AFFINITY_TTL_MS
+                const stickyProxy = sticky && Date.now() - sticky.at < PROXY_AFFINITY_TTL_MS
                     ? sticky.proxyUrl
                     : undefined;
                 const effectiveChain = forceDirectOnly
@@ -457,13 +473,14 @@ const routes = async (fastify, options) => {
                     }
                     else if (isHianimeCdn) {
                         // Shared CDNs usually require a valid referer. If it's a JustAnime request, use justanime.to
-                        const isJustAnime = /justanime\./i.test(refererForRequest) || /streamverse-api\./i.test(refererForRequest);
+                        const isJustAnime = /justanime\./i.test(refererForRequest) ||
+                            /streamverse-api\./i.test(refererForRequest);
                         if (isJustAnime) {
                             refererForRequest = 'https://justanime.to/';
                             originForRequest = 'https://justanime.to';
                         }
                     }
-                    const perAttemptTimeout = Math.max(looksLikeM3u8 ? 9000 : (looksLikeMediaSegment ? 12000 : 10000), Math.min(Number(requestConfig.timeout || 12000), looksLikeM3u8 ? 14000 : 18000));
+                    const perAttemptTimeout = Math.max(looksLikeM3u8 ? 9000 : looksLikeMediaSegment ? 12000 : 10000, Math.min(Number(requestConfig.timeout || 12000), looksLikeM3u8 ? 14000 : 18000));
                     const response = await axios_1.default.get(targetUrl, {
                         proxy: false,
                         ...requestConfig,
@@ -489,7 +506,7 @@ const routes = async (fastify, options) => {
                 for (let i = 1; i < effectiveChain.length; i += 2) {
                     const batch = effectiveChain.slice(i, i + 2);
                     try {
-                        return await Promise.any(batch.map(p => attemptProxy(p)));
+                        return await Promise.any(batch.map((p) => attemptProxy(p)));
                     }
                     catch (aggregateErr) {
                         lastErr = aggregateErr;
@@ -506,7 +523,9 @@ const routes = async (fastify, options) => {
                     upstream = {
                         status: 200,
                         data: Buffer.from(cached.raw, 'utf8'),
-                        headers: { 'content-type': cached.contentType || 'application/vnd.apple.mpegurl' },
+                        headers: {
+                            'content-type': cached.contentType || 'application/vnd.apple.mpegurl',
+                        },
                     };
                 }
             }
@@ -543,7 +562,7 @@ const routes = async (fastify, options) => {
                 if (upstream.data && typeof upstream.data.pipe === 'function') {
                     raw = await new Promise((resolve, reject) => {
                         let buf = '';
-                        upstream.data.on('data', (chunk) => buf += chunk.toString('utf8'));
+                        upstream.data.on('data', (chunk) => (buf += chunk.toString('utf8')));
                         upstream.data.on('end', () => resolve(buf));
                         upstream.data.on('error', reject);
                     });
@@ -587,7 +606,9 @@ const routes = async (fastify, options) => {
                         ref.includes('vidcloud'));
                 })();
                 const proxyOrigin = (() => {
-                    const proto = String(request.headers['x-forwarded-proto'] || request.protocol || 'http').split(',')[0].trim();
+                    const proto = String(request.headers['x-forwarded-proto'] || request.protocol || 'http')
+                        .split(',')[0]
+                        .trim();
                     const host = String(request.headers.host || request.hostname || '127.0.0.1:3000');
                     return `${proto}://${host}`;
                 })();
@@ -605,7 +626,9 @@ const routes = async (fastify, options) => {
                             abs = innerUrl;
                         }
                         if (shouldProxyManifestUris) {
-                            const ref = refererForRequest ? `&referer=${encodeURIComponent(refererForRequest)}` : '';
+                            const ref = refererForRequest
+                                ? `&referer=${encodeURIComponent(refererForRequest)}`
+                                : '';
                             return `${proxyOrigin}/utils/proxy?url=${encodeURIComponent(abs)}${ref}`;
                         }
                         return abs;
@@ -692,7 +715,9 @@ const routes = async (fastify, options) => {
                         }
                     }
                     if (totalVariantCount > 0 && keptVariantCount === 0) {
-                        return reply.status(502).send({ message: 'no live variants in master manifest' });
+                        return reply
+                            .status(502)
+                            .send({ message: 'no live variants in master manifest' });
                     }
                     if (keptVariantCount > 0) {
                         filteredLines = lines.filter((_, idx) => !droppedLines.has(idx));
@@ -717,7 +742,12 @@ const routes = async (fastify, options) => {
                     .join('\n');
                 // Cache rewritten manifest briefly so rapid reloads don't refetch upstream immediately
                 try {
-                    manifestCache.set(cacheKey, { at: Date.now(), ttl: 5000, raw: rewritten, contentType: 'application/vnd.apple.mpegurl' });
+                    manifestCache.set(cacheKey, {
+                        at: Date.now(),
+                        ttl: 5000,
+                        raw: rewritten,
+                        contentType: 'application/vnd.apple.mpegurl',
+                    });
                 }
                 catch { }
                 return reply
@@ -839,11 +869,15 @@ const routes = async (fastify, options) => {
             try {
                 add(decodeURI(value));
             }
-            catch { /* ignore */ }
+            catch {
+                /* ignore */
+            }
             try {
                 add(decodeURIComponent(value));
             }
-            catch { /* ignore */ }
+            catch {
+                /* ignore */
+            }
             return [...variants];
         };
         const toShirnaProxyUrl = (subtitleUrl) => {
@@ -862,7 +896,9 @@ const routes = async (fastify, options) => {
         try {
             originForRequest = `${new URL(refererForRequest).protocol}//${new URL(refererForRequest).host}`;
         }
-        catch { /* ignore */ }
+        catch {
+            /* ignore */
+        }
         const isAnimeSaltSubtitleHost = /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(target.hostname);
         const refererCandidates = (() => {
             const values = [
@@ -873,29 +909,61 @@ const routes = async (fastify, options) => {
             return [...new Set(values)];
         })();
         const normalizeCueTimestamp = (value) => {
-            const raw = String(value || '').trim().replace(',', '.');
+            const raw = String(value || '')
+                .trim()
+                .replace(',', '.');
             const match = raw.match(/^(\d+):(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$/);
             if (!match)
                 return raw;
             const hours = String(Number(match[1] || 0)).padStart(2, '0');
             const minutes = String(Number(match[2] || 0)).padStart(2, '0');
             const seconds = String(Number(match[3] || 0)).padStart(2, '0');
-            const millis = String(match[4] || '000').padEnd(3, '0').slice(0, 3);
+            const millis = String(match[4] || '000')
+                .padEnd(3, '0')
+                .slice(0, 3);
             return `${hours}:${minutes}:${seconds}.${millis}`;
         };
         const normalizeCueTimings = (text) => String(text || '').replace(/(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)\s*-->\s*(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)([^\n\r]*)/g, (_match, start, end, suffix) => `${normalizeCueTimestamp(start)} --> ${normalizeCueTimestamp(end)}${suffix || ''}`);
+        const stripSubtitleMarkup = (text) => String(text || '')
+            .replace(/<\/?(i|b|u|font|c|ruby|rt|v)(?:\s+[^>]*)?>/gi, '')
+            .replace(/<[^>]+>/g, '');
+        const sanitizeCueText = (text) => {
+            const normalized = String(text || '').replace(/\r+/g, '').replace(/^\uFEFF/, '');
+            return normalized
+                .split('\n')
+                .map((line) => {
+                const trimmed = line.trim();
+                if (!trimmed)
+                    return '';
+                if (/^WEBVTT$/i.test(trimmed))
+                    return line;
+                if (/^(NOTE|STYLE|REGION)(\s|$)/i.test(trimmed))
+                    return line;
+                if (/^\d+$/.test(trimmed))
+                    return line;
+                if (/-->/.test(line))
+                    return line;
+                return stripSubtitleMarkup(line);
+            })
+                .join('\n');
+        };
         const srtToVtt = (text) => {
-            const clean = normalizeCueTimings(text.replace(/\r+/g, '').replace(/^\uFEFF/, ''));
+            const clean = sanitizeCueText(normalizeCueTimings(text));
             return `WEBVTT\n\n${clean}`;
         };
         const assTimeToVtt = (t) => {
-            const m = String(t || '').trim().match(/^(\d+):(\d{1,2}):(\d{1,2})[.](\d{1,2})$/);
+            const m = String(t || '')
+                .trim()
+                .match(/^(\d+):(\d{1,2}):(\d{1,2})[.](\d{1,2})$/);
             if (!m)
                 return '';
             return `${String(Number(m[1])).padStart(2, '0')}:${String(Number(m[2])).padStart(2, '0')}:${String(Number(m[3])).padStart(2, '0')}.${String(Math.round(Number(`0.${m[4] || '0'}`) * 1000)).padStart(3, '0')}`;
         };
         const assToVtt = (text) => {
-            const lines = text.replace(/\r+/g, '').replace(/^\uFEFF/, '').split('\n');
+            const lines = text
+                .replace(/\r+/g, '')
+                .replace(/^\uFEFF/, '')
+                .split('\n');
             const cues = [];
             let idx = 1;
             for (const line of lines) {
@@ -906,7 +974,12 @@ const routes = async (fastify, options) => {
                 const e = assTimeToVtt(m[2]);
                 if (!s || !e)
                     continue;
-                const txt = String(m[3] || '').replace(/\{[^}]*\}/g, '').replace(/\\N/gi, '\n').replace(/\\n/g, '\n').trim();
+                const txt = String(m[3] || '')
+                    .replace(/\{[^}]*\}/g, '')
+                    .replace(/\\N/gi, '\n')
+                    .replace(/\\n/g, '\n')
+                    .replace(/<[^>]+>/g, '')
+                    .trim();
                 if (!txt)
                     continue;
                 cues.push(`${idx++}\n${s} --> ${e}\n${txt}`);
@@ -917,7 +990,7 @@ const routes = async (fastify, options) => {
             const { getCachedSubtitleText } = await Promise.resolve().then(() => __importStar(require('./browserRuntimeExtractor')));
             const cachedSubtitle = getCachedSubtitleText(url);
             if (cachedSubtitle) {
-                let raw = cachedSubtitle;
+                let raw = sanitizeCueText(cachedSubtitle);
                 const isVtt = raw.trim().toLowerCase().startsWith('webvtt');
                 if (!isVtt && raw.includes('-->'))
                     raw = `WEBVTT\n\n${raw.replace(/\r+/g, '').replace(/^\uFEFF/, '')}`;
@@ -945,7 +1018,9 @@ const routes = async (fastify, options) => {
                     try {
                         candidateOrigin = `${new URL(candidateReferer).protocol}//${new URL(candidateReferer).host}`;
                     }
-                    catch { /* ignore */ }
+                    catch {
+                        /* ignore */
+                    }
                     for (const proxyUrl of chain) {
                         try {
                             const { toAxiosProxyOptions: tap } = await Promise.resolve().then(() => __importStar(require('./outboundProxy')));
@@ -993,27 +1068,32 @@ const routes = async (fastify, options) => {
             let vtt = '';
             const trimmed = raw.trim();
             // AnimeSalt base64-encoded subtitles
-            if (!trimmed.includes('-->') && trimmed.length > 50 && /^[a-z0-9+/= \n\r\t]+$/i.test(trimmed)) {
+            if (!trimmed.includes('-->') &&
+                trimmed.length > 50 &&
+                /^[a-z0-9+/= \n\r\t]+$/i.test(trimmed)) {
                 try {
                     const decoded = Buffer.from(trimmed.replace(/\s/g, ''), 'base64').toString('utf8');
                     if (decoded.includes('-->'))
                         raw = decoded;
                 }
-                catch { /* ignore */ }
+                catch {
+                    /* ignore */
+                }
             }
             const hasCue = raw.includes('-->');
             const hasSrt = /\d+:\d{1,2}:\d{1,2}[.,]\d{1,3}/.test(raw);
             const isAss = /^\s*\[Script Info\]/im.test(raw) || /^\s*\[Events\]/im.test(raw);
-            const isSrt = /^\d+:\d{1,2}:\d{1,2}[,.]\d{1,3}$/.test(raw.split('\n').find(l => l.includes(',')) || '') || (hasCue && hasSrt && !raw.trim().toLowerCase().startsWith('webvtt'));
+            const isSrt = /^\d+:\d{1,2}:\d{1,2}[,.]\d{1,3}$/.test(raw.split('\n').find((l) => l.includes(',')) || '') ||
+                (hasCue && hasSrt && !raw.trim().toLowerCase().startsWith('webvtt'));
             const isVtt = raw.trim().toLowerCase().startsWith('webvtt');
             if (isAss)
                 vtt = assToVtt(raw);
             else if (isSrt)
                 vtt = srtToVtt(raw);
             else if (isVtt)
-                vtt = normalizeCueTimings(raw.replace(/\r+/g, '').replace(/^\uFEFF/, ''));
+                vtt = sanitizeCueText(normalizeCueTimings(raw));
             else if (hasCue)
-                vtt = `WEBVTT\n\n${normalizeCueTimings(raw.replace(/\r+/g, '').replace(/^\uFEFF/, ''))}`;
+                vtt = `WEBVTT\n\n${sanitizeCueText(normalizeCueTimings(raw))}`;
             else
                 vtt = raw;
             reply

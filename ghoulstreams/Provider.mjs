@@ -1,6 +1,6 @@
 class Provider {
     constructor() {
-        this.baseUrl = '';
+        try { this.baseUrl = ''; } catch { /* subclass may define getter-only */ }
         this.name = '';
     }
 

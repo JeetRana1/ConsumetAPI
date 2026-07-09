@@ -13,14 +13,18 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(mangakakalot, { prefix: '/mangakakalot' });
 
   fastify.get('/', async (request: any, reply: any) => {
-    reply.status(200).send(
-      'Welcome to Consumet Manga our available providers are: ' + supportedProviders.join(', '),
-    );
-
+    reply
+      .status(200)
+      .send(
+        'Welcome to Consumet Manga our available providers are: ' +
+          supportedProviders.join(', '),
+      );
   });
 
   fastify.get('/:mangaProvider', async (request: FastifyRequest, reply: FastifyReply) => {
-    const mangaProvider = decodeURIComponent((request.params as { mangaProvider: string }).mangaProvider);
+    const mangaProvider = decodeURIComponent(
+      (request.params as { mangaProvider: string }).mangaProvider,
+    );
 
     try {
       if (supportedProviders.includes(mangaProvider)) {

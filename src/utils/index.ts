@@ -34,7 +34,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     for (const item of results || []) {
       const name = String(
-        item?.title || item?.name || item?.title_english || item?.titleEnglish || item?.japanese_title || '',
+        item?.title ||
+          item?.name ||
+          item?.title_english ||
+          item?.titleEnglish ||
+          item?.japanese_title ||
+          '',
       ).trim();
       const itemNorm = normalizeTitleForMatch(name);
       if (!itemNorm) continue;
@@ -74,9 +79,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     return null;
   };
 
-  const buildEpisodeStatusMap = (infoPayload: any): Record<string, 'manga' | 'mixed' | 'filler'> => {
+  const buildEpisodeStatusMap = (
+    infoPayload: any,
+  ): Record<string, 'manga' | 'mixed' | 'filler'> => {
     const map: Record<string, 'manga' | 'mixed' | 'filler'> = {};
-    const episodes = toArrayPayload(infoPayload?.episodes ? infoPayload.episodes : infoPayload);
+    const episodes = toArrayPayload(
+      infoPayload?.episodes ? infoPayload.episodes : infoPayload,
+    );
     episodes.forEach((ep, idx) => {
       const epNo = Number(ep?.number || ep?.episodeNumber || ep?.episode || idx + 1);
       if (!Number.isFinite(epNo) || epNo <= 0) return;
@@ -87,13 +96,17 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     return map;
   };
 
-  const fetchFillerFromMetaProvider = async (provider: 'mal' | 'anilist', title: string) => {
+  const fetchFillerFromMetaProvider = async (
+    provider: 'mal' | 'anilist',
+    title: string,
+  ) => {
     try {
       const searchRes = await fastify.inject({
         method: 'GET',
         url: `/meta/${provider}/${encodeURIComponent(title)}?page=1`,
       });
-      if (searchRes.statusCode >= 400) return { provider, id: null, episodes: {} as Record<string, any> };
+      if (searchRes.statusCode >= 400)
+        return { provider, id: null, episodes: {} as Record<string, any> };
       const searchPayload = JSON.parse(searchRes.body || '{}');
       const best = pickBestSearchResult(title, toArrayPayload(searchPayload));
       const contentId = best?.id || best?.anilistId || best?.malId || best?._id;
@@ -103,7 +116,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         method: 'GET',
         url: `/meta/${provider}/info/${encodeURIComponent(String(contentId))}?fetchFiller=true`,
       });
-      if (infoRes.statusCode >= 400) return { provider, id: contentId, episodes: {} as Record<string, any> };
+      if (infoRes.statusCode >= 400)
+        return { provider, id: contentId, episodes: {} as Record<string, any> };
       const infoPayload = JSON.parse(infoRes.body || '{}');
       return {
         provider,
@@ -119,9 +133,17 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
   // Simple in-memory cache for recently-fetched manifests to avoid repeated upstream
   // fetches during aggressive hot-reloads/seeks. TTL is short to avoid serving stale tokens.
-  const manifestCache = new Map<string, { at: number; ttl: number; raw: string; contentType?: string }>();
+  const manifestCache = new Map<
+    string,
+    { at: number; ttl: number; raw: string; contentType?: string }
+  >();
 
-  const fetchFillerFromAFL = async (title: string): Promise<{ id: string | null; episodes: Record<string, 'manga' | 'mixed' | 'filler'> }> => {
+  const fetchFillerFromAFL = async (
+    title: string,
+  ): Promise<{
+    id: string | null;
+    episodes: Record<string, 'manga' | 'mixed' | 'filler'>;
+  }> => {
     try {
       const buildSlugCandidates = (t: string) => {
         const raw = normalizeTitleForMatch(t);
@@ -136,7 +158,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         return [
           tokens.join('-'),
           tokens.slice(0, 3).join('-'),
-          tokens.slice(0, 2).join('-')
+          tokens.slice(0, 2).join('-'),
         ];
       };
 
@@ -146,7 +168,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       if (!aflIndexCache) {
         try {
           const { data } = await axios.get('https://www.animefillerlist.com/shows', {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36' },
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36',
+            },
             timeout: 10000,
           });
           const $ = cheerio.load(data);
@@ -160,20 +185,28 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             }
           });
           if (entries.length > 0) aflIndexCache = entries;
-        } catch { }
+        } catch {}
       }
 
       if (aflIndexCache && aflIndexCache.length > 0) {
-        const titleTokens = new Set(normalizeTitleForMatch(title).split(' ').filter(Boolean));
+        const titleTokens = new Set(
+          normalizeTitleForMatch(title).split(' ').filter(Boolean),
+        );
         let best = { score: 0, slug: '' };
         for (const entry of aflIndexCache) {
           const entryNorm = entry.norm;
           let score = 0;
           if (entryNorm === normalizeTitleForMatch(title)) score += 100;
-          if (entryNorm.includes(normalizeTitleForMatch(title)) || normalizeTitleForMatch(title).includes(entryNorm)) score += 35;
+          if (
+            entryNorm.includes(normalizeTitleForMatch(title)) ||
+            normalizeTitleForMatch(title).includes(entryNorm)
+          )
+            score += 35;
           const entryTokens = entryNorm.split(' ').filter(Boolean);
           let overlap = 0;
-          entryTokens.forEach(t => { if (titleTokens.has(t)) overlap += 1; });
+          entryTokens.forEach((t) => {
+            if (titleTokens.has(t)) overlap += 1;
+          });
           score += overlap * 8;
           if (score > best.score) best = { score, slug: entry.slug };
         }
@@ -186,10 +219,16 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       for (const slug of uniqueSlugs) {
         try {
-          const { data } = await axios.get(`https://www.animefillerlist.com/shows/${slug}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36' },
-            timeout: 8000,
-          });
+          const { data } = await axios.get(
+            `https://www.animefillerlist.com/shows/${slug}`,
+            {
+              headers: {
+                'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36',
+              },
+              timeout: 8000,
+            },
+          );
           const $ = cheerio.load(data);
           const episodes: Record<string, 'manga' | 'mixed' | 'filler'> = {};
           let found = false;
@@ -201,7 +240,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const typeStr = $(el).find('td.Type').text().trim().toLowerCase();
             let status: 'manga' | 'mixed' | 'filler' = 'manga';
             if (typeStr.includes('filler')) {
-              if (typeStr.includes('mixed') || typeStr.includes('mostly')) status = 'mixed';
+              if (typeStr.includes('mixed') || typeStr.includes('mostly'))
+                status = 'mixed';
               else status = 'filler';
             } else if (typeStr.includes('canon')) {
               status = 'manga';
@@ -212,9 +252,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           if (found) {
             return { id: slug, episodes };
           }
-        } catch { }
+        } catch {}
       }
-    } catch { }
+    } catch {}
     return { id: null, episodes: {} };
   };
 
@@ -228,73 +268,101 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/audio_tam/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/audio_hin/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/audio_tel/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/audio_mal/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/audio_ben/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/audio_eng/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/audio_jpn/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   // Routes under /utils/ for proxied audio tracks
   fastify.get('/utils/audio_tam/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/utils/audio_hin/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/utils/audio_tel/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/utils/audio_mal/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/utils/audio_ben/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/utils/audio_eng/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
   fastify.get('/utils/audio_jpn/*', async (request, reply) => {
     return reply
       .header('Content-Type', 'application/vnd.apple.mpegurl')
-      .send(`#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`);
+      .send(
+        `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,${dummySegmentUrl}\n#EXT-X-ENDLIST`,
+      );
   });
 
   fastify.get('/proxy', async (request: any, reply: any) => {
@@ -348,7 +416,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const refererForRequest = referer || `${target.protocol}//${target.host}/`;
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
-        timeout: looksLikeM3u8 ? 20000 : ((looksLikeMediaSegment || isSwiftstreamOppaiMedia) ? 25000 : 30000),
+        timeout: looksLikeM3u8
+          ? 20000
+          : looksLikeMediaSegment || isSwiftstreamOppaiMedia
+            ? 25000
+            : 30000,
         headers: {
           Referer: refererForRequest,
           Origin: (() => {
@@ -386,97 +458,113 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           host.includes('sprintcdn') ||
           host.includes('r66nv9ed');
         const sticky = proxyAffinityByHost.get(host);
-        const stickyProxy = sticky && (Date.now() - sticky.at) < PROXY_AFFINITY_TTL_MS
-          ? sticky.proxyUrl
-          : undefined;
+        const stickyProxy =
+          sticky && Date.now() - sticky.at < PROXY_AFFINITY_TTL_MS
+            ? sticky.proxyUrl
+            : undefined;
         const effectiveChain = forceDirectOnly
           ? [undefined]
           : [...new Set([stickyProxy, ...chain])];
 
         // If direct only or just one option, do it simple
         if (effectiveChain.length <= 1) {
-            try {
-                const proxyOptions = toAxiosProxyOptions(effectiveChain[0]);
-                const upstream = await axios.get(targetUrl, {
-                    proxy: false,
-                    ...requestConfig,
-                    ...proxyOptions,
-                } as any);
-                return upstream;
-            } catch (err: any) {
-                throw err;
-            }
+          try {
+            const proxyOptions = toAxiosProxyOptions(effectiveChain[0]);
+            const upstream = await axios.get(targetUrl, {
+              proxy: false,
+              ...requestConfig,
+              ...proxyOptions,
+            } as any);
+            return upstream;
+          } catch (err: any) {
+            throw err;
+          }
         }
 
         // Parallel Race for multiple proxies: Try up to 3 at a time to find one that works fast
         const attemptProxy = async (proxyUrl: string | undefined) => {
-            const proxyOptions = toAxiosProxyOptions(proxyUrl);
-            let refererForRequest = requestConfig.headers.Referer || '';
-            let originForRequest = requestConfig.headers.Origin || '';
+          const proxyOptions = toAxiosProxyOptions(proxyUrl);
+          let refererForRequest = requestConfig.headers.Referer || '';
+          let originForRequest = requestConfig.headers.Origin || '';
 
-            const isAnimesaltCdn = 
-                /(^|\.)(as-cdn\d+|z\d+|animesalt|as2|as-api)\.(pro|ac|top|xyz|link|click|net|cc|org)$/i.test(target.hostname);
-
-            const isHianimeCdn =
-                /(^|\.)(rainveil\d*|megacloud\d*|rapid-cloud\d*|rabbitstream\d*|vizcloud\d*|cloud9|bunnycdn|vidcloud)\.(xyz|tv|ru|net|gg|co|online|pro|ac|cc|bz|li|to)$/i.test(target.hostname);
-
-            if (isAnimesaltCdn) {
-                if (refererForRequest.includes('animesalt.')) {
-                    refererForRequest = refererForRequest.replace(/animesalt\.(pro|xyz|click)/gi, 'animesalt.ac');
-                } else if (!refererForRequest) {
-                  refererForRequest = 'https://animesalt.ac/';
-                }
-                if (originForRequest.includes('animesalt.')) {
-                    originForRequest = originForRequest.replace(/animesalt\.(pro|xyz|click)/gi, 'animesalt.ac');
-                } else if (!originForRequest) {
-                  originForRequest = 'https://animesalt.ac';
-                }
-            } else if (isHianimeCdn) {
-                // Shared CDNs usually require a valid referer. If it's a JustAnime request, use justanime.to
-                const isJustAnime = /justanime\./i.test(refererForRequest) || /streamverse-api\./i.test(refererForRequest);
-                if (isJustAnime) {
-                    refererForRequest = 'https://justanime.to/';
-                    originForRequest = 'https://justanime.to';
-                }
-            }
-
-            const perAttemptTimeout = Math.max(
-              looksLikeM3u8 ? 9000 : (looksLikeMediaSegment ? 12000 : 10000),
-              Math.min(Number(requestConfig.timeout || 12000), looksLikeM3u8 ? 14000 : 18000),
+          const isAnimesaltCdn =
+            /(^|\.)(as-cdn\d+|z\d+|animesalt|as2|as-api)\.(pro|ac|top|xyz|link|click|net|cc|org)$/i.test(
+              target.hostname,
             );
 
-            const response = await axios.get(targetUrl, {
-                proxy: false,
-                ...requestConfig,
-              timeout: perAttemptTimeout,
-                headers: {
-                    ...requestConfig.headers,
-                    Referer: refererForRequest,
-                    Origin: originForRequest,
-                },
-                ...proxyOptions,
-            } as any);
-            proxyAffinityByHost.set(host, { proxyUrl, at: Date.now() });
-            return response;
+          const isHianimeCdn =
+            /(^|\.)(rainveil\d*|megacloud\d*|rapid-cloud\d*|rabbitstream\d*|vizcloud\d*|cloud9|bunnycdn|vidcloud)\.(xyz|tv|ru|net|gg|co|online|pro|ac|cc|bz|li|to)$/i.test(
+              target.hostname,
+            );
+
+          if (isAnimesaltCdn) {
+            if (refererForRequest.includes('animesalt.')) {
+              refererForRequest = refererForRequest.replace(
+                /animesalt\.(pro|xyz|click)/gi,
+                'animesalt.ac',
+              );
+            } else if (!refererForRequest) {
+              refererForRequest = 'https://animesalt.ac/';
+            }
+            if (originForRequest.includes('animesalt.')) {
+              originForRequest = originForRequest.replace(
+                /animesalt\.(pro|xyz|click)/gi,
+                'animesalt.ac',
+              );
+            } else if (!originForRequest) {
+              originForRequest = 'https://animesalt.ac';
+            }
+          } else if (isHianimeCdn) {
+            // Shared CDNs usually require a valid referer. If it's a JustAnime request, use justanime.to
+            const isJustAnime =
+              /justanime\./i.test(refererForRequest) ||
+              /streamverse-api\./i.test(refererForRequest);
+            if (isJustAnime) {
+              refererForRequest = 'https://justanime.to/';
+              originForRequest = 'https://justanime.to';
+            }
+          }
+
+          const perAttemptTimeout = Math.max(
+            looksLikeM3u8 ? 9000 : looksLikeMediaSegment ? 12000 : 10000,
+            Math.min(
+              Number(requestConfig.timeout || 12000),
+              looksLikeM3u8 ? 14000 : 18000,
+            ),
+          );
+
+          const response = await axios.get(targetUrl, {
+            proxy: false,
+            ...requestConfig,
+            timeout: perAttemptTimeout,
+            headers: {
+              ...requestConfig.headers,
+              Referer: refererForRequest,
+              Origin: originForRequest,
+            },
+            ...proxyOptions,
+          } as any);
+          proxyAffinityByHost.set(host, { proxyUrl, at: Date.now() });
+          return response;
         };
 
         // Attempt direct first if not forced proxy
         try {
-            return await attemptProxy(undefined);
+          return await attemptProxy(undefined);
         } catch (e) {
-            lastErr = e;
+          lastErr = e;
         }
 
         // Try remaining proxies in blocks of 2 to balance load vs speed
         for (let i = 1; i < effectiveChain.length; i += 2) {
-            const batch = effectiveChain.slice(i, i + 2);
-            try {
-                return await Promise.any(batch.map(p => attemptProxy(p)));
-            } catch (aggregateErr) {
-                lastErr = aggregateErr;
-            }
+          const batch = effectiveChain.slice(i, i + 2);
+          try {
+            return await Promise.any(batch.map((p) => attemptProxy(p)));
+          } catch (aggregateErr) {
+            lastErr = aggregateErr;
+          }
         }
-        
+
         throw lastErr || new Error('proxy failed');
       };
 
@@ -489,7 +577,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           upstream = {
             status: 200,
             data: Buffer.from(cached.raw, 'utf8'),
-            headers: { 'content-type': cached.contentType || 'application/vnd.apple.mpegurl' },
+            headers: {
+              'content-type': cached.contentType || 'application/vnd.apple.mpegurl',
+            },
           } as any;
         }
       }
@@ -528,7 +618,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         if (upstream.data && typeof (upstream.data as any).pipe === 'function') {
           raw = await new Promise<string>((resolve, reject) => {
             let buf = '';
-            upstream.data.on('data', (chunk: Buffer) => buf += chunk.toString('utf8'));
+            upstream.data.on('data', (chunk: Buffer) => (buf += chunk.toString('utf8')));
             upstream.data.on('end', () => resolve(buf));
             upstream.data.on('error', reject);
           });
@@ -558,7 +648,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           const host = target.hostname.toLowerCase();
           const ref = referer.toLowerCase();
           return (
-            /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(host) ||
+            /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(
+              host,
+            ) ||
             host.includes('animesalt') ||
             host.includes('swiftstream') ||
             host.includes('sprintcdn') ||
@@ -575,8 +667,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         })();
 
         const proxyOrigin = (() => {
-          const proto = String(request.headers['x-forwarded-proto'] || request.protocol || 'http').split(',')[0].trim();
-          const host = String(request.headers.host || request.hostname || '127.0.0.1:3000');
+          const proto = String(
+            request.headers['x-forwarded-proto'] || request.protocol || 'http',
+          )
+            .split(',')[0]
+            .trim();
+          const host = String(
+            request.headers.host || request.hostname || '127.0.0.1:3000',
+          );
           return `${proto}://${host}`;
         })();
 
@@ -592,7 +690,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               abs = innerUrl;
             }
             if (shouldProxyManifestUris) {
-              const ref = refererForRequest ? `&referer=${encodeURIComponent(refererForRequest)}` : '';
+              const ref = refererForRequest
+                ? `&referer=${encodeURIComponent(refererForRequest)}`
+                : '';
               return `${proxyOrigin}/utils/proxy?url=${encodeURIComponent(abs)}${ref}`;
             }
             return abs;
@@ -632,7 +732,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             };
 
             const probe = await fetchWithChain(probeTarget.toString(), probeConfig);
-            const ok = Number(probe?.status || 0) >= 200 && Number(probe?.status || 0) < 400;
+            const ok =
+              Number(probe?.status || 0) >= 200 && Number(probe?.status || 0) < 400;
             reachabilityCache.set(abs, ok);
             return ok;
           } catch {
@@ -680,7 +781,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           }
 
           if (totalVariantCount > 0 && keptVariantCount === 0) {
-            return reply.status(502).send({ message: 'no live variants in master manifest' });
+            return reply
+              .status(502)
+              .send({ message: 'no live variants in master manifest' });
           }
 
           if (keptVariantCount > 0) {
@@ -694,10 +797,16 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const trimmed = line.trim();
             if (!trimmed) return line;
             if (trimmed.startsWith('#') && trimmed.includes('URI="')) {
-              return line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${rewriteUri(uri)}"`);
+              return line.replace(
+                /URI="([^"]+)"/g,
+                (_m, uri) => `URI="${rewriteUri(uri)}"`,
+              );
             }
             if (trimmed.startsWith('#') && trimmed.includes("URI='")) {
-              return line.replace(/URI='([^']+)'/g, (_m, uri) => `URI='${rewriteUri(uri)}'`);
+              return line.replace(
+                /URI='([^']+)'/g,
+                (_m, uri) => `URI='${rewriteUri(uri)}'`,
+              );
             }
             if (trimmed.startsWith('#')) return line;
             return rewriteUri(trimmed);
@@ -706,7 +815,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
         // Cache rewritten manifest briefly so rapid reloads don't refetch upstream immediately
         try {
-          manifestCache.set(cacheKey, { at: Date.now(), ttl: 5000, raw: rewritten, contentType: 'application/vnd.apple.mpegurl' });
+          manifestCache.set(cacheKey, {
+            at: Date.now(),
+            ttl: 5000,
+            raw: rewritten,
+            contentType: 'application/vnd.apple.mpegurl',
+          });
         } catch {}
 
         return reply
@@ -747,7 +861,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         return reply
           .header('Content-Type', contentType || 'application/octet-stream')
           .header('Connection', 'keep-alive')
-          .header('Cache-Control', String(upstream.headers?.['cache-control'] || 'public, max-age=60, no-transform'))
+          .header(
+            'Cache-Control',
+            String(
+              upstream.headers?.['cache-control'] || 'public, max-age=60, no-transform',
+            ),
+          )
           .send(upstream.data);
       }
 
@@ -824,15 +943,24 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         if (!normalized) return;
         try {
           const parsed = new URL(normalized);
-          if (['http:', 'https:'].includes(parsed.protocol)) variants.add(parsed.toString());
+          if (['http:', 'https:'].includes(parsed.protocol))
+            variants.add(parsed.toString());
         } catch {
           // ignore invalid decode attempts
         }
       };
 
       add(value);
-      try { add(decodeURI(value)); } catch { /* ignore */ }
-      try { add(decodeURIComponent(value)); } catch { /* ignore */ }
+      try {
+        add(decodeURI(value));
+      } catch {
+        /* ignore */
+      }
+      try {
+        add(decodeURIComponent(value));
+      } catch {
+        /* ignore */
+      }
 
       return [...variants];
     };
@@ -840,16 +968,25 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const toShirnaProxyUrl = (subtitleUrl: string): string | null => {
       const rawBase = String(process.env.SHIRNA_PROXY_URL || '').trim();
       if (!rawBase) return null;
-      if (rawBase.includes('{url}')) return rawBase.replace('{url}', encodeURIComponent(subtitleUrl));
-      if (/[?&](src|url)=$/i.test(rawBase)) return `${rawBase}${encodeURIComponent(subtitleUrl)}`;
+      if (rawBase.includes('{url}'))
+        return rawBase.replace('{url}', encodeURIComponent(subtitleUrl));
+      if (/[?&](src|url)=$/i.test(rawBase))
+        return `${rawBase}${encodeURIComponent(subtitleUrl)}`;
       const joiner = rawBase.includes('?') ? '&' : '?';
       return `${rawBase}${joiner}src=${encodeURIComponent(subtitleUrl)}`;
     };
 
     const refererForRequest = referer || `${target.protocol}//${target.host}/`;
     let originForRequest = refererForRequest;
-    try { originForRequest = `${new URL(refererForRequest).protocol}//${new URL(refererForRequest).host}`; } catch { /* ignore */ }
-    const isAnimeSaltSubtitleHost = /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(target.hostname);
+    try {
+      originForRequest = `${new URL(refererForRequest).protocol}//${new URL(refererForRequest).host}`;
+    } catch {
+      /* ignore */
+    }
+    const isAnimeSaltSubtitleHost =
+      /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(
+        target.hostname,
+      );
     const refererCandidates = (() => {
       const values = [
         refererForRequest,
@@ -860,42 +997,82 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     })();
 
     const normalizeCueTimestamp = (value: string): string => {
-      const raw = String(value || '').trim().replace(',', '.');
+      const raw = String(value || '')
+        .trim()
+        .replace(',', '.');
       const match = raw.match(/^(\d+):(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$/);
       if (!match) return raw;
       const hours = String(Number(match[1] || 0)).padStart(2, '0');
       const minutes = String(Number(match[2] || 0)).padStart(2, '0');
       const seconds = String(Number(match[3] || 0)).padStart(2, '0');
-      const millis = String(match[4] || '000').padEnd(3, '0').slice(0, 3);
+      const millis = String(match[4] || '000')
+        .padEnd(3, '0')
+        .slice(0, 3);
       return `${hours}:${minutes}:${seconds}.${millis}`;
     };
 
-    const normalizeCueTimings = (text: string): string => String(text || '').replace(
-      /(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)\s*-->\s*(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)([^\n\r]*)/g,
-      (_match, start, end, suffix) => `${normalizeCueTimestamp(start)} --> ${normalizeCueTimestamp(end)}${suffix || ''}`,
-    );
+    const normalizeCueTimings = (text: string): string =>
+      String(text || '').replace(
+        /(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)\s*-->\s*(\d+:\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?)([^\n\r]*)/g,
+        (_match, start, end, suffix) =>
+          `${normalizeCueTimestamp(start)} --> ${normalizeCueTimestamp(end)}${suffix || ''}`,
+      );
+
+    const stripSubtitleMarkup = (text: string): string =>
+      String(text || '')
+        .replace(/<\/?(i|b|u|font|c|ruby|rt|v)(?:\s+[^>]*)?>/gi, '')
+        .replace(/<[^>]+>/g, '');
+
+    const sanitizeCueText = (text: string): string => {
+      const normalized = String(text || '').replace(/\r+/g, '').replace(/^\uFEFF/, '');
+      return normalized
+        .split('\n')
+        .map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return '';
+          if (/^WEBVTT$/i.test(trimmed)) return line;
+          if (/^(NOTE|STYLE|REGION)(\s|$)/i.test(trimmed)) return line;
+          if (/^\d+$/.test(trimmed)) return line;
+          if (/-->/.test(line)) return line;
+          return stripSubtitleMarkup(line);
+        })
+        .join('\n');
+    };
 
     const srtToVtt = (text: string): string => {
-      const clean = normalizeCueTimings(text.replace(/\r+/g, '').replace(/^\uFEFF/, ''));
+      const clean = sanitizeCueText(normalizeCueTimings(text));
       return `WEBVTT\n\n${clean}`;
     };
 
     const assTimeToVtt = (t: string): string => {
-      const m = String(t || '').trim().match(/^(\d+):(\d{1,2}):(\d{1,2})[.](\d{1,2})$/);
+      const m = String(t || '')
+        .trim()
+        .match(/^(\d+):(\d{1,2}):(\d{1,2})[.](\d{1,2})$/);
       if (!m) return '';
-      return `${String(Number(m[1])).padStart(2,'0')}:${String(Number(m[2])).padStart(2,'0')}:${String(Number(m[3])).padStart(2,'0')}.${String(Math.round(Number(`0.${m[4] || '0'}`) * 1000)).padStart(3,'0')}`;
+      return `${String(Number(m[1])).padStart(2, '0')}:${String(Number(m[2])).padStart(2, '0')}:${String(Number(m[3])).padStart(2, '0')}.${String(Math.round(Number(`0.${m[4] || '0'}`) * 1000)).padStart(3, '0')}`;
     };
 
     const assToVtt = (text: string): string => {
-      const lines = text.replace(/\r+/g, '').replace(/^\uFEFF/, '').split('\n');
+      const lines = text
+        .replace(/\r+/g, '')
+        .replace(/^\uFEFF/, '')
+        .split('\n');
       const cues: string[] = [];
       let idx = 1;
       for (const line of lines) {
-        const m = line.match(/^Dialogue:\s*[^,]*,([^,]+),([^,]+),[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(.*)$/i);
+        const m = line.match(
+          /^Dialogue:\s*[^,]*,([^,]+),([^,]+),[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(.*)$/i,
+        );
         if (!m) continue;
-        const s = assTimeToVtt(m[1]); const e = assTimeToVtt(m[2]);
+        const s = assTimeToVtt(m[1]);
+        const e = assTimeToVtt(m[2]);
         if (!s || !e) continue;
-        const txt = String(m[3] || '').replace(/\{[^}]*\}/g, '').replace(/\\N/gi, '\n').replace(/\\n/g, '\n').trim();
+        const txt = String(m[3] || '')
+          .replace(/\{[^}]*\}/g, '')
+          .replace(/\\N/gi, '\n')
+          .replace(/\\n/g, '\n')
+          .replace(/<[^>]+>/g, '')
+          .trim();
         if (!txt) continue;
         cues.push(`${idx++}\n${s} --> ${e}\n${txt}`);
       }
@@ -906,9 +1083,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const { getCachedSubtitleText } = await import('./browserRuntimeExtractor');
       const cachedSubtitle = getCachedSubtitleText(url);
       if (cachedSubtitle) {
-        let raw = cachedSubtitle;
+        let raw = sanitizeCueText(cachedSubtitle);
         const isVtt = raw.trim().toLowerCase().startsWith('webvtt');
-        if (!isVtt && raw.includes('-->')) raw = `WEBVTT\n\n${raw.replace(/\r+/g, '').replace(/^\uFEFF/, '')}`;
+        if (!isVtt && raw.includes('-->'))
+          raw = `WEBVTT\n\n${raw.replace(/\r+/g, '').replace(/^\uFEFF/, '')}`;
         return reply
           .header('Content-Type', 'text/vtt; charset=utf-8')
           .header('Access-Control-Allow-Origin', '*')
@@ -931,7 +1109,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       for (const targetRequest of targetRequests) {
         for (const candidateReferer of refererCandidates) {
           let candidateOrigin = candidateReferer;
-          try { candidateOrigin = `${new URL(candidateReferer).protocol}//${new URL(candidateReferer).host}`; } catch { /* ignore */ }
+          try {
+            candidateOrigin = `${new URL(candidateReferer).protocol}//${new URL(candidateReferer).host}`;
+          } catch {
+            /* ignore */
+          }
           for (const proxyUrl of chain) {
             try {
               const { toAxiosProxyOptions: tap } = await import('./outboundProxy');
@@ -950,7 +1132,8 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                   'Sec-Fetch-Dest': 'empty',
                   'Sec-Fetch-Mode': 'cors',
                   'Sec-Fetch-Site': 'cross-site',
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                  'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                 },
                 maxRedirects: 5,
                 validateStatus: (s: number) => s < 400,
@@ -979,23 +1162,37 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       let vtt = '';
       const trimmed = raw.trim();
       // AnimeSalt base64-encoded subtitles
-      if (!trimmed.includes('-->') && trimmed.length > 50 && /^[a-z0-9+/= \n\r\t]+$/i.test(trimmed)) {
+      if (
+        !trimmed.includes('-->') &&
+        trimmed.length > 50 &&
+        /^[a-z0-9+/= \n\r\t]+$/i.test(trimmed)
+      ) {
         try {
-          const decoded = Buffer.from(trimmed.replace(/\s/g, ''), 'base64').toString('utf8');
+          const decoded = Buffer.from(trimmed.replace(/\s/g, ''), 'base64').toString(
+            'utf8',
+          );
           if (decoded.includes('-->')) raw = decoded;
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       const hasCue = raw.includes('-->');
       const hasSrt = /\d+:\d{1,2}:\d{1,2}[.,]\d{1,3}/.test(raw);
       const isAss = /^\s*\[Script Info\]/im.test(raw) || /^\s*\[Events\]/im.test(raw);
-      const isSrt = /^\d+:\d{1,2}:\d{1,2}[,.]\d{1,3}$/.test(raw.split('\n').find(l => l.includes(',')) || '') || (hasCue && hasSrt && !raw.trim().toLowerCase().startsWith('webvtt'));
+      const isSrt =
+        /^\d+:\d{1,2}:\d{1,2}[,.]\d{1,3}$/.test(
+          raw.split('\n').find((l) => l.includes(',')) || '',
+        ) ||
+        (hasCue && hasSrt && !raw.trim().toLowerCase().startsWith('webvtt'));
       const isVtt = raw.trim().toLowerCase().startsWith('webvtt');
 
       if (isAss) vtt = assToVtt(raw);
       else if (isSrt) vtt = srtToVtt(raw);
-      else if (isVtt) vtt = normalizeCueTimings(raw.replace(/\r+/g, '').replace(/^\uFEFF/, ''));
-      else if (hasCue) vtt = `WEBVTT\n\n${normalizeCueTimings(raw.replace(/\r+/g, '').replace(/^\uFEFF/, ''))}`;
+      else if (isVtt)
+        vtt = sanitizeCueText(normalizeCueTimings(raw));
+      else if (hasCue)
+        vtt = `WEBVTT\n\n${sanitizeCueText(normalizeCueTimings(raw))}`;
       else vtt = raw;
 
       reply

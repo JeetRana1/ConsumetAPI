@@ -4,11 +4,11 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 type AxiosProxyValue =
   | false
   | {
-    protocol?: string;
-    host: string;
-    port: number;
-    auth?: { username: string; password: string };
-  };
+      protocol?: string;
+      host: string;
+      port: number;
+      auth?: { username: string; password: string };
+    };
 
 type AxiosProxyOptions = {
   proxy?: AxiosProxyValue;
@@ -64,9 +64,17 @@ const getRemoteProxyList = async (): Promise<string[]> => {
   }
 
   try {
-    const url = String(process.env.PUBLIC_PROXY_LIST_URL || FALLBACK_PROXY_LIST_URL).trim();
-    const ttlMs = Math.max(60_000, Number(process.env.PUBLIC_PROXY_CACHE_TTL_MS || 300_000));
-    const timeoutMs = Math.max(2_000, Number(process.env.PUBLIC_PROXY_FETCH_TIMEOUT_MS || 7_000));
+    const url = String(
+      process.env.PUBLIC_PROXY_LIST_URL || FALLBACK_PROXY_LIST_URL,
+    ).trim();
+    const ttlMs = Math.max(
+      60_000,
+      Number(process.env.PUBLIC_PROXY_CACHE_TTL_MS || 300_000),
+    );
+    const timeoutMs = Math.max(
+      2_000,
+      Number(process.env.PUBLIC_PROXY_FETCH_TIMEOUT_MS || 7_000),
+    );
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);

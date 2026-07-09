@@ -16,18 +16,22 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
   fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
     const query = decodeURIComponent((request.params as { query: string }).query);
-    const forceRefresh = String((request.query as { forceRefresh?: string }).forceRefresh || '').toLowerCase() === 'true';
+    const forceRefresh =
+      String(
+        (request.query as { forceRefresh?: string }).forceRefresh || '',
+      ).toLowerCase() === 'true';
 
     try {
       const cacheKey = `sports:racing:search:${query}:${forceRefresh ? 'force' : 'cache'}`;
-      let res = redis && !forceRefresh
-        ? await cache.fetch(
-            redis as Redis,
-            cacheKey,
-            async () => await racing.search(query),
-            REDIS_TTL,
-          )
-        : await racing.fetchCatalogLatest({ query, forceRefresh });
+      let res =
+        redis && !forceRefresh
+          ? await cache.fetch(
+              redis as Redis,
+              cacheKey,
+              async () => await racing.search(query),
+              REDIS_TTL,
+            )
+          : await racing.fetchCatalogLatest({ query, forceRefresh });
 
       reply.status(200).send(res);
     } catch (error: any) {
@@ -43,7 +47,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     }
 
     try {
-      reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      reply.header(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate',
+      );
       reply.header('Pragma', 'no-cache');
       reply.header('Expires', '0');
 

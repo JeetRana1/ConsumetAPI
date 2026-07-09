@@ -19,7 +19,8 @@ type ExtractedSource = {
 
 export class Racing extends MovieParser {
   override readonly name = 'Racing';
-  override readonly baseUrl = process.env.RACING_MEDIA_BASE_URL || 'https://fullraces.com';
+  override readonly baseUrl =
+    process.env.RACING_MEDIA_BASE_URL || 'https://fullraces.com';
   override readonly logo = 'https://fullraces.com/images/logo.png';
   override readonly classPath = 'SPORTS.Racing';
   override readonly supportedTypes = new Set([TvType.MOVIE, TvType.TVSERIES]);
@@ -67,11 +68,17 @@ export class Racing extends MovieParser {
           if (err.response?.status === 404) {
             break;
           }
-          console.warn(`[racing] Error fetching page ${page} of ${categoryPath}:`, err.message);
+          console.warn(
+            `[racing] Error fetching page ${page} of ${categoryPath}:`,
+            err.message,
+          );
           break;
         }
 
-        const { items: pageItems } = this.parseCatalogPage(html, isGeneralPage ? query : '');
+        const { items: pageItems } = this.parseCatalogPage(
+          html,
+          isGeneralPage ? query : '',
+        );
         if (!pageItems.length) break;
 
         for (const item of pageItems) {
@@ -124,21 +131,31 @@ export class Racing extends MovieParser {
 
     if (wanted && mapping[wanted]) return mapping[wanted];
     if (wanted) {
-      const slug = wanted.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+      const slug = wanted
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
       return `/${slug}`;
     }
     return this.catalogPath || '/';
   }
 
   private buildCatalogPageUrl(categoryPath: string, page = 1): string {
-    const normalizedPath = categoryPath.startsWith('/') ? categoryPath : `/${categoryPath}`;
+    const normalizedPath = categoryPath.startsWith('/')
+      ? categoryPath
+      : `/${categoryPath}`;
     const cleanBase = this.baseUrl.replace(/\/+$/, '');
     const cleanPath = normalizedPath === '/' ? '' : normalizedPath.replace(/\/+$/, '');
     if (page <= 1) return `${cleanBase}${cleanPath || '/'}`;
     return `${cleanBase}${cleanPath || '/'}${cleanPath.includes('?') ? '&' : '?'}page${page}`;
   }
 
-  private extractNextPageUrl(html: string, currentUrl: string, expectedPage: number, categoryPath: string): string {
+  private extractNextPageUrl(
+    html: string,
+    currentUrl: string,
+    expectedPage: number,
+    categoryPath: string,
+  ): string {
     const $ = cheerio.load(html);
     const candidates: string[] = [];
 
@@ -150,7 +167,11 @@ export class Racing extends MovieParser {
     for (const href of candidates) {
       const normalized = this.normalizeUrl(href);
       if (!normalized || normalized === currentUrl) continue;
-      if (/[?&]page\d+\b/i.test(normalized) || /[?&]page=\d+\b/i.test(normalized) || /\/page\/\d+/i.test(normalized)) {
+      if (
+        /[?&]page\d+\b/i.test(normalized) ||
+        /[?&]page=\d+\b/i.test(normalized) ||
+        /\/page\/\d+/i.test(normalized)
+      ) {
         return normalized;
       }
     }
@@ -158,20 +179,28 @@ export class Racing extends MovieParser {
     return this.buildCatalogPageUrl(categoryPath, expectedPage);
   }
 
-  private parseCatalogPage(html: string, query = ''): { items: any[]; hasCurrentYear: boolean } {
+  private parseCatalogPage(
+    html: string,
+    query = '',
+  ): { items: any[]; hasCurrentYear: boolean } {
     const $ = cheerio.load(html);
     const wanted = this.normalizeQuery(query);
     const items: any[] = [];
     let hasCurrentYear = false;
     const currentYear = new Date().getFullYear();
 
-    $('.short_item, .post-item, .card, article, [data-provider-card], .post, .grid-item, .elementor-post, .wp-block-post').each((_, el) => {
+    $(
+      '.short_item, .post-item, .card, article, [data-provider-card], .post, .grid-item, .elementor-post, .wp-block-post',
+    ).each((_, el) => {
       const root = $(el);
       const dateText = this.extractCardDateText(root);
       const year = this.extractYearFromDateText(dateText);
       if (year !== null && year >= currentYear) hasCurrentYear = true;
 
-      let title = root.find('h3, h2, h1, h4, .entry-title, .post-title, a[title]').first().text() || root.find('a').first().text() || '';
+      let title =
+        root.find('h3, h2, h1, h4, .entry-title, .post-title, a[title]').first().text() ||
+        root.find('a').first().text() ||
+        '';
       title = title.trim().replace(/\s+/g, ' ');
       if (!title) return;
 
@@ -179,9 +208,24 @@ export class Racing extends MovieParser {
       id = this.normalizeUrlPath(id);
       if (!id) return;
 
-      const image = this.normalizeUrl(root.find('img').first().attr('src') || root.find('img').first().attr('data-src') || '');
-      const category = (root.find('.short_cat, .category, .tag, .term, .series, .label, [data-category]').first().text() || '').trim().replace(/\s+/g, ' ');
-      const duration = (root.find('.duration, .runtime, .time, time').first().text() || '').trim().replace(/\s+/g, ' ');
+      const image = this.normalizeUrl(
+        root.find('img').first().attr('src') ||
+          root.find('img').first().attr('data-src') ||
+          '',
+      );
+      const category = (
+        root
+          .find('.short_cat, .category, .tag, .term, .series, .label, [data-category]')
+          .first()
+          .text() || ''
+      )
+        .trim()
+        .replace(/\s+/g, ' ');
+      const duration = (
+        root.find('.duration, .runtime, .time, time').first().text() || ''
+      )
+        .trim()
+        .replace(/\s+/g, ' ');
 
       if (wanted && !`${title} ${category}`.toLowerCase().includes(wanted)) return;
 
@@ -226,7 +270,9 @@ export class Racing extends MovieParser {
         transformResponse: [(data) => data],
         decompress: true,
       });
-      const list = this.parseCatalogPage(this.precleanHtml(String(response.data || ''))).items;
+      const list = this.parseCatalogPage(
+        this.precleanHtml(String(response.data || '')),
+      ).items;
       return {
         id: mediaId,
         title: list[0]?.title || 'Racing Event',
@@ -303,9 +349,11 @@ export class Racing extends MovieParser {
         decompress: true,
       });
 
-      const html = this.truncateMainDocument(this.precleanHtml(String(response.data || '')));
+      const html = this.truncateMainDocument(
+        this.precleanHtml(String(response.data || '')),
+      );
       const embedUrl = this.extractEmbeddedIframeUrlFast(html, pageUrl);
-      
+
       let extractedSource: ExtractedSource | null = null;
 
       if (!embedUrl) {
@@ -327,7 +375,11 @@ export class Racing extends MovieParser {
           return { sources: [] } as ISource;
         }
 
-        extractedSource = this.extractStreamSourceFromEmbed(iframeHtml, embedUrl, pageUrl);
+        extractedSource = this.extractStreamSourceFromEmbed(
+          iframeHtml,
+          embedUrl,
+          pageUrl,
+        );
         if (!extractedSource) {
           console.log(`[racing] No stream source found in embed: ${embedUrl}`);
           return { sources: [] } as ISource;
@@ -359,20 +411,38 @@ export class Racing extends MovieParser {
     for (const blob of blobs) {
       const manifest = this.extractManifestUrlFast(blob);
       if (manifest) {
-        return { mediaUrl: manifest, referer: pageUrl, userAgent: this.defaultUserAgent() };
+        return {
+          mediaUrl: manifest,
+          referer: pageUrl,
+          userAgent: this.defaultUserAgent(),
+        };
       }
 
-      const flashvars = this.extractNamedValue(blob, /(?:flashvars|data-options|playerConfig|videoConfig|sourceConfig)\s*[:=]\s*(['"])([\s\S]*?)\1/i);
+      const flashvars = this.extractNamedValue(
+        blob,
+        /(?:flashvars|data-options|playerConfig|videoConfig|sourceConfig)\s*[:=]\s*(['"])([\s\S]*?)\1/i,
+      );
       if (flashvars) {
         const hinted = this.extractUrlFromStringFast(flashvars);
-        if (hinted) return { requestUrl: hinted, referer: pageUrl, userAgent: this.defaultUserAgent() };
+        if (hinted)
+          return {
+            requestUrl: hinted,
+            referer: pageUrl,
+            userAgent: this.defaultUserAgent(),
+          };
       }
 
       const urlBridge =
-        this.extractNamedValue(blob, /(?:file|src|source|manifest|streamUrl|hls|m3u8|mp4)\s*[:=]\s*(['"])(https?:\/\/[^'"]+)\1/i) ||
-        this.extractUrlFromStringFast(blob);
+        this.extractNamedValue(
+          blob,
+          /(?:file|src|source|manifest|streamUrl|hls|m3u8|mp4)\s*[:=]\s*(['"])(https?:\/\/[^'"]+)\1/i,
+        ) || this.extractUrlFromStringFast(blob);
       if (urlBridge) {
-        return { requestUrl: urlBridge, referer: pageUrl, userAgent: this.defaultUserAgent() };
+        return {
+          requestUrl: urlBridge,
+          referer: pageUrl,
+          userAgent: this.defaultUserAgent(),
+        };
       }
     }
 
@@ -407,7 +477,9 @@ export class Racing extends MovieParser {
       if (this.isLikelyEmbedUrl(candidate, pageUrl, priority)) return candidate;
     }
 
-    return candidates.find((candidate) => this.isLikelyEmbedUrl(candidate, pageUrl)) || '';
+    return (
+      candidates.find((candidate) => this.isLikelyEmbedUrl(candidate, pageUrl)) || ''
+    );
   }
 
   private getPriorityEmbedPatterns(): RegExp[] {
@@ -423,7 +495,11 @@ export class Racing extends MovieParser {
     ];
   }
 
-  private isLikelyEmbedUrl(url: string, pageUrl: string, patterns = this.getPriorityEmbedPatterns()): boolean {
+  private isLikelyEmbedUrl(
+    url: string,
+    pageUrl: string,
+    patterns = this.getPriorityEmbedPatterns(),
+  ): boolean {
     const value = String(url || '').trim();
     if (!value) return false;
     if (this.isDirectMediaUrl(value)) return false;
@@ -453,10 +529,21 @@ export class Racing extends MovieParser {
     }
   }
 
-  private extractStreamSourceFromEmbed(iframeHtml: string, embedUrl: string, pageUrl: string): ExtractedSource | null {
-    const cleaned = this.truncateMainDocument(this.decodeHtmlEntities(String(iframeHtml || '')));
+  private extractStreamSourceFromEmbed(
+    iframeHtml: string,
+    embedUrl: string,
+    pageUrl: string,
+  ): ExtractedSource | null {
+    const cleaned = this.truncateMainDocument(
+      this.decodeHtmlEntities(String(iframeHtml || '')),
+    );
     const $embed = cheerio.load(cleaned);
-    const target = this.extractStreamUrlFromEmbedDocument($embed, cleaned, embedUrl, pageUrl);
+    const target = this.extractStreamUrlFromEmbedDocument(
+      $embed,
+      cleaned,
+      embedUrl,
+      pageUrl,
+    );
     if (!target) return null;
 
     return {
@@ -467,18 +554,30 @@ export class Racing extends MovieParser {
     };
   }
 
-  private extractStreamUrlFromEmbedDocument($embed: cheerio.CheerioAPI, iframeHtml: string, embedUrl: string, pageUrl: string): string {
+  private extractStreamUrlFromEmbedDocument(
+    $embed: cheerio.CheerioAPI,
+    iframeHtml: string,
+    embedUrl: string,
+    pageUrl: string,
+  ): string {
     const prioritizedBlocks: string[] = [];
     let directTarget = '';
 
-    $embed('[data-options], [data-json], [data-config], [flashvars], script, source, video, iframe').each((index, el) => {
+    $embed(
+      '[data-options], [data-json], [data-config], [flashvars], script, source, video, iframe',
+    ).each((index, el) => {
       const node = $embed(el);
       const attribs = ((el as any).attribs || {}) as Record<string, string>;
       const joinedAttrs = Object.values(attribs).filter(Boolean).join(' ');
       const text = node.text();
       const src = node.attr('src') || '';
 
-      const directPayloads = [attribs['data-options'], attribs['data-json'], attribs['data-config'], attribs.flashvars].filter(Boolean) as string[];
+      const directPayloads = [
+        attribs['data-options'],
+        attribs['data-json'],
+        attribs['data-config'],
+        attribs.flashvars,
+      ].filter(Boolean) as string[];
       for (const payload of directPayloads) {
         const parsed = this.parseJsonPayload(payload);
         if (parsed) {
@@ -517,9 +616,7 @@ export class Racing extends MovieParser {
     try {
       return JSON.parse(trimmed);
     } catch {
-      const cleaned = trimmed
-        .replace(/^[^{[]+/, '')
-        .replace(/[^}\]]+$/, '');
+      const cleaned = trimmed.replace(/^[^{[]+/, '').replace(/[^}\]]+$/, '');
       try {
         return JSON.parse(cleaned);
       } catch {
@@ -528,7 +625,11 @@ export class Racing extends MovieParser {
     }
   }
 
-  private extractUrlFromJsonishPayloadFast(blob: string, embedUrl: string, pageUrl: string): string {
+  private extractUrlFromJsonishPayloadFast(
+    blob: string,
+    embedUrl: string,
+    pageUrl: string,
+  ): string {
     const text = this.decodeHtmlEntities(String(blob || ''));
     const jsonPatterns = [
       /(?:data-options|flashvars|playerConfig|videoConfig|sourceConfig)\s*=\s*["']([^"']+)["']/i,
@@ -573,8 +674,12 @@ export class Racing extends MovieParser {
   private parseLooseJsonPayloadFast(text: string): any {
     const source = this.normalizeJsonLikeString(String(text || ''));
     const objectMatches = [
-      source.match(/(?:data-options|flashvars|playerConfig|videoConfig|sourceConfig)\s*[:=]\s*(\{[\s\S]*\})/i),
-      source.match(/window\.(?:playerConfig|videoConfig|sourceConfig)\s*=\s*(\{[\s\S]*\});?/i),
+      source.match(
+        /(?:data-options|flashvars|playerConfig|videoConfig|sourceConfig)\s*[:=]\s*(\{[\s\S]*\})/i,
+      ),
+      source.match(
+        /window\.(?:playerConfig|videoConfig|sourceConfig)\s*=\s*(\{[\s\S]*\});?/i,
+      ),
     ];
 
     for (const match of objectMatches) {
@@ -605,7 +710,16 @@ export class Racing extends MovieParser {
     }
 
     if (typeof value === 'object') {
-      const preferredKeys = ['hlsManifestUrl', 'manifest', 'm3u8', 'streamUrl', 'file', 'src', 'url', 'playlist'];
+      const preferredKeys = [
+        'hlsManifestUrl',
+        'manifest',
+        'm3u8',
+        'streamUrl',
+        'file',
+        'src',
+        'url',
+        'playlist',
+      ];
       for (const key of preferredKeys) {
         const candidate = value[key];
         const found = this.findStreamUrlInObject(candidate);
@@ -660,8 +774,13 @@ export class Racing extends MovieParser {
     return '';
   }
 
-  private async resolveStreamHint(hint: StreamHint, pageUrl: string): Promise<ExtractedSource | null> {
-    const primaryUrl = this.normalizeUrl(this.sanitizeUrl(hint.mediaUrl || hint.requestUrl || ''));
+  private async resolveStreamHint(
+    hint: StreamHint,
+    pageUrl: string,
+  ): Promise<ExtractedSource | null> {
+    const primaryUrl = this.normalizeUrl(
+      this.sanitizeUrl(hint.mediaUrl || hint.requestUrl || ''),
+    );
     if (!primaryUrl) return null;
 
     if (this.isDirectMediaUrl(primaryUrl)) {
@@ -757,15 +876,29 @@ export class Racing extends MovieParser {
     if (!input) return '';
     return input
       .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/<script\b[^>]*>(?:[\s\S]*?)(?:analytics|tracking|gtag|googletag|fbq|adsbygoogle|dataLayer)(?:[\s\S]*?)<\/script>/gi, '')
-      .replace(/<script\b[^>]*src=["'][^"']*(?:analytics|tracking|gtag|googletag|doubleclick|adservice|adsbygoogle)[^"']*["'][^>]*><\/script>/gi, '');
+      .replace(
+        /<script\b[^>]*>(?:[\s\S]*?)(?:analytics|tracking|gtag|googletag|fbq|adsbygoogle|dataLayer)(?:[\s\S]*?)<\/script>/gi,
+        '',
+      )
+      .replace(
+        /<script\b[^>]*src=["'][^"']*(?:analytics|tracking|gtag|googletag|doubleclick|adservice|adsbygoogle)[^"']*["'][^>]*><\/script>/gi,
+        '',
+      );
   }
 
   private truncateMainDocument(html: string): string {
     const input = String(html || '');
     if (!input) return '';
 
-    const startMarkers = ['<main', '<article', '<section', '<div class="player', '<div id="player', '<iframe', '<script'];
+    const startMarkers = [
+      '<main',
+      '<article',
+      '<section',
+      '<div class="player',
+      '<div id="player',
+      '<iframe',
+      '<script',
+    ];
     let start = -1;
     for (const marker of startMarkers) {
       const idx = input.indexOf(marker);
@@ -802,7 +935,9 @@ export class Racing extends MovieParser {
   }
 
   private normalizeQuery(query: string): string {
-    const lowered = String(query || '').toLowerCase().trim();
+    const lowered = String(query || '')
+      .toLowerCase()
+      .trim();
     return lowered === 'all' || lowered === 'racing' || lowered === 'f1' ? '' : lowered;
   }
 
@@ -814,7 +949,9 @@ export class Racing extends MovieParser {
     ];
 
     for (const candidate of candidates) {
-      const normalized = String(candidate || '').trim().replace(/\s+/g, ' ');
+      const normalized = String(candidate || '')
+        .trim()
+        .replace(/\s+/g, ' ');
       if (normalized && /\b\d{4}\b/.test(normalized)) return normalized;
     }
 
@@ -908,13 +1045,20 @@ export class Racing extends MovieParser {
     const source = this.truncateMainDocument(String(html || ''));
 
     const manifestMatch =
-      source.match(/["']hlsManifestUrl["']\s*:\s*["'](https?:\/\/[^"']+?\.m3u8[^"']*)["']/i) ||
-      source.match(/hlsManifestUrl=([^&"'\s]+?\.m3u8[^&"'\s]*)/i);
+      source.match(
+        /["']hlsManifestUrl["']\s*:\s*["'](https?:\/\/[^"']+?\.m3u8[^"']*)["']/i,
+      ) || source.match(/hlsManifestUrl=([^&"'\s]+?\.m3u8[^&"'\s]*)/i);
     if (manifestMatch?.[1]) {
-      return { mediaUrl: this.normalizeUrl(this.sanitizeUrl(manifestMatch[1])), referer: pageUrl, userAgent: this.defaultUserAgent() };
+      return {
+        mediaUrl: this.normalizeUrl(this.sanitizeUrl(manifestMatch[1])),
+        referer: pageUrl,
+        userAgent: this.defaultUserAgent(),
+      };
     }
 
-    const playerBlobMatch = source.match(/(?:flashvars|data-options|playerConfig|videoConfig|sourceConfig)\s*[:=]\s*(['"])([\s\S]*?)\1/i);
+    const playerBlobMatch = source.match(
+      /(?:flashvars|data-options|playerConfig|videoConfig|sourceConfig)\s*[:=]\s*(['"])([\s\S]*?)\1/i,
+    );
     if (playerBlobMatch?.[2]) {
       const payload = this.decodeHtmlEntities(playerBlobMatch[2]);
       const direct = this.extractTargetsFromStringFast(payload)[0];
@@ -923,9 +1067,15 @@ export class Racing extends MovieParser {
       }
     }
 
-    const urlMatch = source.match(/https?:\/\/[^"'`\s>]+?\.(?:m3u8|mp4)(?:\?[^"'`\s>]*)?/i);
+    const urlMatch = source.match(
+      /https?:\/\/[^"'`\s>]+?\.(?:m3u8|mp4)(?:\?[^"'`\s>]*)?/i,
+    );
     if (urlMatch?.[0]) {
-      return { mediaUrl: this.normalizeUrl(this.sanitizeUrl(urlMatch[0])), referer: pageUrl, userAgent: this.defaultUserAgent() };
+      return {
+        mediaUrl: this.normalizeUrl(this.sanitizeUrl(urlMatch[0])),
+        referer: pageUrl,
+        userAgent: this.defaultUserAgent(),
+      };
     }
 
     return null;

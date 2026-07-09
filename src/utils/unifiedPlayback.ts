@@ -56,7 +56,10 @@ const toNumericQualityScore = (quality: string): number => {
 const detectSourceType = (source: GenericSource, url: string): UnifiedSourceType => {
   const lower = url.toLowerCase();
   const embed = Boolean(source?.isEmbed);
-  const isM3u8 = Boolean(source?.isM3U8) || /\.m3u8(\?|$)/i.test(lower) || /\/m3u8-proxy\?/i.test(lower);
+  const isM3u8 =
+    Boolean(source?.isM3U8) ||
+    /\.m3u8(\?|$)/i.test(lower) ||
+    /\/m3u8-proxy\?/i.test(lower);
   const isDash = Boolean(source?.isDASH) || /\.mpd(\?|$)/i.test(lower);
   const isMp4 = /\.mp4(\?|$)/i.test(lower);
 
@@ -143,7 +146,9 @@ export const buildUnifiedPlaybackProfile = (
   };
 };
 
-export const withUnifiedPlayback = <T extends { sources?: unknown; headers?: Record<string, string> }>(
+export const withUnifiedPlayback = <
+  T extends { sources?: unknown; headers?: Record<string, string> },
+>(
   payload: T,
 ): T & { playback: UnifiedPlaybackProfile } => {
   const headers = payload?.headers;

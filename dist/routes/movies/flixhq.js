@@ -211,13 +211,17 @@ const routes = async (fastify, options) => {
     fastify.get('/watch', async (request, reply) => {
         const episodeId = request.query.episodeId;
         const server = request.query.server || 'vidking';
-        const serverName = String(server || '').trim().toLowerCase();
+        const serverName = String(server || '')
+            .trim()
+            .toLowerCase();
         const hasExplicitServer = typeof request.query.server !== 'undefined' &&
             serverName !== 'auto';
         const strictServer = String(request.query.strictServer || '').toLowerCase() === 'true' || hasExplicitServer;
         const allowEmbedFallback = String(request.query.allowEmbedFallback || '').toLowerCase() === 'true';
         const extractionTimeoutMs = Number(request.query.extractionTimeoutMs);
-        const requestedExtractionTimeoutMs = Number.isFinite(extractionTimeoutMs) && extractionTimeoutMs > 0 ? extractionTimeoutMs : undefined;
+        const requestedExtractionTimeoutMs = Number.isFinite(extractionTimeoutMs) && extractionTimeoutMs > 0
+            ? extractionTimeoutMs
+            : undefined;
         if (typeof episodeId === 'undefined') {
             return reply.status(400).send({ message: 'episodeId is required' });
         }
@@ -241,8 +245,13 @@ const routes = async (fastify, options) => {
                     allowEmbedFallback,
                     extractionTimeoutMs: requestedExtractionTimeoutMs,
                 });
-                if (main_1.redis && Array.isArray(res?.sources) && res.sources.length > 0 && !res?.error) {
-                    main_1.redis.setex(watchCacheKey, main_1.REDIS_TTL, JSON.stringify(res)).catch(() => { });
+                if (main_1.redis &&
+                    Array.isArray(res?.sources) &&
+                    res.sources.length > 0 &&
+                    !res?.error) {
+                    main_1.redis
+                        .setex(watchCacheKey, main_1.REDIS_TTL, JSON.stringify(res))
+                        .catch(() => { });
                 }
             }
             if (res && res.sources) {

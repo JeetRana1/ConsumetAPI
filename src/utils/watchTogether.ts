@@ -45,7 +45,10 @@ const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 function createRoomCode() {
   let code = '';
   do {
-    code = Array.from({ length: 6 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
+    code = Array.from(
+      { length: 6 },
+      () => alphabet[Math.floor(Math.random() * alphabet.length)],
+    ).join('');
   } while (rooms.has(code));
   return code;
 }
@@ -67,10 +70,17 @@ function publicRoomList() {
 }
 
 function roomSockets(code: string) {
-  return [...clients.entries()].filter(([, state]) => state.roomCode === code).map(([socket]) => socket);
+  return [...clients.entries()]
+    .filter(([, state]) => state.roomCode === code)
+    .map(([socket]) => socket);
 }
 
-function broadcast(code: string, type: string, payload: Record<string, any> = {}, except?: WatchSocket) {
+function broadcast(
+  code: string,
+  type: string,
+  payload: Record<string, any> = {},
+  except?: WatchSocket,
+) {
   roomSockets(code).forEach((socket) => {
     if (socket !== except) send(socket, type, payload);
   });
@@ -78,11 +88,15 @@ function broadcast(code: string, type: string, payload: Record<string, any> = {}
 
 function broadcastPublicRooms() {
   const roomsPayload = publicRoomList();
-  clients.forEach((_state, socket) => send(socket, 'rooms:public', { rooms: roomsPayload }));
+  clients.forEach((_state, socket) =>
+    send(socket, 'rooms:public', { rooms: roomsPayload }),
+  );
 }
 
 function getRoomStateSnapshot(room: WatchRoom): RoomState {
-  const elapsedSeconds = room.state.paused ? 0 : Math.max(0, (Date.now() - room.state.updatedAt) / 1000);
+  const elapsedSeconds = room.state.paused
+    ? 0
+    : Math.max(0, (Date.now() - room.state.updatedAt) / 1000);
   return {
     ...room.state,
     currentTime: Math.max(0, Number(room.state.currentTime || 0) + elapsedSeconds),
@@ -91,11 +105,12 @@ function getRoomStateSnapshot(room: WatchRoom): RoomState {
 }
 
 function normalizeMediaRoute(msg: any) {
-  const source = typeof msg.params === 'object' && msg.params
-    ? msg.params
-    : typeof msg.route === 'object' && msg.route
-      ? msg.route
-      : {};
+  const source =
+    typeof msg.params === 'object' && msg.params
+      ? msg.params
+      : typeof msg.route === 'object' && msg.route
+        ? msg.route
+        : {};
   const route: Record<string, string> = {};
 
   Object.entries(source).forEach(([key, value]) => {
@@ -147,7 +162,10 @@ function leaveRoom(socket: WatchSocket) {
   }
 
   room.members.delete(state.id);
-  broadcast(room.code, 'room:members', { count: room.members.size, members: [...room.members.values()] });
+  broadcast(room.code, 'room:members', {
+    count: room.members.size,
+    members: [...room.members.values()],
+  });
   delete state.roomCode;
   delete state.role;
   broadcastPublicRooms();
@@ -189,7 +207,9 @@ export function registerWatchTogether(fastify: FastifyInstance) {
 
       if (msg.type === 'room:create') {
         const code = createRoomCode();
-        state.name = String(msg.name || `Host-${state.id.slice(0, 4).toUpperCase()}`).slice(0, 32);
+        state.name = String(
+          msg.name || `Host-${state.id.slice(0, 4).toUpperCase()}`,
+        ).slice(0, 32);
         state.roomCode = code;
         state.role = 'host';
 
@@ -199,7 +219,9 @@ export function registerWatchTogether(fastify: FastifyInstance) {
           isPublic: Boolean(msg.isPublic),
           title: String(msg.title || 'Watch Party').slice(0, 120),
           createdAt: Date.now(),
-          members: new Map([[state.id, { id: state.id, name: state.name, role: 'host' }]]),
+          members: new Map([
+            [state.id, { id: state.id, name: state.name, role: 'host' }],
+          ]),
           state: {
             paused: typeof msg.paused === 'boolean' ? msg.paused : true,
             currentTime: Number(msg.currentTime || 0) || 0,
@@ -212,7 +234,12 @@ export function registerWatchTogether(fastify: FastifyInstance) {
         send(socket, 'room:created', {
           code,
           role: 'host',
-          room: { code, title: room.title, isPublic: room.isPublic, count: room.members.size },
+          room: {
+            code,
+            title: room.title,
+            isPublic: room.isPublic,
+            count: room.members.size,
+          },
           state: getRoomStateSnapshot(room),
         });
         broadcastPublicRooms();
@@ -220,7 +247,9 @@ export function registerWatchTogether(fastify: FastifyInstance) {
       }
 
       if (msg.type === 'room:join') {
-        const code = String(msg.code || '').trim().toUpperCase();
+        const code = String(msg.code || '')
+          .trim()
+          .toUpperCase();
         const room = rooms.get(code);
         if (!room) {
           send(socket, 'room:error', { message: 'Room not found' });
@@ -234,11 +263,19 @@ export function registerWatchTogether(fastify: FastifyInstance) {
         send(socket, 'room:joined', {
           code,
           role: 'guest',
-          room: { code, title: room.title, isPublic: room.isPublic, count: room.members.size },
+          room: {
+            code,
+            title: room.title,
+            isPublic: room.isPublic,
+            count: room.members.size,
+          },
           state: getRoomStateSnapshot(room),
           members: [...room.members.values()],
         });
-        broadcast(code, 'room:members', { count: room.members.size, members: [...room.members.values()] });
+        broadcast(code, 'room:members', {
+          count: room.members.size,
+          members: [...room.members.values()],
+        });
         broadcastPublicRooms();
         return;
       }
@@ -252,7 +289,9 @@ export function registerWatchTogether(fastify: FastifyInstance) {
       if (msg.type === 'host:state') {
         const room = state.roomCode ? rooms.get(state.roomCode) : null;
         if (!room || room.hostId !== state.id) return;
-        const action = ['play', 'pause', 'seek', 'route'].includes(msg.action) ? msg.action : 'seek';
+        const action = ['play', 'pause', 'seek', 'route'].includes(msg.action)
+          ? msg.action
+          : 'seek';
         const paused =
           action === 'play'
             ? false
@@ -265,9 +304,15 @@ export function registerWatchTogether(fastify: FastifyInstance) {
           paused,
           currentTime: Number(msg.currentTime || 0) || 0,
           updatedAt: Date.now(),
-          route: typeof msg.route === 'object' && msg.route ? msg.route : room.state.route,
+          route:
+            typeof msg.route === 'object' && msg.route ? msg.route : room.state.route,
         };
-        broadcast(room.code, 'player:sync', { action, ...getRoomStateSnapshot(room) }, socket);
+        broadcast(
+          room.code,
+          'player:sync',
+          { action, ...getRoomStateSnapshot(room) },
+          socket,
+        );
         return;
       }
 
@@ -283,7 +328,7 @@ export function registerWatchTogether(fastify: FastifyInstance) {
             currentTime: Number(msg.currentTime || 0) || 0,
             timestamp: Date.now(),
           },
-          socket
+          socket,
         );
         return;
       }
@@ -314,14 +359,16 @@ export function registerWatchTogether(fastify: FastifyInstance) {
             timestamp: Date.now(),
             updatedAt: room.state.updatedAt,
           },
-          socket
+          socket,
         );
         return;
       }
 
       if (msg.type === 'chat:send') {
         const room = state.roomCode ? rooms.get(state.roomCode) : null;
-        const text = String(msg.text || '').trim().slice(0, 500);
+        const text = String(msg.text || '')
+          .trim()
+          .slice(0, 500);
         if (!room || !text) return;
         broadcast(room.code, 'chat:message', {
           id: `${Date.now()}-${state.id}`,

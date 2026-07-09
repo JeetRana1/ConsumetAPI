@@ -5,8 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const extensions_1 = require("@consumet/extensions");
 const flixhq_1 = __importDefault(require("./flixhq"));
+const hdstream4u_1 = __importDefault(require("./hdstream4u"));
 const routes = async (fastify, options) => {
     await fastify.register(flixhq_1.default, { prefix: '/flixhq' });
+    await fastify.register(hdstream4u_1.default, { prefix: '/hdstream4u' });
     fastify.get('/', async (request, reply) => {
         reply.status(200).send('Welcome to Consumet Movies and TV Shows');
     });

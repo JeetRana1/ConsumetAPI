@@ -48,7 +48,11 @@ const routes = async (fastify, options) => {
         const query = request.params.query;
         try {
             const res = await jaGet(`${JUSTANIME_BASE}/search/suggestions?query=${encodeURIComponent(query)}`, {
-                headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
+                headers: {
+                    'User-Agent': UA,
+                    Referer: 'https://justanime.to/',
+                    Origin: 'https://justanime.to',
+                },
             });
             const payload = res.data;
             const rows = Array.isArray(payload)
@@ -65,7 +69,11 @@ const routes = async (fastify, options) => {
                 const titleObj = row?.title;
                 const title = typeof titleObj === 'string'
                     ? titleObj.trim()
-                    : String(titleObj?.english || titleObj?.romaji || titleObj?.native || row?.name || '').trim();
+                    : String(titleObj?.english ||
+                        titleObj?.romaji ||
+                        titleObj?.native ||
+                        row?.name ||
+                        '').trim();
                 if (!title)
                     return row;
                 const anilistId = main_1.redis
@@ -104,18 +112,26 @@ const routes = async (fastify, options) => {
             const fetchInfo = async () => {
                 const [infoRes, epRes] = await Promise.all([
                     jaGet(`${JUSTANIME_BASE}/anime/${id}`, {
-                        headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
+                        headers: {
+                            'User-Agent': UA,
+                            Referer: 'https://justanime.to/',
+                            Origin: 'https://justanime.to',
+                        },
                     }),
                     jaGet(`${JUSTANIME_BASE}/anime/${id}/episodes`, {
-                        headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
-                    })
+                        headers: {
+                            'User-Agent': UA,
+                            Referer: 'https://justanime.to/',
+                            Origin: 'https://justanime.to',
+                        },
+                    }),
                 ]);
                 const info = infoRes.data?.data;
                 const episodes = (epRes.data?.data || []).map((ep) => ({
                     id: `${id}$episode$${ep.number}`,
                     number: ep.number,
                     title: ep.title,
-                    isFiller: ep.isFiller
+                    isFiller: ep.isFiller,
                 }));
                 const anilistId = await resolveAniListIdByTitle(info?.title || id);
                 console.log('info is', info);
@@ -123,7 +139,7 @@ const routes = async (fastify, options) => {
                 return {
                     ...info,
                     episodes,
-                    anilistId
+                    anilistId,
                 };
             };
             const res = main_1.redis
@@ -145,7 +161,11 @@ const routes = async (fastify, options) => {
         try {
             const fetchWatch = async () => {
                 const res = await jaGet(`${JUSTANIME_BASE}/watch/${id}/episode/${ep}/hianime`, {
-                    headers: { 'User-Agent': UA, 'Referer': 'https://justanime.to/', 'Origin': 'https://justanime.to' }
+                    headers: {
+                        'User-Agent': UA,
+                        Referer: 'https://justanime.to/',
+                        Origin: 'https://justanime.to',
+                    },
                 });
                 const data = res.data;
                 const sub = data.sub?.sources || { sources: [], tracks: [] };
@@ -155,25 +175,25 @@ const routes = async (fastify, options) => {
                         url: s.file,
                         quality: 'Subbed',
                         isM3U8: String(s.file).includes('.m3u8'),
-                        isSub: true
+                        isSub: true,
                     })),
                     ...(dub.sources || []).map((s) => ({
                         url: s.file,
                         quality: 'Dubbed',
                         isM3U8: String(s.file).includes('.m3u8'),
-                        isSub: false
-                    }))
+                        isSub: false,
+                    })),
                 ];
                 const subtitles = [
                     ...(sub.tracks || []).map((t) => ({ ...t, url: t.file })),
-                    ...(dub.tracks || []).map((t) => ({ ...t, url: t.file }))
+                    ...(dub.tracks || []).map((t) => ({ ...t, url: t.file })),
                 ];
                 return {
                     headers: { Referer: 'https://justanime.to/' },
                     sources,
                     subtitles,
                     intro: data.sub?.intro || data.dub?.intro,
-                    outro: data.sub?.outro || data.dub?.outro
+                    outro: data.sub?.outro || data.dub?.outro,
                 };
             };
             const res = main_1.redis

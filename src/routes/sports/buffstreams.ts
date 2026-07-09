@@ -32,7 +32,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     }
 
     try {
-      reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      reply.header(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate',
+      );
       reply.header('Pragma', 'no-cache');
       reply.header('Expires', '0');
 
@@ -93,6 +96,3 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 };
 
 export default routes;
-
-
-

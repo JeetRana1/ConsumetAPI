@@ -8,7 +8,10 @@ type GenericProvider = {
   fetchEpisodeServers?: (...args: any[]) => Promise<any[]>;
 };
 
-const toName = (value: unknown): string => String(value || '').toLowerCase().trim();
+const toName = (value: unknown): string =>
+  String(value || '')
+    .toLowerCase()
+    .trim();
 
 const parseServerId = (server: any): string | undefined => {
   if (typeof server?.id === 'string' && server.id.trim()) return server.id.trim();

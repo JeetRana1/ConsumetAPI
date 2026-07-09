@@ -32,7 +32,8 @@ export async function getClientKey(embedUrl: string, referer: string): Promise<s
       }
 
       // Pattern 2: Look for three 16-character sequences
-      const noncePattern2 = /\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b/;
+      const noncePattern2 =
+        /\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b/;
       const match2 = html.match(noncePattern2);
       if (match2 && match2.length === 4) {
         const combinedNonce = [match2[1], match2[2], match2[3]].join('');
@@ -91,7 +92,9 @@ export async function getClientKey(embedUrl: string, referer: string): Promise<s
       }
 
       // Return the first valid unique salt
-      const uniqueSalts = [...new Set(salts)].filter((key) => key.length >= 32 && key.length <= 64);
+      const uniqueSalts = [...new Set(salts)].filter(
+        (key) => key.length >= 32 && key.length <= 64,
+      );
       if (uniqueSalts.length > 0) {
         return uniqueSalts[0];
       }

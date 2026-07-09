@@ -7,10 +7,14 @@ import { getClientKey } from './getClientKey';
  * Handles encrypted video source extraction and decryption
  */
 export class VidCloud {
-  private DefaultCharacterSet = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i));
+  private DefaultCharacterSet = Array.from({ length: 95 }, (_, i) =>
+    String.fromCharCode(32 + i),
+  );
   private characterSet: string[];
 
-  constructor(characterSet = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i))) {
+  constructor(
+    characterSet = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)),
+  ) {
     this.characterSet = [...characterSet];
   }
 
@@ -109,7 +113,8 @@ export class VidCloud {
     return content.slice(0, length);
   }
 
-  private primaryKeyUrl = 'https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json';
+  private primaryKeyUrl =
+    'https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json';
 
   async fetchKey(url: string) {
     try {

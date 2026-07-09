@@ -45,7 +45,9 @@ const applyTimeoutConfig = (provider) => {
     const envTimeout = Number(process.env.PROVIDER_FETCH_TIMEOUT_MS || '');
     const timeoutMs = Number.isFinite(envTimeout) && envTimeout > 0
         ? envTimeout
-        : (isProduction ? 12000 : 10000);
+        : isProduction
+            ? 12000
+            : 10000;
     defaults.timeout = timeoutMs;
 };
 const applyAgentConfig = (provider) => {
@@ -97,17 +99,19 @@ const buildFlixhqWatchUrl = (baseUrl, mediaId, serverId) => {
     return `${base}/${rawMediaId}.${serverId}`;
 };
 const wrapFlixhqServerFetcher = (provider) => {
-    if (provider.__flixhqServersWrapped || typeof provider.fetchEpisodeServers !== 'function')
+    if (provider.__flixhqServersWrapped ||
+        typeof provider.fetchEpisodeServers !== 'function')
         return;
     if (!isFlixhqProvider(provider) || !provider.client?.get || !provider.baseUrl)
         return;
     const original = provider.fetchEpisodeServers.bind(provider);
-    const hasUsableServerList = (value) => Array.isArray(value) && value.some((entry) => {
-        if (!entry || typeof entry !== 'object')
-            return false;
-        const server = entry;
-        return Boolean(String(server.id || server.url || server.name || '').trim());
-    });
+    const hasUsableServerList = (value) => Array.isArray(value) &&
+        value.some((entry) => {
+            if (!entry || typeof entry !== 'object')
+                return false;
+            const server = entry;
+            return Boolean(String(server.id || server.url || server.name || '').trim());
+        });
     provider.fetchEpisodeServers = async (...args) => {
         try {
             const existing = await original(...args);
@@ -150,7 +154,9 @@ const wrapFlixhqServerFetcher = (provider) => {
     };
     provider.__flixhqServersWrapped = true;
 };
-const toServerName = (value) => String(value || '').toLowerCase().trim();
+const toServerName = (value) => String(value || '')
+    .toLowerCase()
+    .trim();
 const parsePossibleServer = (value) => {
     const raw = toServerName(value);
     if (!raw)
@@ -192,7 +198,8 @@ const resolveEpisodeLink = async (provider, episodeId, mediaId, selectedServer) 
     if (episodeId.startsWith('http://') || episodeId.startsWith('https://')) {
         return episodeId;
     }
-    if (typeof selectedServer?.url === 'string' && /^https?:\/\//i.test(selectedServer.url)) {
+    if (typeof selectedServer?.url === 'string' &&
+        /^https?:\/\//i.test(selectedServer.url)) {
         return selectedServer.url;
     }
     const serverIdFromField = (typeof selectedServer?.id === 'string' && selectedServer.id) ||
@@ -292,7 +299,8 @@ const rescueMovieSources = async (provider, args) => {
     return undefined;
 };
 const wrapMovieSourceFetcher = (provider) => {
-    if (provider.__sourceRescueWrapped || typeof provider.fetchEpisodeSources !== 'function')
+    if (provider.__sourceRescueWrapped ||
+        typeof provider.fetchEpisodeSources !== 'function')
         return;
     const original = provider.fetchEpisodeSources.bind(provider);
     provider.fetchEpisodeSources = async (...args) => {

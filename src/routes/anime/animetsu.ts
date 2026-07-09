@@ -13,7 +13,9 @@ const UA =
 const HASH_RE = /^[a-f0-9]{24}$/i;
 const DEFAULT_SERVERS = ['kite', 'meg', 'pahe', 'dio', 'kiss'];
 const SERVER_PRIORITY = new Map(DEFAULT_SERVERS.map((server, index) => [server, index]));
-const STREAM_PROBE_TIMEOUT_MS = Number(process.env.ANIMETSU_STREAM_PROBE_TIMEOUT_MS || 1800);
+const STREAM_PROBE_TIMEOUT_MS = Number(
+  process.env.ANIMETSU_STREAM_PROBE_TIMEOUT_MS || 1800,
+);
 
 type EpisodeRef = {
   animeId: string;
@@ -30,7 +32,10 @@ const animetsuHeaders = (referer = `${BASE_URL}/`) => ({
   'Sec-Fetch-Mode': 'cors',
 });
 
-const animetsuGet = async (path: string, config: import('axios').AxiosRequestConfig = {}) => {
+const animetsuGet = async (
+  path: string,
+  config: import('axios').AxiosRequestConfig = {},
+) => {
   const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
   const referer = String((config.headers as any)?.Referer || `${BASE_URL}/`);
   return proxyGet(url, {
@@ -55,7 +60,9 @@ const absoluteUrl = (value?: any): string | undefined => {
 
 const pickTitle = (title: any, fallback = ''): string => {
   if (typeof title === 'string') return title.trim();
-  return String(title?.english || title?.romaji || title?.native || fallback || '').trim();
+  return String(
+    title?.english || title?.romaji || title?.native || fallback || '',
+  ).trim();
 };
 
 const normalizeImage = (item: any): string | undefined => {
@@ -72,7 +79,9 @@ const normalizeImage = (item: any): string | undefined => {
 };
 
 const normalizeCover = (item: any): string | undefined => {
-  return absoluteUrl(item?.bannerImage || item?.banner || item?.cover || item?.banner_image);
+  return absoluteUrl(
+    item?.bannerImage || item?.banner || item?.cover || item?.banner_image,
+  );
 };
 
 const extractHashId = (value: any): string => {
@@ -121,7 +130,9 @@ const normalizeSeasonRows = (rows: any): any[] => {
         name: pickTitle(item?.title, item?.name || item?.format),
         image: normalizeImage(item),
         cover: normalizeCover(item),
-        season: Number(item?.season || item?.seasonNumber || item?.number || index + 1) || index + 1,
+        season:
+          Number(item?.season || item?.seasonNumber || item?.number || index + 1) ||
+          index + 1,
         releaseDate: item?.seasonYear || item?.year || item?.start_date,
         anilistId: item?.anilist_id || item?.anilistId,
         malId: item?.mal_id || item?.malId,
@@ -154,7 +165,8 @@ const normalizeProviderRelatedRows = (rows: any): any[] => {
     .filter((item: any) => item.id);
 };
 
-const makeEpisodeId = (animeId: string, episode: number | string) => `${animeId}$episode$${episode}`;
+const makeEpisodeId = (animeId: string, episode: number | string) =>
+  `${animeId}$episode$${episode}`;
 
 const parseEpisodeId = (episodeId: string): EpisodeRef => {
   const raw = String(episodeId || '').trim();
@@ -181,7 +193,9 @@ const normalizeEpisodeRows = (animeId: string, payload: any): any[] => {
 
   return episodesRaw
     .map((ep: any, index: number) => {
-      const number = Number(ep?.ep_num || ep?.number || ep?.episode || ep?.ep || index + 1) || index + 1;
+      const number =
+        Number(ep?.ep_num || ep?.number || ep?.episode || ep?.ep || index + 1) ||
+        index + 1;
       return {
         id: makeEpisodeId(animeId, number),
         providerEpisodeId: extractHashId(ep?.id || ep?._id || ep?.data_id),
@@ -206,40 +220,50 @@ const scrapeEpisodesFromHtml = (animeId: string, html: string): any[] => {
   const $ = load(html || '');
   const found = new Map<number, any>();
 
-  $('[href*="/watch/"], [data-ep], [data-episode], [data-id], [data-episode-id]').each((_, el) => {
-    const node = $(el);
-    const href = String(node.attr('href') || node.find('[href*="/watch/"]').first().attr('href') || '');
-    const dataEp =
-      node.attr('data-ep') ||
-      node.attr('data-episode') ||
-      node.attr('data-episode-number') ||
-      node.data('ep') ||
-      node.data('episode');
-    const queryEp = href.match(/[?&]ep=(\d+)/i)?.[1];
-    const textEp = node.text().match(/\b(?:ep|episode)\s*(\d+)\b/i)?.[1];
-    const number = Number(dataEp || queryEp || textEp || 0);
-    if (!number || found.has(number)) return;
+  $('[href*="/watch/"], [data-ep], [data-episode], [data-id], [data-episode-id]').each(
+    (_, el) => {
+      const node = $(el);
+      const href = String(
+        node.attr('href') || node.find('[href*="/watch/"]').first().attr('href') || '',
+      );
+      const dataEp =
+        node.attr('data-ep') ||
+        node.attr('data-episode') ||
+        node.attr('data-episode-number') ||
+        node.data('ep') ||
+        node.data('episode');
+      const queryEp = href.match(/[?&]ep=(\d+)/i)?.[1];
+      const textEp = node.text().match(/\b(?:ep|episode)\s*(\d+)\b/i)?.[1];
+      const number = Number(dataEp || queryEp || textEp || 0);
+      if (!number || found.has(number)) return;
 
-    const providerEpisodeId = extractHashId(
-      node.attr('data-id') ||
-        node.attr('data-episode-id') ||
-        node.data('id') ||
-        node.data('episodeId') ||
-        href,
-    );
+      const providerEpisodeId = extractHashId(
+        node.attr('data-id') ||
+          node.attr('data-episode-id') ||
+          node.data('id') ||
+          node.data('episodeId') ||
+          href,
+      );
 
-    found.set(number, {
-      id: makeEpisodeId(animeId, number),
-      providerEpisodeId,
-      dataId: providerEpisodeId,
-      episode: number,
-      number,
-      episodeNum: number,
-      title: node.attr('title') || node.find('[title]').first().attr('title') || `Episode ${number}`,
-      image: absoluteUrl(node.find('img').first().attr('src') || node.find('img').first().attr('data-src')),
-      url: `${BASE_URL}/watch/${animeId}?ep=${number}`,
-    });
-  });
+      found.set(number, {
+        id: makeEpisodeId(animeId, number),
+        providerEpisodeId,
+        dataId: providerEpisodeId,
+        episode: number,
+        number,
+        episodeNum: number,
+        title:
+          node.attr('title') ||
+          node.find('[title]').first().attr('title') ||
+          `Episode ${number}`,
+        image: absoluteUrl(
+          node.find('img').first().attr('src') ||
+            node.find('img').first().attr('data-src'),
+        ),
+        url: `${BASE_URL}/watch/${animeId}?ep=${number}`,
+      });
+    },
+  );
 
   return [...found.values()].sort((a, b) => Number(a.episode) - Number(b.episode));
 };
@@ -258,7 +282,11 @@ const isLikelyHlsManifest = (body: string, contentType?: string): boolean => {
   const text = String(body || '').trim();
   if (!text) return false;
 
-  if (/application\/(vnd\.apple\.mpegurl|x-mpegURL)|audio\/x-mpegurl/i.test(String(contentType || ''))) {
+  if (
+    /application\/(vnd\.apple\.mpegurl|x-mpegURL)|audio\/x-mpegurl/i.test(
+      String(contentType || ''),
+    )
+  ) {
     return true;
   }
 
@@ -335,7 +363,10 @@ export const getEpisodes = async (animeId: string) => {
     const episodes = normalizeEpisodeRows(id, res.data);
     if (episodes.length) return episodes;
   } catch (err: any) {
-    console.warn('Animetsu episodes API failed, scraping HTML fallback:', err?.message || err);
+    console.warn(
+      'Animetsu episodes API failed, scraping HTML fallback:',
+      err?.message || err,
+    );
   }
 
   const page = await proxyGet(`${BASE_URL}/anime/${encodeURIComponent(id)}`, {
@@ -352,7 +383,8 @@ export const getStreamLinks = async (
   options: { server?: string; sourceType?: string } = {},
 ) => {
   const { animeId, episode } = parseEpisodeId(episodeId);
-  if (!animeId || !HASH_RE.test(animeId)) throw new Error('Animetsu episode id is invalid');
+  if (!animeId || !HASH_RE.test(animeId))
+    throw new Error('Animetsu episode id is invalid');
 
   const servers = normalizeServerList(options.server);
   const sourceTypes = normalizeSourceTypes(options.sourceType);
@@ -380,7 +412,8 @@ export const getStreamLinks = async (
             const url = resolveStreamUrl(source);
             return {
               url,
-              quality: `${resolvedServer.toUpperCase()} ${audioLabel} ${source?.quality || source?.label || 'master'}`.trim(),
+              quality:
+                `${resolvedServer.toUpperCase()} ${audioLabel} ${source?.quality || source?.label || 'master'}`.trim(),
               isM3U8:
                 source?.type === 'video/mpegurl' ||
                 source?.old_hls === true ||
@@ -424,7 +457,10 @@ export const getStreamLinks = async (
         completedResults.push(result);
         return result;
       } catch (err: any) {
-        console.error(`Animetsu watch ${server} ${sourceType} error:`, err?.message || err);
+        console.error(
+          `Animetsu watch ${server} ${sourceType} error:`,
+          err?.message || err,
+        );
         const result = { server, sourceType, sources: [], subtitles: [] };
         completedResults.push(result);
         return result;
@@ -434,7 +470,10 @@ export const getStreamLinks = async (
 
   const allResultsPromise = Promise.all(jobs);
   const fastDeadlineMs = sourceTypes.length === 1 ? 2500 : 3500;
-  await Promise.race([allResultsPromise, new Promise((resolve) => setTimeout(resolve, fastDeadlineMs))]);
+  await Promise.race([
+    allResultsPromise,
+    new Promise((resolve) => setTimeout(resolve, fastDeadlineMs)),
+  ]);
 
   let rows = completedResults.filter((row) => row.sources.length);
   if (!rows.length) rows = await allResultsPromise;
@@ -544,7 +583,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const fetchSearch = () => search(query);
       const data = redis
-        ? await cache.fetch(redis as Redis, `animetsu:net:search:${query}`, fetchSearch, REDIS_TTL)
+        ? await cache.fetch(
+            redis as Redis,
+            `animetsu:net:search:${query}`,
+            fetchSearch,
+            REDIS_TTL,
+          )
         : await fetchSearch();
       reply.status(200).send(data);
     } catch (err: any) {
@@ -562,7 +606,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const fetchInfo = () => getInfo(id);
       const data = redis
-        ? await cache.fetch(redis as Redis, `animetsu:net:info:v1:${extractHashId(id)}`, fetchInfo, REDIS_TTL)
+        ? await cache.fetch(
+            redis as Redis,
+            `animetsu:net:info:v1:${extractHashId(id)}`,
+            fetchInfo,
+            REDIS_TTL,
+          )
         : await fetchInfo();
       reply.status(200).send(data);
     } catch (err: any) {
@@ -577,41 +626,78 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       method: 'GET',
       url: `/anime/animetsu/info?id=${encodeURIComponent(id)}`,
     });
-    reply.status(res.statusCode).headers(res.headers as any).send(res.body);
+    reply
+      .status(res.statusCode)
+      .headers(res.headers as any)
+      .send(res.body);
   });
 
-  fastify.get('/servers/:id/:episode', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { id, episode } = request.params as { id: string; episode: string };
-    const animeId = extractHashId(id);
-    try {
-      const res = await animetsuGet(`/servers/${encodeURIComponent(animeId)}/${encodeURIComponent(episode)}`, {
-        headers: { Referer: `${BASE_URL}/watch/${animeId}?ep=${episode}` },
-        timeout: 3000,
-      });
-      const rows = Array.isArray(res.data) ? res.data : Array.isArray(res.data?.servers) ? res.data.servers : [];
-      reply.status(200).send(rows.length ? rows : DEFAULT_SERVERS.map((server) => ({ id: server, name: server })));
-    } catch (err: any) {
-      console.warn('Animetsu servers fallback:', err?.message || err);
-      reply.status(200).send(DEFAULT_SERVERS.map((server) => ({ id: server, name: server })));
-    }
-  });
+  fastify.get(
+    '/servers/:id/:episode',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id, episode } = request.params as { id: string; episode: string };
+      const animeId = extractHashId(id);
+      try {
+        const res = await animetsuGet(
+          `/servers/${encodeURIComponent(animeId)}/${encodeURIComponent(episode)}`,
+          {
+            headers: { Referer: `${BASE_URL}/watch/${animeId}?ep=${episode}` },
+            timeout: 3000,
+          },
+        );
+        const rows = Array.isArray(res.data)
+          ? res.data
+          : Array.isArray(res.data?.servers)
+            ? res.data.servers
+            : [];
+        reply
+          .status(200)
+          .send(
+            rows.length
+              ? rows
+              : DEFAULT_SERVERS.map((server) => ({ id: server, name: server })),
+          );
+      } catch (err: any) {
+        console.warn('Animetsu servers fallback:', err?.message || err);
+        reply
+          .status(200)
+          .send(DEFAULT_SERVERS.map((server) => ({ id: server, name: server })));
+      }
+    },
+  );
 
-  fastify.get('/watch/:episodeId', async (request: FastifyRequest, reply: FastifyReply) => {
-    const episodeId = (request.params as { episodeId: string }).episodeId;
-    const query = request.query as { server?: string; source_type?: string; category?: string };
+  fastify.get(
+    '/watch/:episodeId',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const episodeId = (request.params as { episodeId: string }).episodeId;
+      const query = request.query as {
+        server?: string;
+        source_type?: string;
+        category?: string;
+      };
 
-    try {
-      const sourceType = query.source_type || query.category;
-      const fetchWatch = () => getStreamLinks(episodeId, { server: query.server, sourceType });
-      const { animeId, episode } = parseEpisodeId(episodeId);
-      const cacheKey = `animetsu:net:watch:v1:${animeId}:${episode}:${query.server || 'auto'}:${sourceType || 'both'}`;
-      const data = redis ? await cache.fetch(redis as Redis, cacheKey, fetchWatch, REDIS_TTL) : await fetchWatch();
-      reply.status(200).send(data);
-    } catch (err: any) {
-      console.error('Animetsu watch error:', err?.message || err);
-      reply.status(200).send({ sources: [], subtitles: [], message: err?.message || 'Animetsu watch failed' });
-    }
-  });
+      try {
+        const sourceType = query.source_type || query.category;
+        const fetchWatch = () =>
+          getStreamLinks(episodeId, { server: query.server, sourceType });
+        const { animeId, episode } = parseEpisodeId(episodeId);
+        const cacheKey = `animetsu:net:watch:v1:${animeId}:${episode}:${query.server || 'auto'}:${sourceType || 'both'}`;
+        const data = redis
+          ? await cache.fetch(redis as Redis, cacheKey, fetchWatch, REDIS_TTL)
+          : await fetchWatch();
+        reply.status(200).send(data);
+      } catch (err: any) {
+        console.error('Animetsu watch error:', err?.message || err);
+        reply
+          .status(200)
+          .send({
+            sources: [],
+            subtitles: [],
+            message: err?.message || 'Animetsu watch failed',
+          });
+      }
+    },
+  );
 
   fastify.get('/:query', searchHandler);
 };

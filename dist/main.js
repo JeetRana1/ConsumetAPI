@@ -1,4 +1,27 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -14,7 +37,8 @@ const outboundProxy_1 = require("./utils/outboundProxy");
 // --- Global Axios Optimization ---
 // Solves ECONNRESET and 403 blocks by forcing IPv4 and setting a browser User-Agent
 axios_1.default.defaults.httpsAgent = new https_1.default.Agent({ family: 4, keepAlive: true });
-axios_1.default.defaults.headers.common['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+axios_1.default.defaults.headers.common['User-Agent'] =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 axios_1.default.defaults.headers.common['Accept'] = 'application/json, text/plain, */*';
 const books_1 = __importDefault(require("./routes/books"));
 const anime_1 = __importDefault(require("./routes/anime"));
@@ -227,18 +251,30 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             return true;
         return /\/(?:hls|oppai)\//i.test(url);
     };
-    const fetchHlsResource = async (url, isManifest, incomingRange, referer) => {
+    const fetchHlsResource = async (url, isManifest, incomingRange, referer, cookieHeader) => {
         const proxyCandidates = [...(0, outboundProxy_1.getProxyCandidatesSync)(), ''];
         let lastError = null;
         for (const proxyUrl of proxyCandidates) {
             try {
                 const proxyOptions = proxyUrl ? (0, outboundProxy_1.toAxiosProxyOptions)(proxyUrl) : {};
+                const upstreamOrigin = (() => {
+                    try {
+                        return new URL(referer).origin;
+                    }
+                    catch {
+                        return '';
+                    }
+                })();
                 const response = await axios_1.default.get(url, {
                     headers: {
-                        'Referer': referer || 'https://streameeeeee.site/',
+                        Referer: referer || 'https://streameeeeee.site/',
+                        ...(upstreamOrigin ? { Origin: upstreamOrigin } : {}),
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
                         ...(incomingRange ? { Range: incomingRange } : {}),
-                        ...(isManifest ? {} : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
+                        ...(isManifest
+                            ? {}
+                            : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
                         ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
                     },
                     timeout: 15000,
@@ -247,7 +283,8 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                     ...proxyOptions,
                 });
                 const responseContentType = String(response.headers['content-type'] || '');
-                if (isManifest && !isLikelyHlsManifest(String(response.data || ''), responseContentType)) {
+                if (isManifest &&
+                    !isLikelyHlsManifest(String(response.data || ''), responseContentType)) {
                     lastError = new Error(`Invalid HLS manifest response (${response.status})`);
                     continue;
                 }
@@ -265,18 +302,38 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         const [rawPath, rawQuery = ''] = rawRequestUrl.split('?');
         const wildcardPath = rawPath.replace(/^\/proxy\/hls\//i, '').trim();
         const refererParam = String(new URLSearchParams(rawQuery).get('referer') || '').trim();
+        const cookieParam = String(new URLSearchParams(rawQuery).get('cookie') || '').trim();
         const segmentParam = String(new URLSearchParams(rawQuery).get('segment') || '').trim() === '1';
         const passthroughQuery = rawQuery
             .split('&')
-            .filter((part) => part && !/^(referer|segment)=/i.test(part))
+            .filter((part) => part && !/^(referer|segment|cookie)=/i.test(part))
             .join('&');
         const url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ''}`;
         const incomingRange = String(request.headers.range || '');
         const isManifest = !segmentParam && shouldTreatAsManifestRequest(url, incomingRange);
-        const incomingReferer = String(request.headers.referer || request.headers.referrer || '').trim();
-        const requestReferer = refererParam || incomingReferer || 'https://streameeeeee.site/';
+        const incomingReferer = String(request.headers.referer || request.headers.referrer || '')
+            .trim()
+            .replace(/#.*$/, '');
+        const requestReferer = (refererParam || incomingReferer || 'https://streameeeeee.site/').replace(/#.*$/, '');
+        // Serve from Playwright-captured HLS manifest cache to avoid expired tokens.
+        if (isManifest && !incomingRange) {
+            try {
+                const { getCachedHlsManifest } = await Promise.resolve().then(() => __importStar(require('./utils/browserRuntimeExtractor')));
+                const cached = getCachedHlsManifest(url);
+                if (cached) {
+                    const content = rewriteHlsManifest(cached.body, url, requestReferer, `${request.protocol}://${request.headers.host || 'localhost:3000'}`);
+                    reply.header('Content-Type', cached.contentType || 'application/vnd.apple.mpegurl');
+                    reply.header('Access-Control-Allow-Origin', '*');
+                    reply.header('Cache-Control', 'public, max-age=60');
+                    return reply.send(content);
+                }
+            }
+            catch {
+                // Cache lookup is best-effort.
+            }
+        }
         try {
-            const response = await fetchHlsResource(url, isManifest, incomingRange, requestReferer);
+            const response = await fetchHlsResource(url, isManifest, incomingRange, requestReferer, cookieParam);
             const responseContentType = String(response.headers['content-type'] || '');
             const responseBuffer = Buffer.isBuffer(response.data)
                 ? response.data

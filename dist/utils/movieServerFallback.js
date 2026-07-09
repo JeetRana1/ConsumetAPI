@@ -1,7 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getMovieEmbedFallbackSource = void 0;
-const toName = (value) => String(value || '').toLowerCase().trim();
+const toName = (value) => String(value || '')
+    .toLowerCase()
+    .trim();
 const parseServerId = (server) => {
     if (typeof server?.id === 'string' && server.id.trim())
         return server.id.trim();

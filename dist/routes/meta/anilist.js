@@ -46,7 +46,8 @@ const routes = async (fastify, options) => {
         const status = request.query.status;
         const year = request.query.year;
         const season = request.query.season;
-        const countryOfOrigin = request.query.countryOfOrigin;
+        const countryOfOrigin = request.query
+            .countryOfOrigin;
         const anilist = generateAnilistMeta();
         if (genres) {
             try {
@@ -154,8 +155,8 @@ const routes = async (fastify, options) => {
         let fetchFiller = request.query.fetchFiller;
         let dub = request.query.dub;
         let anilist = generateAnilistMeta(provider);
-        dub = (dub === 'true' || dub === '1');
-        fetchFiller = (fetchFiller === 'true' || fetchFiller === '1');
+        dub = dub === 'true' || dub === '1';
+        fetchFiller = fetchFiller === 'true' || fetchFiller === '1';
         try {
             if (main_1.redis) {
                 const data = await cache_1.default.fetch(main_1.redis, `anilist:episodes;${id};${dub};${fetchFiller};${anilist.provider.name.toLowerCase()}`, async () => anilist.fetchEpisodesListById(id, dub, fetchFiller), dayOfWeek === 0 || dayOfWeek === 6 ? 60 * 120 : (60 * 60) / 2);
@@ -184,8 +185,8 @@ const routes = async (fastify, options) => {
         let fetchFiller = request.query.fetchFiller;
         let isDub = request.query.dub;
         let anilist = generateAnilistMeta(provider);
-        isDub = (isDub === 'true' || isDub === '1');
-        fetchFiller = (fetchFiller === 'true' || fetchFiller === '1');
+        isDub = isDub === 'true' || isDub === '1';
+        fetchFiller = fetchFiller === 'true' || fetchFiller === '1';
         try {
             if (main_1.redis) {
                 const data = await cache_1.default.fetch(main_1.redis, `anilist:info;${id};${isDub};${fetchFiller};${anilist.provider.name.toLowerCase()}`, async () => anilist.fetchAnimeInfo(id, isDub, fetchFiller), dayOfWeek === 0 || dayOfWeek === 6 ? 60 * 120 : (60 * 60) / 2);
@@ -213,7 +214,7 @@ const routes = async (fastify, options) => {
         let isDub = request.query.dub;
         if (server && !Object.values(models_2.StreamingServers).includes(server))
             return reply.status(400).send('Invalid server');
-        isDub = (isDub === 'true' || isDub === '1');
+        isDub = isDub === 'true' || isDub === '1';
         let anilist = generateAnilistMeta(provider);
         try {
             const fetchSources = async (selectedServer) => {

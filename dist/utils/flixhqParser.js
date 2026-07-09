@@ -6,22 +6,16 @@ function extractIdFromHref(href) {
         return null;
     try {
         // Handle both full URLs and relative paths
-        const path = href.includes('flixhq')
-            ? new URL(href).pathname
-            : href;
+        const path = href.includes('flixhq') ? new URL(href).pathname : href;
         // Remove leading/trailing slashes, then replace only the FIRST slash with hyphen
         // This preserves the format: watch-series-slug-name so provider can reconstruct as watch-series/slug-name
-        const cleaned = path
-            .replace(/^\/+/, '')
-            .replace(/\/+$/g, '');
+        const cleaned = path.replace(/^\/+/, '').replace(/\/+$/g, '');
         // Replace only the first slash with hyphen
         return cleaned.replace('/', '-') || null;
     }
     catch {
         // Fallback for malformed URLs
-        const cleaned = href
-            .replace(/^\/+/, '')
-            .replace(/\/+$/g, '');
+        const cleaned = href.replace(/^\/+/, '').replace(/\/+$/g, '');
         return cleaned.replace('/', '-') || null;
     }
 }
@@ -30,9 +24,7 @@ function parseItems($, selector) {
     $(selector).each((_, element) => {
         const type = $(element).find('span.float-right.fdi-type').text().trim();
         const baseData = {
-            id: extractIdFromHref($(element)
-                .find('a.film-poster-ahref.flw-item-tip')
-                .attr('href')),
+            id: extractIdFromHref($(element).find('a.film-poster-ahref.flw-item-tip').attr('href')),
             name: $(element).find('h3.film-name').text().trim() || null,
             posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') || null,
             quality: $(element).find('div.pick.film-poster-quality').text().trim() || null,
@@ -41,13 +33,21 @@ function parseItems($, selector) {
         if (type === 'Movie') {
             items.push({
                 ...baseData,
-                releaseDate: Number($(element).find('div.fd-infor > span.fdi-item:first').text().trim()) || null,
+                releaseDate: Number($(element).find('div.fd-infor > span.fdi-item:first').text().trim()) ||
+                    null,
                 duration: $(element).find('div.fd-infor > span.fdi-duration').text().trim() || null,
             });
         }
         else if (type === 'TV') {
-            const seasonText = $(element).find('div.fd-infor > span.fdi-item:first').text().trim();
-            const episodesText = $(element).find('div.fd-infor > span.fdi-item').eq(1).text().trim();
+            const seasonText = $(element)
+                .find('div.fd-infor > span.fdi-item:first')
+                .text()
+                .trim();
+            const episodesText = $(element)
+                .find('div.fd-infor > span.fdi-item')
+                .eq(1)
+                .text()
+                .trim();
             let seasons = null;
             if (seasonText && seasonText.startsWith('SS')) {
                 const seasonNum = parseInt(seasonText.replace(/\D+/g, ''), 10);
@@ -69,9 +69,7 @@ function parseMixedSection($, selector) {
     $(selector).each((_, element) => {
         const type = $(element).find('span.float-right.fdi-type').text().trim();
         const baseData = {
-            id: extractIdFromHref($(element)
-                .find('a.film-poster-ahref.flw-item-tip')
-                .attr('href')),
+            id: extractIdFromHref($(element).find('a.film-poster-ahref.flw-item-tip').attr('href')),
             name: $(element).find('h3.film-name').text().trim() || null,
             posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') || null,
             quality: $(element).find('div.pick.film-poster-quality').text().trim() || null,
@@ -80,14 +78,23 @@ function parseMixedSection($, selector) {
         if (type === 'Movie') {
             items.push({
                 ...baseData,
-                releaseDate: Number($(element).find('div.fd-infor > span.fdi-item:first').text().trim()) || null,
+                releaseDate: Number($(element).find('div.fd-infor > span.fdi-item:first').text().trim()) ||
+                    null,
                 duration: $(element).find('div.fd-infor > span.fdi-duration').text().trim() || null,
             });
         }
         else if (type === 'TV') {
             const releaseDate = $(element).find('div.fd-infor > span.fdi-item:first').text().trim() || null;
-            const seasonText = $(element).find('div.fd-infor > span.fdi-item').eq(1).text().trim();
-            const episodesText = $(element).find('div.fd-infor > span.fdi-item').eq(2).text().trim();
+            const seasonText = $(element)
+                .find('div.fd-infor > span.fdi-item')
+                .eq(1)
+                .text()
+                .trim();
+            const episodesText = $(element)
+                .find('div.fd-infor > span.fdi-item')
+                .eq(2)
+                .text()
+                .trim();
             let seasons = null;
             if (seasonText && seasonText.startsWith('SS')) {
                 const seasonNum = parseInt(seasonText.replace(/\D+/g, ''), 10);
@@ -107,14 +114,14 @@ exports.parseMixedSection = parseMixedSection;
 function parseHome($) {
     const slider = [];
     $('div#slider > div.swiper-wrapper > div.swiper-slide').each((_, element) => {
-        const id = extractIdFromHref($(element)
-            .find('a.slide-link')
-            .attr('href'));
+        const id = extractIdFromHref($(element).find('a.slide-link').attr('href'));
         const type = id?.includes('tv') || id?.includes('series') ? 'TV' : 'Movie';
         slider.push({
             id: id || null,
             name: $(element).find('h3.film-title').text().trim() || null,
-            posterImage: $(element).attr('style')?.match(/url\(["']?(.*?)["']?\)/)?.[1] || null,
+            posterImage: $(element)
+                .attr('style')
+                ?.match(/url\(["']?(.*?)["']?\)/)?.[1] || null,
             type: type || null,
             quality: $(element).find('div.scd-item > span.quality').text().trim() || null,
             duration: $(element).find('div.scd-item strong').eq(0).text().trim() || null,
@@ -159,11 +166,18 @@ function parsePaginatedResults($, selector) {
     $(selector).each((_, element) => {
         const type = $(element).find('span.float-right.fdi-type').text().trim();
         const baseData = {
-            id: extractIdFromHref($(element)
-                .find('a.film-poster-ahref.flw-item-tip')
-                .attr('href')),
-            name: $(element).find('h2.film-name, h3.film-name').first().text().replace(/\s+/g, ' ').trim() ||
-                $(element).find('img.film-poster-img').attr('alt')?.replace(/\s+Watch Online.*$/i, '').trim() ||
+            id: extractIdFromHref($(element).find('a.film-poster-ahref.flw-item-tip').attr('href')),
+            name: $(element)
+                .find('h2.film-name, h3.film-name')
+                .first()
+                .text()
+                .replace(/\s+/g, ' ')
+                .trim() ||
+                $(element)
+                    .find('img.film-poster-img')
+                    .attr('alt')
+                    ?.replace(/\s+Watch Online.*$/i, '')
+                    .trim() ||
                 null,
             posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') ||
                 $(element).find('img.film-poster-img').attr('src') ||
@@ -174,13 +188,18 @@ function parsePaginatedResults($, selector) {
         if (type === 'Movie') {
             items.push({
                 ...baseData,
-                releaseDate: Number($(element).find('div.fd-infor > span.fdi-item:first').text().trim()) || null,
+                releaseDate: Number($(element).find('div.fd-infor > span.fdi-item:first').text().trim()) ||
+                    null,
                 duration: $(element).find('div.fd-infor > span.fdi-duration').text().trim() || null,
             });
         }
         else if (type === 'TV') {
             const seasonText = $(element).find('div.fd-infor > span.fdi-item:first').text().trim() || null;
-            const episodesText = $(element).find('div.fd-infor > span.fdi-item').eq(1).text().trim();
+            const episodesText = $(element)
+                .find('div.fd-infor > span.fdi-item')
+                .eq(1)
+                .text()
+                .trim();
             let seasons = null;
             if (seasonText && seasonText.startsWith('SS')) {
                 const seasonNum = parseInt(seasonText.replace(/\D+/g, ''), 10);
@@ -238,9 +257,7 @@ function parseInfo($) {
     $('div.block_area-content.block_area-list.film_list.film_list-grid div.flw-item').each((_, element) => {
         const type = $(element).find('span.float-right.fdi-type').text().trim();
         const baseData = {
-            id: extractIdFromHref($(element)
-                .find('a.film-poster-ahref.flw-item-tip')
-                .attr('href')),
+            id: extractIdFromHref($(element).find('a.film-poster-ahref.flw-item-tip').attr('href')),
             name: $(element).find('h3.film-name').text().trim() || null,
             posterImage: $(element).find('img.film-poster-img.lazyload').attr('data-src') || null,
             quality: $(element).find('div.pick.film-poster-quality').text().trim() || null,
@@ -255,7 +272,11 @@ function parseInfo($) {
         }
         else if (type === 'TV') {
             const seasonText = $(element).find('div.fd-infor > span.fdi-item:first').text().trim() || null;
-            const episodesText = $(element).find('div.fd-infor > span.fdi-item').eq(1).text().trim();
+            const episodesText = $(element)
+                .find('div.fd-infor > span.fdi-item')
+                .eq(1)
+                .text()
+                .trim();
             let seasons = null;
             if (seasonText && seasonText.startsWith('SS')) {
                 const seasonNum = parseInt(seasonText.replace(/\D+/g, ''), 10);
@@ -293,16 +314,25 @@ function parseInfo($) {
         id,
         name: headingLink.text().replace(/\s+/g, ' ').trim() ||
             structuredTitle ||
-            $('meta[property="og:title"]').attr('content')?.replace(/^Watch\s+/i, '').replace(/\s+FlixHQ.*$/i, '').trim() ||
+            $('meta[property="og:title"]')
+                .attr('content')
+                ?.replace(/^Watch\s+/i, '')
+                .replace(/\s+FlixHQ.*$/i, '')
+                .trim() ||
             $('img#image_storage').attr('alt')?.trim() ||
             null,
         posterImage: $('img#image_storage').attr('data-img') ||
             $('img#image_storage').attr('src') ||
-            $('div.w_b-cover').attr('style')?.match(/url\(["']?(.*?)["']?\)/)?.[1] ||
+            $('div.w_b-cover')
+                .attr('style')
+                ?.match(/url\(["']?(.*?)["']?\)/)?.[1] ||
             null,
         type,
         quality: $('div.stats button.btn.btn-sm.btn-quality').text().trim() || null,
-        releaseDate: $('.row-line:has(span:contains("Released:"))').text().replace('Released:', '').trim() || null,
+        releaseDate: $('.row-line:has(span:contains("Released:"))')
+            .text()
+            .replace('Released:', '')
+            .trim() || null,
         genre: $('.row-line:has(span:contains("Genre:")) a')
             .map((i, el) => $(el).text().split('&'))
             .get()
@@ -387,7 +417,9 @@ function parseEpisodes($, seasonNumber, mediaId) {
             '';
         const episodeNumber = parseInt(String(rawNumber).replace(/\D/g, ''), 10) || null;
         const seasonFromHref = anchor.attr('href')?.match(/s(\d+)-e\d+/i)?.[1];
-        const resolvedSeasonNumber = parseInt(String(seasonFromHref || seasonNumber || ''), 10) || seasonNumber || null;
+        const resolvedSeasonNumber = parseInt(String(seasonFromHref || seasonNumber || ''), 10) ||
+            seasonNumber ||
+            null;
         const titleAttr = anchor.attr('title') || anchor.text().trim();
         const episodeTitle = titleAttr?.split(':').at(1)?.trim() || titleAttr || null;
         return {

@@ -27,7 +27,8 @@ const getRequestMethod = (config: AxiosRequestConfig): string =>
 
 const getCacheKey = (url: string, config: AxiosRequestConfig): string => {
   const method = getRequestMethod(config);
-  const dataPart = typeof config.data === 'string' ? config.data : JSON.stringify(config.data || '');
+  const dataPart =
+    typeof config.data === 'string' ? config.data : JSON.stringify(config.data || '');
   return `${method}:${url}:${dataPart}`;
 };
 
@@ -75,7 +76,10 @@ export const fetcher = async (
       const normalized: FetchResponse = {
         success: response.status >= 200 && response.status < 300,
         status: response.status,
-        text: typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
+        text:
+          typeof response.data === 'string'
+            ? response.data
+            : JSON.stringify(response.data),
       };
 
       if (shouldUseCache && normalized.success) {
@@ -91,7 +95,10 @@ export const fetcher = async (
         return {
           success: false,
           status: error.response.status,
-          text: typeof error.response.data === 'string' ? error.response.data : JSON.stringify(error.response.data),
+          text:
+            typeof error.response.data === 'string'
+              ? error.response.data
+              : JSON.stringify(error.response.data),
         };
       }
       return undefined;

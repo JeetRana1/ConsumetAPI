@@ -30,11 +30,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-          redis as Redis,
-          `mangadex:search:${query}:${page ?? 1}`,
-          () => mangadex.search(query, page),
-          REDIS_TTL,
-        )
+            redis as Redis,
+            `mangadex:search:${query}:${page ?? 1}`,
+            () => mangadex.search(query, page),
+            REDIS_TTL,
+          )
         : await mangadex.search(query, page);
 
       reply.status(200).send(res);
@@ -52,11 +52,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-          redis as Redis,
-          `mangadex:info:${id}`,
-          () => mangadex.fetchMangaInfo(id),
-          REDIS_TTL,
-        )
+            redis as Redis,
+            `mangadex:info:${id}`,
+            () => mangadex.fetchMangaInfo(id),
+            REDIS_TTL,
+          )
         : await mangadex.fetchMangaInfo(id);
 
       reply.status(200).send(res);
@@ -76,11 +76,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       try {
         const res = redis
           ? await cache.fetch(
-            redis as Redis,
-            `mangadex:read:${chapterId}`,
-            () => fetchChapterPagesWithFallback(chapterId),
-            REDIS_TTL,
-          )
+              redis as Redis,
+              `mangadex:read:${chapterId}`,
+              () => fetchChapterPagesWithFallback(chapterId),
+              REDIS_TTL,
+            )
           : await fetchChapterPagesWithFallback(chapterId);
 
         reply.status(200).send(res);
