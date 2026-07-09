@@ -15,9 +15,10 @@ const BUFFSTREAMS_PROBE_TTL = 10 * 60 * 1000;
 async function probeBuffstreamsDomain(url) {
     try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 6000);
+        const timeout = setTimeout(() => controller.abort(), 4000);
         const res = await fetch(`${url}/index7`, {
             method: 'HEAD',
+            redirect: 'manual',
             signal: controller.signal,
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' },
         });
@@ -27,8 +28,14 @@ async function probeBuffstreamsDomain(url) {
 }
 
 async function probeAllBuffstreams() {
-    for (const domain of BUFFSTREAMS_KNOWN_DOMAINS) {
-        if (await probeBuffstreamsDomain(domain)) return domain;
+    const results = await Promise.allSettled(
+        BUFFSTREAMS_KNOWN_DOMAINS.map(async (domain) => {
+            const ok = await probeBuffstreamsDomain(domain);
+            return ok ? domain : null;
+        })
+    );
+    for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) return r.value;
     }
     return BUFFSTREAMS_KNOWN_DOMAINS[0];
 }
