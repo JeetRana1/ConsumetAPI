@@ -13,6 +13,8 @@ const streamAvailability = new Map();
 const sourcesCache = new Map();
 const directoryCache = { data: null, ts: 0 };
 const DIRECTORY_CACHE_TTL = 20_000;
+const searchCache = { data: null, ts: 0, key: '' };
+const SEARCH_CACHE_TTL = 12_000;
 const HAS_LOCAL_FRONTEND = fs.existsSync(path.join(__dirname, 'index.html'));
 
 const ONE_YEAR_SECONDS = 31536000;
@@ -375,7 +377,11 @@ const fetchWithRefererFallbacks = async (targetUrl, referer, rootReferer, rangeH
 app.post('/api/search', async (req, res) => {
     try {
         const { query } = req.body;
-        const results = await provider.search(query || '');
+        const q = String(query || '').trim();
+        if (searchCache.data && searchCache.key === q && Date.now() - searchCache.ts < SEARCH_CACHE_TTL) {
+            return res.json(searchCache.data);
+        }
+        const results = await provider.search(q);
         for (const result of results) {
             if (result?.isLive === true) {
                 const cached = streamAvailability.get(result.id);
@@ -384,9 +390,16 @@ app.post('/api/search', async (req, res) => {
                 }
             }
         }
-        res.json({ success: true, data: results });
+        const resultData = { success: true, data: results };
+        searchCache.data = resultData;
+        searchCache.key = q;
+        searchCache.ts = Date.now();
+        res.json(resultData);
     } catch (error) {
         console.error('Error in /api/search:', error);
+        if (searchCache.data && searchCache.key === (String(req.body?.query || '').trim())) {
+            return res.json(searchCache.data);
+        }
         res.json({ success: false, error: error.message });
     }
 });
