@@ -325,10 +325,16 @@ const routes = async (fastify, _options) => {
             if (!targetUrl || !isAbsoluteHttpUrl(targetUrl)) {
                 return reply.status(400).send('Invalid or missing image URL');
             }
+            const query = request.query;
+            const referer = getQueryValue(query, 'referer', 'Referer') || 'https://www.flashscore.com/';
             const response = await axios_1.default.get(targetUrl, {
                 responseType: 'arraybuffer',
-                timeout: 15000,
-                headers: { 'User-Agent': USER_AGENT, Accept: 'image/*,*/*;q=0.8' },
+                timeout: 8000,
+                headers: {
+                    'User-Agent': USER_AGENT,
+                    Referer: referer,
+                    Accept: 'image/*,*/*;q=0.8',
+                },
                 validateStatus: (status) => status < 500,
             });
             reply.header('Access-Control-Allow-Origin', '*');
@@ -338,7 +344,10 @@ const routes = async (fastify, _options) => {
             return reply.status(response.status).send(Buffer.from(response.data));
         }
         catch (error) {
-            return reply.status(500).send(error?.message || 'image_proxy_failed');
+            reply.header('Access-Control-Allow-Origin', '*');
+            reply.header('Cache-Control', 'public, max-age=3600');
+            reply.header('Content-Type', 'image/svg+xml');
+            return reply.status(200).send('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="%23666"><circle cx="24" cy="24" r="24" fill="%23333"/><text x="24" y="24" text-anchor="middle" dominant-baseline="central" font-size="20" fill="%23666">?</text></svg>');
         }
     });
 };
