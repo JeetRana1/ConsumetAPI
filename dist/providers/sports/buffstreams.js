@@ -685,6 +685,12 @@ class BuffStreams extends models_1.MovieParser {
                         .includes(raw));
                 }
             }
+            if (!streams.length && domain_resolver_1.BaseUrlResolver.getProbeBackoff() < 3) {
+                const newDomain = await domain_resolver_1.BaseUrlResolver.forceProbe();
+                if (newDomain) {
+                    streams = await this.fetchAllStreams();
+                }
+            }
             const probeLimit = 24;
             const toProbe = streams.slice(0, probeLimit);
             if (toProbe.length) {

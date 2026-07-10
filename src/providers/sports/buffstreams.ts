@@ -819,6 +819,13 @@ export class BuffStreams extends MovieParser {
         }
       }
 
+      if (!streams.length && BaseUrlResolver.getProbeBackoff() < 3) {
+        const newDomain = await BaseUrlResolver.forceProbe();
+        if (newDomain) {
+          streams = await this.fetchAllStreams();
+        }
+      }
+
       const probeLimit = 24;
       const toProbe = streams.slice(0, probeLimit);
       if (toProbe.length) {

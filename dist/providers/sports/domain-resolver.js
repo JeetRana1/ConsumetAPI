@@ -5,11 +5,15 @@ const KNOWN_DOMAINS = [
     ...(process.env.BUFFSTREAMS_BASE_URL ? [process.env.BUFFSTREAMS_BASE_URL.replace(/\/+$/, '')] : []),
     'https://ibuffstreams.app',
     'https://buffstreams.plus',
+    'https://buffstreams.sx',
+    'https://streameeeeee.site',
+    'https://thebuffstreams.com',
 ];
 let cachedUrl = KNOWN_DOMAINS[0] || 'https://ibuffstreams.app';
 let lastProbeMs = 0;
-const PROBE_TTL_MS = 10 * 60 * 1000;
+const PROBE_TTL_MS = 2 * 60 * 1000;
 let probing = null;
+let probeBackoff = 0;
 async function probeDomain(url) {
     try {
         const controller = new AbortController();
@@ -45,9 +49,11 @@ function startProbe() {
         .then((url) => {
         cachedUrl = url;
         lastProbeMs = Date.now();
+        probeBackoff = 0;
         probing = null;
     })
         .catch(() => {
+        probeBackoff = Math.min(probeBackoff + 1, 4);
         probing = null;
     });
 }
@@ -60,7 +66,11 @@ exports.BaseUrlResolver = {
         const url = await probeAll();
         cachedUrl = url;
         lastProbeMs = Date.now();
+        probeBackoff = 0;
         probing = null;
         return url;
+    },
+    getProbeBackoff() {
+        return probeBackoff;
     },
 };
