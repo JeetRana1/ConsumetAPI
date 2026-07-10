@@ -1,6 +1,6 @@
 # Build and Dependencies
 node_modules/
-dist/
+# dist/
 package-lock.json
 yarn.lock
 yarn-error.log
