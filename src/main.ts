@@ -412,7 +412,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       // content sniffing is required instead of relying only on ".m3u8".
       if (responseIsManifest) {
         const hostHeader = request.headers.host || 'localhost:3000';
-        const protocol = request.headers['x-forwarded-proto'] || 'http';
+        const protocol = request.headers['x-forwarded-proto'] || request.protocol || 'https';
         const baseUrl = `${protocol}://${hostHeader}`;
         const content = rewriteHlsManifest(responseText, url, requestReferer, baseUrl);
 
