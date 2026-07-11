@@ -12,6 +12,7 @@ let lastProbeMs = 0;
 const PROBE_TTL_MS = 2 * 60 * 1000;
 let probing: Promise<void> | null = null;
 let probeBackoff = 0;
+let roundRobinIndex = 0;
 
 async function probeDomain(url: string): Promise<boolean> {
   try {
@@ -61,7 +62,8 @@ startProbe();
 
 export const BaseUrlResolver = {
   getBaseUrl(): string {
-    return cachedUrl;
+    roundRobinIndex = (roundRobinIndex + 1) % KNOWN_DOMAINS.length;
+    return KNOWN_DOMAINS[roundRobinIndex];
   },
 
   async forceProbe(): Promise<string> {

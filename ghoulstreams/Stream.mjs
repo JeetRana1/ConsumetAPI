@@ -73,9 +73,14 @@ async function forceBuffstreamsProbe() {
     }
 }
 
+let buffstreamsRoundRobinIndex = 0;
+
 function getBuffstreamsBaseUrl() {
+    const envOverride = globalThis.process?.env?.BUFFSTREAMS_BASE_URL;
+    if (envOverride) return envOverride.replace(/\/+$/, '');
     ensureBuffstreamsProbe();
-    return buffstreamsResolvedUrl;
+    buffstreamsRoundRobinIndex = (buffstreamsRoundRobinIndex + 1) % BUFFSTREAMS_KNOWN_DOMAINS.length;
+    return BUFFSTREAMS_KNOWN_DOMAINS[buffstreamsRoundRobinIndex];
 }
 
 class BuffStreams extends Provider {
