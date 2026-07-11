@@ -442,6 +442,18 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         });
         const page = await context.newPage();
+        await page.route('**/*', (route) => {
+            const type = route.request().resourceType?.() || '';
+            const url = route.request().url() || '';
+            if (['image', 'font', 'stylesheet'].includes(type) || url.includes('google-analytics') || url.includes('googletagmanager') || url.includes('doubleclick')) {
+                route.abort().catch(() => { });
+            }
+            else {
+                route.continue().catch(() => { });
+            }
+        });
+        page.on('console', () => { });
+        page.on('pageerror', () => { });
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
