@@ -5,12 +5,16 @@ const BUFFSTREAMS_KNOWN_DOMAINS = [
     ...(globalThis.process?.env?.BUFFSTREAMS_BASE_URL ? [globalThis.process.env.BUFFSTREAMS_BASE_URL.replace(/\/+$/, '')] : []),
     'https://ibuffstreams.app',
     'https://buffstreams.plus',
+    'https://buffstreams.sx',
+    'https://streameeeeee.site',
+    'https://thebuffstreams.com',
 ];
 
 let buffstreamsResolvedUrl = BUFFSTREAMS_KNOWN_DOMAINS[0];
 let buffstreamsProbing = null;
 let buffstreamsLastProbe = 0;
-const BUFFSTREAMS_PROBE_TTL = 10 * 60 * 1000;
+const BUFFSTREAMS_PROBE_TTL = 2 * 60 * 1000;
+let buffstreamsProbeBackoff = 0;
 
 async function probeBuffstreamsDomain(url) {
     try {
@@ -46,8 +50,27 @@ function ensureBuffstreamsProbe() {
     buffstreamsProbing = probeAllBuffstreams().then(url => {
         buffstreamsResolvedUrl = url;
         buffstreamsLastProbe = Date.now();
+        buffstreamsProbeBackoff = 0;
         buffstreamsProbing = null;
-    }).catch(() => { buffstreamsProbing = null; });
+    }).catch(() => {
+        buffstreamsProbeBackoff = Math.min(buffstreamsProbeBackoff + 1, 4);
+        buffstreamsProbing = null;
+    });
+}
+
+async function forceBuffstreamsProbe() {
+    try {
+        const url = await probeAllBuffstreams();
+        buffstreamsResolvedUrl = url;
+        buffstreamsLastProbe = Date.now();
+        buffstreamsProbeBackoff = 0;
+        buffstreamsProbing = null;
+        return url;
+    } catch {
+        if (buffstreamsProbeBackoff < 4) buffstreamsProbeBackoff++;
+        buffstreamsProbing = null;
+        return buffstreamsResolvedUrl;
+    }
 }
 
 function getBuffstreamsBaseUrl() {
@@ -2008,6 +2031,13 @@ class BuffStreams extends Provider {
         } catch (err) {
             return { sources: [], subtitles: [], headers: {}, error: err?.message || 'backend_unreachable' };
         }
+    }
+    static forceBuffstreamsProbe() {
+        return forceBuffstreamsProbe();
+    }
+
+    static getProbeBackoff() {
+        return buffstreamsProbeBackoff;
     }
 }
 

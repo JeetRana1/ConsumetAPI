@@ -702,9 +702,24 @@ app.post('/api/fetchInfo', async (req, res) => {
         const { id } = req.body;
         console.log('Fetching info for:', id);
         const info = await provider.fetchInfo(id);
-        res.json({ success: true, data: info });
+        if (!info && BuffStreams.forceBuffstreamsProbe) {
+            await BuffStreams.forceBuffstreamsProbe();
+            const retryInfo = await provider.fetchInfo(id);
+            res.json({ success: true, data: retryInfo });
+        } else {
+            res.json({ success: true, data: info });
+        }
     } catch (error) {
         console.error('Error in /api/fetchInfo:', error);
+        if (BuffStreams.forceBuffstreamsProbe) {
+            try {
+                await BuffStreams.forceBuffstreamsProbe();
+                const retryInfo = await provider.fetchInfo(req.body?.id);
+                return res.json({ success: true, data: retryInfo });
+            } catch (retryError) {
+                return res.json({ success: false, error: retryError.message });
+            }
+        }
         res.json({ success: false, error: error.message });
     }
 });
@@ -723,15 +738,30 @@ app.post('/api/fetchSources', async (req, res) => {
                 return res.json({ success: true, data: cached.data });
             }
         }
-        console.log('Fetching sources for:', target);
-        const timeoutMs = 20000;
-        const result = await Promise.race([
-            isBackground
-                ? provider.verifyEventSources(target)
-                : provider.fetchSources(target),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Fetch sources timed out')), timeoutMs))
-        ]);
-        const sources = result || { sources: [], error: 'empty_result' };
+        let sources;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            console.log(`Fetching sources for: ${target} (attempt ${attempt + 1})`);
+            const timeoutMs = attempt === 0 ? 20000 : 30000;
+            try {
+                const result = await Promise.race([
+                    isBackground
+                        ? provider.verifyEventSources(target)
+                        : provider.fetchSources(target),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Fetch sources timed out')), timeoutMs))
+                ]);
+                sources = result || { sources: [], error: 'empty_result' };
+                if (sources.sources.length > 0) break;
+            } catch (fetchErr) {
+                if (attempt === 0 && BuffStreams.forceBuffstreamsProbe) {
+                    await BuffStreams.forceBuffstreamsProbe();
+                    continue;
+                }
+                throw fetchErr;
+            }
+            if (attempt === 0 && BuffStreams.forceBuffstreamsProbe) {
+                await BuffStreams.forceBuffstreamsProbe();
+            }
+        }
         console.log('Got sources:', sources.sources.length);
         if (sources.sources.length > 0) {
             setStreamAvailability(target, true, 'source_available');
