@@ -32,9 +32,7 @@ export const setCachedHlsManifest = (url: string, body: string, contentType: str
   });
 };
 
-const PLAYWRIGHT_DEBUG =
-  String(process.env.PLAYWRIGHT_DEBUG || '').toLowerCase() === '1' ||
-  String(process.env.PLAYWRIGHT_DEBUG || '').toLowerCase() === 'true';
+const PLAYWRIGHT_DEBUG = false;
 
 const isDirectMediaUrl = (value: string): boolean => {
   const normalized = String(value || '');
@@ -465,8 +463,6 @@ export const extractPlaybackWithPlaywright = async (
         route.continue().catch(() => {});
       }
     });
-    page.on('console', () => {});
-    page.on('pageerror', () => {});
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
       Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });

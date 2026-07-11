@@ -55,8 +55,7 @@ const setCachedHlsManifest = (url, body, contentType) => {
     });
 };
 exports.setCachedHlsManifest = setCachedHlsManifest;
-const PLAYWRIGHT_DEBUG = String(process.env.PLAYWRIGHT_DEBUG || '').toLowerCase() === '1' ||
-    String(process.env.PLAYWRIGHT_DEBUG || '').toLowerCase() === 'true';
+const PLAYWRIGHT_DEBUG = false;
 const isDirectMediaUrl = (value) => {
     const normalized = String(value || '');
     if (!isUsableMediaUrl(normalized))
@@ -452,8 +451,6 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 1200
                 route.continue().catch(() => { });
             }
         });
-        page.on('console', () => { });
-        page.on('pageerror', () => { });
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
