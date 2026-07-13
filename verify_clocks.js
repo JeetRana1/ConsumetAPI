@@ -1,4 +1,4 @@
-const BUFFSTREAMS_DOMAIN = (process.env.BUFFSTREAMS_BASE_URL || 'https://ibuffstreams.app').replace(/\/+$/, '');
+const BUFFSTREAMS_DOMAIN = (process.env.BUFFSTREAMS_BASE_URL || 'https://buffstreams.ir').replace(/\/+$/, '');
 const DEFAULT_URL = `${BUFFSTREAMS_DOMAIN}/wnba/golden-state-valkyries-new-york-liberty/1212518`;
 const WARNING_RE = /links\s+will\s+appear\s+around\s+60\s+mins\s+prior\s+to\s+game\s+start/i;
 const CLOCK_RE = /\b(\d{1,2}):(\d{2}):(\d{2})\b/;

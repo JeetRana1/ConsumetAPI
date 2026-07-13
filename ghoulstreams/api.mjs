@@ -381,7 +381,7 @@ app.post('/api/search', async (req, res) => {
         if (searchCache.data && searchCache.key === q && Date.now() - searchCache.ts < SEARCH_CACHE_TTL) {
             return res.json(searchCache.data);
         }
-        const results = await provider.search(q);
+        let results = await provider.search(q);
         for (const result of results) {
             if (result?.isLive === true) {
                 const cached = streamAvailability.get(result.id);
@@ -638,21 +638,15 @@ app.get('/api/livesport-directory', async (_req, res) => {
         return res.json(directoryCache.data);
     }
     try {
-        const backendBase = (process.env.CONSUMET_API_BASE || process.env.SITE_API_BASE || 'http://localhost:3000').replace(/\/$/, '');
-        const response = await fetch(`${backendBase}/sports/buffstreams/directory`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            signal: AbortSignal.timeout(8000),
-        });
-        if (!response.ok) {
-            return res.json({ success: true, data: { matches: [] } });
-        }
-        const data = await response.json();
-        const result = { success: true, data: data?.data || data || { matches: [] } };
+        const { default: LivesportHelper } = await import('./LivesportHelper.mjs');
+        const dir = await LivesportHelper.getDirectory();
+        const matches = dir?.matches || [];
+        const result = { success: true, data: { matches } };
         directoryCache.data = result;
         directoryCache.ts = Date.now();
-        res.json(result);
+        return res.json(result);
     } catch (error) {
-        console.error('Error in /api/livesport-directory:', error?.message || error);
+        console.error('Directory error:', error?.message || error);
         if (directoryCache.data) return res.json(directoryCache.data);
         res.json({ success: true, data: { matches: [] } });
     }
@@ -701,25 +695,14 @@ app.post('/api/fetchInfo', async (req, res) => {
     try {
         const { id } = req.body;
         console.log('Fetching info for:', id);
-        const info = await provider.fetchInfo(id);
+        let info = await provider.fetchInfo(id);
         if (!info && BuffStreams.forceBuffstreamsProbe) {
             await BuffStreams.forceBuffstreamsProbe();
-            const retryInfo = await provider.fetchInfo(id);
-            res.json({ success: true, data: retryInfo });
-        } else {
-            res.json({ success: true, data: info });
+            info = await provider.fetchInfo(id);
         }
+        res.json({ success: true, data: info });
     } catch (error) {
         console.error('Error in /api/fetchInfo:', error);
-        if (BuffStreams.forceBuffstreamsProbe) {
-            try {
-                await BuffStreams.forceBuffstreamsProbe();
-                const retryInfo = await provider.fetchInfo(req.body?.id);
-                return res.json({ success: true, data: retryInfo });
-            } catch (retryError) {
-                return res.json({ success: false, error: retryError.message });
-            }
-        }
         res.json({ success: false, error: error.message });
     }
 });

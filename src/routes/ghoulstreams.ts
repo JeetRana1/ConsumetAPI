@@ -185,7 +185,7 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
   fastify.post('/api/search', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { query, date } = (request.body as { query?: string; date?: string }) || {};
-      const results = await buffstreams.search(String(query || ''), {
+      let results = await buffstreams.search(String(query || ''), {
         date: String(date || '') || undefined,
       });
       for (const result of results || []) {
@@ -251,7 +251,7 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
         const target = String(eventUrl || embedUrl || '').trim();
         const cacheKey = `fetchSources:${target}`;
         const isRacing = /fullraces|formula-1|nascar|indycar|motogp|racing/i.test(target);
-        const data = await getCachedLookup(cacheKey, async () =>
+        let data = await getCachedLookup(cacheKey, async () =>
           isRacing
             ? await racing.fetchEpisodeSources(target)
             : await buffstreams.fetchEpisodeSources(target),
@@ -302,7 +302,11 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
       try {
         const client = axios.create();
         const data = await LiveSportHelper.getGlobalDirectory(client);
-        return reply.send({ success: true, data: data || { matches: [] } });
+        const matches = data?.matches || [];
+        if (matches.length > 0) {
+          return reply.send({ success: true, data: { matches } });
+        }
+        throw new Error('empty directory');
       } catch (error: any) {
         return reply.send({
           success: true,

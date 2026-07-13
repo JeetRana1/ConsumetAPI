@@ -30,7 +30,7 @@ const cheerio = __importStar(require("cheerio"));
 const cache_1 = __importDefault(require("../../utils/cache"));
 const main_1 = require("../../main");
 const outboundProxy_1 = require("../../utils/outboundProxy");
-const BASE_URL = 'https://buffstreams.plus';
+const BASE_URL = 'https://buffstreams.ir';
 const HOME_URL = `${BASE_URL}/index7`;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const buildHeaders = (referer) => ({

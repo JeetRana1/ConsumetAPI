@@ -3,13 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BaseUrlResolver = void 0;
 const KNOWN_DOMAINS = [
     ...(process.env.BUFFSTREAMS_BASE_URL ? [process.env.BUFFSTREAMS_BASE_URL.replace(/\/+$/, '')] : []),
-    'https://ibuffstreams.app',
-    'https://buffstreams.plus',
+    'https://buffstreams.ir',
     'https://buffstreams.sx',
-    'https://streameeeeee.site',
-    'https://thebuffstreams.com',
 ];
-let cachedUrl = KNOWN_DOMAINS[0] || 'https://ibuffstreams.app';
+let cachedUrl = KNOWN_DOMAINS[0] || 'https://buffstreams.ir';
 let lastProbeMs = 0;
 const PROBE_TTL_MS = 2 * 60 * 1000;
 let probing = null;

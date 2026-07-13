@@ -3,11 +3,8 @@ import { load as cheerioLoad } from 'cheerio';
 
 const BUFFSTREAMS_KNOWN_DOMAINS = [
     ...(globalThis.process?.env?.BUFFSTREAMS_BASE_URL ? [globalThis.process.env.BUFFSTREAMS_BASE_URL.replace(/\/+$/, '')] : []),
-    'https://ibuffstreams.app',
-    'https://buffstreams.plus',
+    'https://buffstreams.ir',
     'https://buffstreams.sx',
-    'https://streameeeeee.site',
-    'https://thebuffstreams.com',
 ];
 
 let buffstreamsResolvedUrl = BUFFSTREAMS_KNOWN_DOMAINS[0];
@@ -79,8 +76,10 @@ function getBuffstreamsBaseUrl() {
     const envOverride = globalThis.process?.env?.BUFFSTREAMS_BASE_URL;
     if (envOverride) return envOverride.replace(/\/+$/, '');
     ensureBuffstreamsProbe();
-    buffstreamsRoundRobinIndex = (buffstreamsRoundRobinIndex + 1) % BUFFSTREAMS_KNOWN_DOMAINS.length;
-    return BUFFSTREAMS_KNOWN_DOMAINS[buffstreamsRoundRobinIndex];
+    if (Date.now() - buffstreamsLastProbe < BUFFSTREAMS_PROBE_TTL && buffstreamsResolvedUrl) {
+        return buffstreamsResolvedUrl;
+    }
+    return BUFFSTREAMS_KNOWN_DOMAINS[0];
 }
 
 class BuffStreams extends Provider {

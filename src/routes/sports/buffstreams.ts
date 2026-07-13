@@ -17,7 +17,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     try {
       let res = await buffstreams.search(query, { date });
-
       reply.status(200).send(res);
     } catch (error: any) {
       reply.status(500).send({ error: error.message });
@@ -56,7 +55,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     try {
       let res = await buffstreams.fetchEpisodeSources(episodeId);
-
       reply.status(200).send(res);
     } catch (error: any) {
       reply.status(500).send({ error: error.message });

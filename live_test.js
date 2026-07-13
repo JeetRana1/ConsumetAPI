@@ -1,4 +1,4 @@
-const BUFFSTREAMS_DOMAIN = (process.env.BUFFSTREAMS_BASE_URL || 'https://ibuffstreams.app').replace(/\/+$/, '');
+const BUFFSTREAMS_DOMAIN = (process.env.BUFFSTREAMS_BASE_URL || 'https://buffstreams.ir').replace(/\/+$/, '');
 const API_BASE = process.env.API_BASE || 'http://127.0.0.1:3000';
 const WATCH_URL = process.env.WATCH_URL || `${API_BASE}/sports/buffstreams/all`;
 const SOURCE_URL = process.env.SOURCE_URL || `${API_BASE}/sports/buffstreams/watch?episodeId=${encodeURIComponent(`${BUFFSTREAMS_DOMAIN}/mlb/houston-astros-toronto-blue-jays/1343078`)}`;
