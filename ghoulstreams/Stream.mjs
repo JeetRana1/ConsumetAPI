@@ -933,30 +933,29 @@ class BuffStreams extends Provider {
     extractEventSessions(html) {
         const sessions = [];
         const seen = new Set();
-        try {
-            const block = this.firstBlockAfterLabel(html, ['live streams', 'cards', 'qualification', 'qualifying', 'race', 'practice', 'indycar', 'formula'], 180000);
-            const itemBlocks = block.match(/<(?:li|tr|article|div)[^>]*(?:class=["'][^"']*(?:session|event|card|row|stream|tab)[^"']*["'])?[^>]*>[\s\S]{0,5000}?<\/(?:li|tr|article|div)>/gi) || [];
-            for (const item of itemBlocks) {
-                try {
-                    const text = this.cleanText(item);
-                    if (!/\b(qualification|qualifying|race|practice|sprint|warm.?up|session|notstarted|live)\b/i.test(text)) continue;
-                    const nameMatch = text.match(/\b(Free Practice\s*\d*|Practice\s*\d*|Qualification|Qualifying|Sprint(?: Race)?|Warm.?up|Race|Session\s*\d*)\b/i);
-                    const dateMatch = text.match(/\b\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}?\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\b/i);
-                    const statusMatch = text.match(/\b(NOT\s*STARTED|NOTSTARTED|LIVE|IN\s*PROGRESS|FINISHED|ENDED|UPCOMING|SCHEDULED)\b/i);
-                    const name = this.cleanText(nameMatch?.[1] || text.split(/\s{2,}| - | \| /)[0] || '');
-                    if (!name || name.length > 80) continue;
-                    const status = this.normalizeSessionStatus(statusMatch?.[1] || '');
-                    const key = `${name}|${dateMatch?.[0] || ''}|${status}`;
-                    if (seen.has(key)) continue;
-                    seen.add(key);
-                    sessions.push({
-                        name,
-                        startsAt: dateMatch ? dateMatch[0].replace(/\s+/g, ' ').trim() : '',
-                        status
-                    });
-                } catch { }
-            }
-        } catch { }
+        const block = this.firstBlockAfterLabel(html, ['live streams', 'cards', 'qualification', 'qualifying', 'race', 'practice', 'indycar', 'formula'], 180000);
+        const itemBlocks = block.match(/<(?:li|tr|article|div)[^>]*>[\s\S]{0,5000}?<\/(?:li|tr|article|div)>/gi) || [];
+        for (const item of itemBlocks) {
+            try {
+                const text = this.cleanText(item);
+                const hasKeyword = /\b(qualification|qualifying|practice|sprint|warm.?up|grand prix|race|session)\b/i.test(text);
+                const hasStatus = /\b(NOT\s*STARTED|NOTSTARTED|LIVE|IN\s*PROGRESS|FINISHED|ENDED|CANCELED|UPCOMING|SCHEDULED)\b/i.test(text);
+                if (!hasKeyword && !hasStatus) continue;
+                const nameMatch = text.match(/\b(Free Practice\s*\d*|Practice\s*\d*|Sprint Qualifying|Qualification|Qualifying|Grand Prix|Sprint(?: Race)?|Warm.?up|Race|Session\s*\d*)\b/i);
+                const dateMatch = text.match(/\b\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}?\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\b/i);
+                const statusMatch = text.match(/\b(NOT\s*STARTED|NOTSTARTED|LIVE|IN\s*PROGRESS|FINISHED|ENDED|CANCELED|UPCOMING|SCHEDULED)\b/i);
+                const rawName = this.cleanText(nameMatch?.[1] || '');
+                if (rawName && /^live\s*streams?$/i.test(rawName)) continue;
+                const name = rawName || this.cleanText(text.split(/\s{2,}| - | \| /)[0] || '');
+                if (!name || name.length > 80 || /^live\s*streams?$/i.test(name)) continue;
+                const status = this.normalizeSessionStatus(statusMatch?.[1] || '');
+                const startsAt = dateMatch ? dateMatch[0].replace(/\s+/g, ' ').trim() : '';
+                const key = `${name}|${startsAt}|${status}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                sessions.push({ name, startsAt, status });
+            } catch { }
+        }
         return sessions.slice(0, 24);
     }
 
@@ -1367,11 +1366,12 @@ class BuffStreams extends Provider {
             const fightCard = this.extractFightCard(html);
             const eventCards = this.extractEventCards(html);
             const activeSession = (() => {
-                const candidates = [...eventSessions, ...sessions];
+                const isReal = (s) => s && s.name && !/live\s*streams?/i.test(s.name) && !/^notstarted$/i.test(s.name);
+                const candidates = [...eventSessions, ...sessions].filter(isReal);
                 if (!candidates.length) return null;
                 const liveMatch = candidates.find((s) => /live|in progress|started/i.test(s.status));
                 if (liveMatch) return liveMatch;
-                const nextMatch = candidates.find((s) => !/finished/i.test(s.status));
+                const nextMatch = candidates.find((s) => !/finished|cancelled/i.test(s.status));
                 if (nextMatch) return nextMatch;
                 return candidates[candidates.length - 1];
             })();
@@ -1745,9 +1745,10 @@ class BuffStreams extends Provider {
         await Promise.allSettled(embedFetchTasks);
 
         if (allSources.length > 0) {
-            console.log(`[Stream.js] Direct page extraction returned ${allSources.length} source(s) for ${eventUrl}`);
+            const filtered = allSources.filter(s => !s.isM3U8 && !/\.m3u8(\?|$)/i.test(s.url));
+            console.log(`[Stream.js] Direct page extraction returned ${allSources.length} source(s), ${filtered.length} after HLS filter`);
             return {
-                sources: allSources,
+                sources: filtered,
                 subtitles: [],
                 headers: this.buildHeaders(eventUrl),
                 embedUrl: pageResult.embedUrl || ''
@@ -1760,11 +1761,13 @@ class BuffStreams extends Provider {
             this.backendApiBase
         );
         if (Array.isArray(backendResult?.sources) && backendResult.sources.length > 0) {
-            const enriched = backendResult.sources.map((s) => ({
-                ...s,
-                name: s.name || s.server || s.label || 'Source',
-                engine: s.engine || (s.isM3U8 ? 'hls' : 'iframe')
-            }));
+            const enriched = backendResult.sources
+                .filter(s => !s.isM3U8 && !/\.m3u8(\?|$)/i.test(s.url))
+                .map((s) => ({
+                    ...s,
+                    name: s.name || s.server || s.label || 'Source',
+                    engine: s.engine || (s.isM3U8 ? 'hls' : 'iframe')
+                }));
             const embedUrl = backendResult.embedUrl || '';
             if (embedUrl && !enriched.some((s) => s.url === embedUrl)) {
                 enriched.push({

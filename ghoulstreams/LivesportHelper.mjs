@@ -1,7 +1,7 @@
 const BASE = 'https://www.livesport.com/';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 
-const SPORT_BY_ID = { '1': 'soccer', '3': 'basketball', '4': 'hockey', '5': 'cfl', '6': 'baseball', '12': 'american-football' };
+const SPORT_BY_ID = { '1': 'soccer', '3': 'basketball', '4': 'hockey', '5': 'cfl', '6': 'baseball', '12': 'american-football', '16': 'boxing' };
 const SOCCER_RE = /\b(soccer|premier league|la liga|serie a|bundesliga|uefa|fifa)\b/i;
 const SUPPORTED_RE = /\b(baseball|mlb|basketball|nba|hockey|nhl|american football|nfl|cfl)\b/i;
 const LIVE_RE = /\b(in progress|live|inning|quarter|period|halftime|half time|ht|break|intermission|delay|1st half|2nd half|overtime|ot)\b/i;
@@ -299,7 +299,7 @@ class LivesportHelper {
             /inning|quarter|period|progress|live|ht|halftime|break|intermission/i.test(m.status) ||
             /^\d+:\d+$/.test(m.status)
         );
-        const ttl = hasLive ? 20000 : 60000;
+        const ttl = hasLive ? 4000 : 60000;
         if (!forceRefresh && now - this.cache.cachedAt < ttl && this.cache.matches.length > 0) {
             return this.cache.matches;
         }
@@ -314,6 +314,7 @@ class LivesportHelper {
             { sport: 'hockey', url: `${BASE}x/feed/f_4_0_2_en_1`, referer: `${BASE}hockey/` },
             { sport: 'cfl', url: `${BASE}x/feed/f_5_0_2_en_1`, referer: `${BASE}football/canada/cfl/` },
             { sport: 'american-football', url: `${BASE}x/feed/f_12_0_2_en_1`, referer: `${BASE}american-football/` },
+            { sport: 'boxing', url: `${BASE}x/feed/f_16_0_2_en_1`, referer: `${BASE}boxing/` },
         ];
 
         for (const feed of sportFeeds) {

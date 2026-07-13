@@ -12,7 +12,7 @@ const provider = new BuffStreams();
 const streamAvailability = new Map();
 const sourcesCache = new Map();
 const directoryCache = { data: null, ts: 0 };
-const DIRECTORY_CACHE_TTL = 20_000;
+const DIRECTORY_CACHE_TTL = 6_000;
 const searchCache = { data: null, ts: 0, key: '' };
 const SEARCH_CACHE_TTL = 12_000;
 const HAS_LOCAL_FRONTEND = fs.existsSync(path.join(__dirname, 'index.html'));
@@ -634,17 +634,13 @@ app.get('/api/racing/watch', async (req, res) => {
 });
 
 app.get('/api/livesport-directory', async (_req, res) => {
-    if (directoryCache.data && Date.now() - directoryCache.ts < DIRECTORY_CACHE_TTL) {
-        return res.json(directoryCache.data);
-    }
     try {
         const { default: LivesportHelper } = await import('./LivesportHelper.mjs');
         const dir = await LivesportHelper.getDirectory();
-        const matches = dir?.matches || [];
-        const result = { success: true, data: { matches } };
+        const result = { success: true, data: { matches: dir?.matches || [] } };
         directoryCache.data = result;
         directoryCache.ts = Date.now();
-        return res.json(result);
+        res.json(result);
     } catch (error) {
         console.error('Directory error:', error?.message || error);
         if (directoryCache.data) return res.json(directoryCache.data);
@@ -676,8 +672,66 @@ app.get('/api/image-proxy', async (req, res) => {
     }
 });
 
-app.get('/api/stream-statuses', (_req, res) => {
-    res.json({ success: true, data: getAvailabilitySnapshot() });
+app.post('/api/boxing-card', async (req, res) => {
+    try {
+        const { url } = req.body;
+        if (!url || !url.startsWith('http')) return res.json({ success: false, error: 'Invalid URL' });
+        const response = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const html = await response.text();
+        const $ = cheerioLoad(html);
+        const seen = new Set();
+        const fights = [];
+        $('ul.under-card-events li').each((_, el) => {
+            const date = $(el).children('div').first().text().trim();
+            const imgs = $(el).find('img[src*="scdnmain"]');
+            const imgSrcs = [];
+            imgs.each((_, img) => { const s = $(img).attr('src') || ''; if (s) imgSrcs.push(s); });
+            const nameDivs = $(el).find('div[style*="min-width:130px"]');
+            const names = [];
+            nameDivs.each((_, nd) => {
+                const n = $(nd).find('div[style*="font-weight:bold"]').first().text().trim();
+                if (n) names.push(n);
+            });
+            const recordDivs = $(el).find('div[style*="min-width:130px"] div[style*="color:#9c9c9c"]');
+            const records = [];
+            recordDivs.each((_, rd) => { const t = $(rd).text().trim(); if (t) records.push(t); });
+            let matchNumber = '';
+            const mnDiv = $(el).find('.match-number');
+            if (mnDiv.length) matchNumber = mnDiv.text().trim();
+            const key = `${names[0] || ''}|${names[1] || ''}`;
+            if (!key || key === '|' || seen.has(key)) return;
+            seen.add(key);
+            if (names.length >= 2) {
+                fights.push({
+                    home: names[0] || '',
+                    away: names[1] || '',
+                    homeRecord: records[0] || '',
+                    awayRecord: records[1] || '',
+                    homeImage: imgSrcs[0] || '',
+                    awayImage: imgSrcs[1] || '',
+                    matchNumber: matchNumber || '',
+                    date: date || '',
+                });
+            }
+        });
+        await Promise.all(fights.flatMap(fight =>
+            ['homeImage', 'awayImage'].map(async side => {
+                const url = fight[side];
+                if (!url) return;
+                try {
+                    const head = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(3000) });
+                    if (!head.ok) fight[side] = '';
+                } catch { fight[side] = ''; }
+            })
+        ));
+        res.json({ success: true, data: { fights, title: $('h1').first().text().trim() || $('title').text().trim() } });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
 });
 
 app.post('/api/report-stream-status', (req, res) => {
@@ -1035,16 +1089,6 @@ app.get('/api/media-proxy', async (req, res) => {
             const targetHost = (() => { try { return new URL(normalizedTargetUrl).hostname; } catch { return ''; } })();
 
             const quickFetch = async (url, opts) => {
-                // Rate-limit requests to the same host: wait at least 3s between attempts
-                if (targetHost) {
-                    const last = hostTimers.get(targetHost) || 0;
-                    const now = Date.now();
-                    const elapsed = now - last;
-                    if (elapsed < 3000) {
-                        await wait(3000 - elapsed);
-                    }
-                    hostTimers.set(targetHost, Date.now());
-                }
                 try {
                     const ctrl = new AbortController();
                     const to = setTimeout(() => ctrl.abort(), 15000);
@@ -1093,8 +1137,10 @@ app.get('/api/media-proxy', async (req, res) => {
                 res.status(200);
                 res.removeHeader('ETag');
                 res.removeHeader('Last-Modified');
-                res.removeHeader('Cache-Control');
-                res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', ...proxyNoStoreHeaders() });
+                res.removeHeader('Pragma');
+                res.removeHeader('Expires');
+                res.removeHeader('Surrogate-Control');
+                res.set({ 'Content-Type': cached.type, 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400, immutable', 'Access-Control-Allow-Origin': '*' });
                 return res.send(Buffer.from(cached.body));
             }
         }
@@ -1141,23 +1187,22 @@ app.get('/api/media-proxy', async (req, res) => {
             ...(response.headers.get('content-length') ? { 'Content-Length': response.headers.get('content-length') } : {}),
             ...(response.headers.get('accept-ranges') ? { 'Accept-Ranges': response.headers.get('accept-ranges') } : {}),
         };
+        const cacheSeconds = isSeg ? 86400 : 0;
         res.set({
             ...responseHeaders,
-            ...proxyNoStoreHeaders()
+            'Cache-Control': isSeg ? `public, max-age=${cacheSeconds}, immutable` : 'no-cache, no-store, must-revalidate',
+            'Access-Control-Allow-Origin': '*'
         });
         res.removeHeader('ETag');
         res.removeHeader('Last-Modified');
-        res.removeHeader('Cache-Control');
+        res.removeHeader('Pragma');
+        res.removeHeader('Expires');
+        res.removeHeader('Surrogate-Control');
 
-        // Stream upstream directly to client via pipe. Playlists and small
-        // media are also accumulated for cache (constrained by MEDIA_CACHE_MAX_SIZE).
-        // Segments (isSeg===true) skip accumulation entirely.
         try {
             if (response.body) {
                 const nodeStream = Readable.fromWeb(response.body);
                 nodeStream.pipe(res);
-                // Cache the full response asynchronously after streaming
-                // completes, so the player never waits on cache writes.
                 if (!isSeg) {
                     const ct = response.headers.get('content-type') || 'application/octet-stream';
                     let accSize = 0;
