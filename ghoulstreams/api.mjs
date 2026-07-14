@@ -1266,18 +1266,21 @@ app.get('/api/media-proxy', async (req, res) => {
             pushUnique(getRememberedReferer(normalizedTargetUrl));
             pushUnique(referer);
             pushUnique(rootReferer);
-            pushUnique(normalizedTargetUrl);
-            try { const o = new URL(normalizedTargetUrl).origin; if (o) pushUnique(o + '/'); } catch { }
+            if (!isSeg) {
+                pushUnique(normalizedTargetUrl);
+                try { const o = new URL(normalizedTargetUrl).origin; if (o) pushUnique(o + '/'); } catch { }
+            }
 
-            // Also try without any referer
+            // Segment-like media should fail over quickly instead of stalling on bad referers.
             candidates.push('');
-
-            const targetHost = (() => { try { return new URL(normalizedTargetUrl).hostname; } catch { return ''; } })();
+            if (isSeg) {
+                try { const o = new URL(normalizedTargetUrl).origin; if (o && !candidates.includes(o + '/')) candidates.push(o + '/'); } catch { }
+            }
 
             const quickFetch = async (url, opts) => {
                 try {
                     const ctrl = new AbortController();
-                    const to = setTimeout(() => ctrl.abort(), 15000);
+                    const to = setTimeout(() => ctrl.abort(), isSeg ? 5000 : 12000);
                     const r = await fetch(url, { ...opts, signal: ctrl.signal });
                     clearTimeout(to);
                     return r;
