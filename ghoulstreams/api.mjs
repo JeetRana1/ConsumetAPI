@@ -175,10 +175,10 @@ const getAvailabilitySnapshot = () => {
 const mediaCache = new Map();
 const mediaRefererCache = new Map();
 const mediaInflight = new Map();
-const MEDIA_CACHE_MAX = 150;
+const MEDIA_CACHE_MAX = 400;
 const MEDIA_CACHE_TTL_SEGMENT = 3600_000;
 const MEDIA_CACHE_TTL_PLAYLIST = 30_000;
-const MEDIA_CACHE_TTL_LIVE_PLAYLIST = 30_000;
+const MEDIA_CACHE_TTL_LIVE_PLAYLIST = 3_000;
 const MEDIA_CACHE_STALE_LIMIT = 300_000;
 const MEDIA_CACHE_MAX_SIZE = 5_000_000;
 const isSegment = (url) => /\.ts(?:[?#]|$)/i.test(url) || /\.txt\?.*X-Amz-/i.test(url);
@@ -208,6 +208,82 @@ const setInflight = (key, promise) => {
   };
   promise.then(clear).catch(clear);
   return promise;
+};
+
+const getMediaRefererKeys = (targetUrl) => {
+  const raw = String(targetUrl || '').trim();
+  if (!raw) return [];
+  const keys = new Set([raw]);
+  try {
+    const parsed = new URL(raw);
+    const pathname = String(parsed.pathname || '');
+    const dir = pathname.replace(/\/[^/]*$/, '/') || '/';
+    keys.add(`${parsed.origin}${dir}`);
+  } catch { }
+  return [...keys];
+};
+
+const getRememberedReferer = (targetUrl) => {
+  for (const key of getMediaRefererKeys(targetUrl)) {
+    const value = mediaRefererCache.get(key);
+    if (value) return value;
+  }
+  return '';
+};
+
+const rememberReferer = (targetUrl, referer) => {
+  const safeReferer = String(referer || '').trim();
+  if (!safeReferer) return;
+  for (const key of getMediaRefererKeys(targetUrl)) {
+    mediaRefererCache.set(key, safeReferer);
+  }
+};
+
+const prefetchMediaUrl = (targetUrl, referer) => {
+  const normalizedTargetUrl = String(targetUrl || '').trim();
+  if (!isAbsoluteHttpUrl(normalizedTargetUrl)) return;
+  if (!isSegment(normalizedTargetUrl)) return;
+  if (getFromCache(normalizedTargetUrl) || getInflight(normalizedTargetUrl + ':media-prefetch')) return;
+
+  const job = (async () => {
+    try {
+      const headers = stripConditionalHeaders({
+        'User-Agent': USER_AGENT,
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        ...(referer ? { 'Referer': referer, 'Origin': (() => { try { return new URL(referer).origin; } catch { return ''; } })() } : {})
+      });
+      const resp = await fetchWithRetry(normalizedTargetUrl, { headers }, 1);
+      if (!resp || (!resp.ok && resp.status !== 206)) return null;
+      const arr = Buffer.from(await resp.arrayBuffer());
+      const ct = resp.headers.get('content-type') || 'application/octet-stream';
+      if (arr.length > 0 && arr.length < MEDIA_CACHE_MAX_SIZE) {
+        setCache(normalizedTargetUrl, { body: arr, type: ct }, true);
+        if (referer) rememberReferer(normalizedTargetUrl, referer);
+      }
+      return true;
+    } catch {
+      return null;
+    }
+  })();
+
+  setInflight(normalizedTargetUrl + ':media-prefetch', job);
+};
+
+const prefetchPlaylistSegments = (playlistText, playlistUrl, referer) => {
+  const lines = String(playlistText || '').split(/\r?\n/);
+  let count = 0;
+  for (const line of lines) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    try {
+      const absolute = new URL(trimmed, playlistUrl).toString();
+      if (!isSegment(absolute)) continue;
+      prefetchMediaUrl(absolute, referer || playlistUrl);
+      count += 1;
+      if (count >= 4) break;
+    } catch { }
+  }
 };
 
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1090,7 +1166,7 @@ app.get('/api/media-proxy', async (req, res) => {
         const fetchUpstream = async () => {
             const candidates = [];
             const pushUnique = (v) => { if (v && /^https?:\/\//i.test(v) && !candidates.includes(v)) candidates.push(v); };
-            pushUnique(mediaRefererCache.get(cacheKey));
+            pushUnique(getRememberedReferer(normalizedTargetUrl));
             pushUnique(referer);
             pushUnique(rootReferer);
             pushUnique(normalizedTargetUrl);
@@ -1118,7 +1194,7 @@ app.get('/api/media-proxy', async (req, res) => {
                     : { 'User-Agent': USER_AGENT, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9' };
                 const resp = await quickFetch(normalizedTargetUrl, { headers });
                 if (resp.ok || resp.status === 206) {
-                    if (ref) mediaRefererCache.set(cacheKey, ref);
+                    rememberReferer(normalizedTargetUrl, ref);
                     return { response: resp, usedReferer: ref };
                 }
                 lastResponse = resp;
@@ -1180,11 +1256,12 @@ app.get('/api/media-proxy', async (req, res) => {
             }
         }
 
+        const inflightKey = isPlaylist ? cacheKey + ':upstream' : cacheKey + ':media';
         const fetchPromise = (async () => {
             const { response, usedReferer } = await fetchUpstream();
             return { response, usedReferer };
         })();
-        const { response, usedReferer } = isPlaylist ? await setInflight(cacheKey + ':upstream', fetchPromise) : await fetchPromise;
+        const { response, usedReferer } = await setInflight(inflightKey, fetchPromise);
 
         if (!response || (!response.ok && response.status !== 206)) {
             if (isPlaylist) {
@@ -1222,6 +1299,7 @@ app.get('/api/media-proxy', async (req, res) => {
         if (isPlaylist) {
             const rewritePromise = (async () => {
                 const body = await response.text();
+                prefetchPlaylistSegments(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl);
                 const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl, proxyBaseUrl);
                 mediaCache.set(cacheKey + ':rewritten', { data: rewritten, expires: Date.now() + MEDIA_CACHE_TTL_LIVE_PLAYLIST, created: Date.now() });
                 return rewritten;
