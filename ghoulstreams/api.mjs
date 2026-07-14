@@ -274,7 +274,8 @@ const prefetchMediaUrl = (targetUrl, referer) => {
   const normalizedTargetUrl = String(targetUrl || '').trim();
   if (!isAbsoluteHttpUrl(normalizedTargetUrl)) return;
   if (!isSegment(normalizedTargetUrl)) return;
-  if (getFromCache(normalizedTargetUrl) || getInflight(normalizedTargetUrl + ':media-prefetch')) return;
+  const inflightKey = normalizedTargetUrl + ':media';
+  if (getFromCache(normalizedTargetUrl) || getInflight(inflightKey)) return;
 
   const job = (async () => {
     try {
@@ -298,7 +299,7 @@ const prefetchMediaUrl = (targetUrl, referer) => {
     }
   })();
 
-  setInflight(normalizedTargetUrl + ':media-prefetch', job);
+  setInflight(inflightKey, job);
 };
 
 const prefetchPlaylistSegments = (playlistText, playlistUrl, referer) => {
@@ -312,7 +313,7 @@ const prefetchPlaylistSegments = (playlistText, playlistUrl, referer) => {
       if (!isSegment(absolute)) continue;
       prefetchMediaUrl(absolute, referer || playlistUrl);
       count += 1;
-      if (count >= 4) break;
+      if (count >= 10) break;
     } catch { }
   }
 };
