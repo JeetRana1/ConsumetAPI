@@ -480,9 +480,6 @@ const rewritePlaylist = (text, playlistUrl, rootReferer, baseUrl) => {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('#')) return line;
             const absolute = new URL(trimmed, playlistUrl).toString();
-            if (isSegment(absolute)) {
-                return absolute;
-            }
             return proxiedMediaUrl(absolute, playlistUrl, rootReferer || playlistUrl, baseUrl);
         })
         .join('\n');
@@ -1266,18 +1263,19 @@ app.get('/api/media-proxy', async (req, res) => {
         const fetchUpstream = async () => {
             const candidates = [];
             const pushUnique = (v) => { if (v && /^https?:\/\//i.test(v) && !candidates.includes(v)) candidates.push(v); };
-            pushUnique(getRememberedReferer(normalizedTargetUrl));
-            pushUnique(referer);
-            pushUnique(rootReferer);
-            if (!isSeg) {
+            const rememberedReferer = getRememberedReferer(normalizedTargetUrl);
+            pushUnique(rememberedReferer);
+            if (isSeg) {
+                candidates.push('');
+                try { const o = new URL(normalizedTargetUrl).origin; if (o) pushUnique(o + '/'); } catch { }
+                pushUnique(referer);
+                pushUnique(rootReferer);
+            } else {
+                pushUnique(referer);
+                pushUnique(rootReferer);
                 pushUnique(normalizedTargetUrl);
                 try { const o = new URL(normalizedTargetUrl).origin; if (o) pushUnique(o + '/'); } catch { }
-            }
-
-            // Segment-like media should fail over quickly instead of stalling on bad referers.
-            candidates.push('');
-            if (isSeg) {
-                try { const o = new URL(normalizedTargetUrl).origin; if (o && !candidates.includes(o + '/')) candidates.push(o + '/'); } catch { }
+                candidates.push('');
             }
 
             const quickFetch = async (url, opts) => {
