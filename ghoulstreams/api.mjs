@@ -425,7 +425,55 @@ const proxiedMediaUrl = (targetUrl, referer, rootReferer, baseUrl) => {
     return path;
 };
 
+const selectLowestBandwidthVariant = (playlistText) => {
+    const lines = String(playlistText || '').split(/\r?\n/);
+    const variants = [];
+    for (let i = 0; i < lines.length; i += 1) {
+        const infoLine = String(lines[i] || '');
+        const trimmedInfo = infoLine.trim();
+        if (!trimmedInfo.startsWith('#EXT-X-STREAM-INF:')) continue;
+        let nextIndex = i + 1;
+        while (nextIndex < lines.length) {
+            const candidate = String(lines[nextIndex] || '').trim();
+            if (!candidate) {
+                nextIndex += 1;
+                continue;
+            }
+            if (candidate.startsWith('#')) break;
+            const bandwidthMatch = trimmedInfo.match(/(?:^|,)BANDWIDTH=(\d+)/i);
+            variants.push({
+                bandwidth: bandwidthMatch ? Number(bandwidthMatch[1]) : Number.MAX_SAFE_INTEGER,
+                infoLine: infoLine,
+                uriLine: lines[nextIndex]
+            });
+            break;
+        }
+    }
+    if (!variants.length) return null;
+    variants.sort((a, b) => a.bandwidth - b.bandwidth);
+    return variants[0];
+};
+
 const rewritePlaylist = (text, playlistUrl, rootReferer, baseUrl) => {
+    const selectedVariant = selectLowestBandwidthVariant(text);
+    if (selectedVariant) {
+        const preservedLines = String(text || '')
+            .split(/\r?\n/)
+            .filter((line) => {
+                const trimmed = String(line || '').trim();
+                return trimmed === '#EXTM3U'
+                    || trimmed.startsWith('#EXT-X-VERSION')
+                    || trimmed.startsWith('#EXT-X-INDEPENDENT-SEGMENTS')
+                    || trimmed.startsWith('#EXT-X-MEDIA')
+                    || trimmed.startsWith('#EXT-X-SESSION-');
+            });
+        const absolute = new URL(String(selectedVariant.uriLine || '').trim(), playlistUrl).toString();
+        return [
+            ...preservedLines,
+            selectedVariant.infoLine,
+            proxiedMediaUrl(absolute, playlistUrl, rootReferer || playlistUrl, baseUrl)
+        ].join('\n');
+    }
     const lines = String(text || '').split(/\r?\n/);
     return lines
         .map((line) => {
