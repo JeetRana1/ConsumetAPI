@@ -5,6 +5,7 @@ package-lock.json
 yarn.lock
 yarn-error.log
 .chrome-debug-9222
+.tsbuildinfo
 
 # Environment and Config
 .env

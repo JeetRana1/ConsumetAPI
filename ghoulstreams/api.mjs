@@ -1148,15 +1148,13 @@ app.get('/api/media-proxy', async (req, res) => {
         } catch { }
 
         const strippedRange = req.headers.range;
-        const outgoingHeaders = {
+        const upstreamBaseHeaders = {
             'User-Agent': USER_AGENT,
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': referer || normalizedTargetUrl,
-            'Origin': (() => { try { return new URL(referer || normalizedTargetUrl).origin; } catch { return ''; } })(),
             ...(strippedRange ? { 'Range': strippedRange } : {})
         };
-        const cleanHeaders = stripConditionalHeaders(outgoingHeaders);
+        const cleanHeaders = stripConditionalHeaders(upstreamBaseHeaders);
 
         const isSeg = isSegment(normalizedTargetUrl);
         const isPlaylist = /mpegurl|m3u8|load-playlist|\/playlist\/|\/video\/?(?:\?|#|$)/i.test(normalizedTargetUrl) || /playlist/i.test(String(req.headers['content-type'] || ''));
@@ -1191,8 +1189,8 @@ app.get('/api/media-proxy', async (req, res) => {
             let lastResponse = null;
             for (const ref of candidates) {
                 const headers = ref
-                    ? { 'User-Agent': USER_AGENT, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': ref, 'Origin': (() => { try { return new URL(ref).origin; } catch { return ''; } })() }
-                    : { 'User-Agent': USER_AGENT, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9' };
+                    ? { ...cleanHeaders, 'Referer': ref, 'Origin': (() => { try { return new URL(ref).origin; } catch { return ''; } })() }
+                    : { ...cleanHeaders };
                 const resp = await quickFetch(normalizedTargetUrl, { headers });
                 if (resp.ok || resp.status === 206) {
                     rememberReferer(normalizedTargetUrl, ref);
@@ -1243,7 +1241,7 @@ app.get('/api/media-proxy', async (req, res) => {
                     return res.send(rewritten);
                 }
             }
-        } else {
+        } else if (!strippedRange) {
             const cached = getFromCache(cacheKey);
             if (cached) {
                 res.status(200);
@@ -1257,7 +1255,9 @@ app.get('/api/media-proxy', async (req, res) => {
             }
         }
 
-        const inflightKey = isPlaylist ? cacheKey + ':upstream' : cacheKey + ':media';
+        const inflightKey = isPlaylist
+            ? cacheKey + ':upstream'
+            : cacheKey + ':media' + (strippedRange ? `:range:${strippedRange}` : '');
         const fetchPromise = (async () => {
             const { response, usedReferer } = await fetchUpstream();
             return { response, usedReferer };
@@ -1283,7 +1283,7 @@ app.get('/api/media-proxy', async (req, res) => {
                     return res.send(stalePlaylist);
                 }
             }
-            if (!isPlaylist) {
+            if (!isPlaylist && !strippedRange) {
                 const staleMedia = getFromCache(cacheKey, true);
                 if (staleMedia) {
                     res.status(200);
@@ -1343,7 +1343,7 @@ app.get('/api/media-proxy', async (req, res) => {
             if (response.body) {
                 const nodeStream = Readable.fromWeb(response.body);
                 nodeStream.pipe(res);
-                if (!isSeg) {
+                if (!strippedRange) {
                     const ct = response.headers.get('content-type') || 'application/octet-stream';
                     let accSize = 0;
                     const accChunks = [];
@@ -1353,7 +1353,7 @@ app.get('/api/media-proxy', async (req, res) => {
                     });
                     nodeStream.on('end', () => {
                         if (accChunks.length > 0 && accSize > 0) {
-                            setCache(cacheKey, { body: Buffer.concat(accChunks), type: ct }, false);
+                            setCache(cacheKey, { body: Buffer.concat(accChunks), type: ct }, isSeg);
                         }
                     });
                 }
