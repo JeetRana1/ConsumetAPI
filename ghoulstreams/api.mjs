@@ -480,6 +480,9 @@ const rewritePlaylist = (text, playlistUrl, rootReferer, baseUrl) => {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('#')) return line;
             const absolute = new URL(trimmed, playlistUrl).toString();
+            if (isSegment(absolute)) {
+                return absolute;
+            }
             return proxiedMediaUrl(absolute, playlistUrl, rootReferer || playlistUrl, baseUrl);
         })
         .join('\n');
