@@ -1,4 +1,3 @@
-import { Redis } from 'ioredis';
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { META } from '@consumet/extensions';
 import { Genres, SubOrSub } from '@consumet/extensions/dist/models';
@@ -7,7 +6,7 @@ import { StreamingServers } from '@consumet/extensions/dist/models';
 
 import cache from '../../utils/cache';
 import { redis } from '../../main';
-import AnimePahe from '@consumet/extensions/dist/providers/anime/animepahe';
+import AnimeSama from '@consumet/extensions/dist/providers/anime/animesama';
 import { fetchWithServerFallback } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 import { getProxyCandidatesSync } from '../../utils/outboundProxy';
@@ -113,7 +112,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           .status(200)
           .send(
             await cache.fetch(
-              redis as Redis,
+              redis as any,
               `anilist:trending;${page};${perPage}`,
               async () => await anilist.fetchTrendingAnime(page, perPage),
               60 * 60,
@@ -133,7 +132,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           .status(200)
           .send(
             await cache.fetch(
-              redis as Redis,
+              redis as any,
               `anilist:popular;${page};${perPage}`,
               async () => await anilist.fetchPopularAnime(page, perPage),
               60 * 60,
@@ -386,7 +385,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 const generateAnilistMeta = (provider: string | undefined = undefined): Anilist => {
   const proxies = getProxyCandidatesSync();
   const url = proxies.length > 0 ? (proxies.length === 1 ? proxies[0] : proxies) : [];
-  return new Anilist(configureProvider(new AnimePahe()), {
+  return new Anilist(configureProvider(new AnimeSama()), {
     url: url as string | string[],
   });
 };

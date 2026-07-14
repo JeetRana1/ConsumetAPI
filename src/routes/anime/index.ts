@@ -1,18 +1,10 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { PROVIDERS_LIST } from '@consumet/extensions';
 
-import satoru from './satoru';
-import justanime from './justanime';
 import animesalt from './animesalt';
-import animekai from './animekai';
-import animetsu from './animetsu';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  await fastify.register(satoru, { prefix: '/satoru' });
-  await fastify.register(justanime, { prefix: '/justanime' });
   await fastify.register(animesalt, { prefix: '/animesalt' });
-  await fastify.register(animekai, { prefix: '/animekai' });
-  await fastify.register(animetsu, { prefix: '/animetsu' });
 
   fastify.get('/', async (request: any, reply: any) => {
     reply.status(200).send('Welcome to Consumet Anime 🗾');

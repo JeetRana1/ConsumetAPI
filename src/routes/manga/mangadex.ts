@@ -5,7 +5,6 @@ import { configureProvider } from '../../utils/provider';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
-import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const mangadex = configureProvider(new MANGA.MangaDex());
@@ -30,7 +29,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `mangadex:search:${query}:${page ?? 1}`,
             () => mangadex.search(query, page),
             REDIS_TTL,
@@ -52,7 +51,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `mangadex:info:${id}`,
             () => mangadex.fetchMangaInfo(id),
             REDIS_TTL,
@@ -76,7 +75,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       try {
         const res = redis
           ? await cache.fetch(
-              redis as Redis,
+              redis as any,
               `mangadex:read:${chapterId}`,
               () => fetchChapterPagesWithFallback(chapterId),
               REDIS_TTL,

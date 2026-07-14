@@ -4,7 +4,6 @@ import { configureProvider } from '../../utils/provider';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
-import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const mangapill = configureProvider(new MANGA.MangaPill());
@@ -23,7 +22,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `mangapill:search:${query}`,
             () => mangapill.search(query),
             REDIS_TTL,
@@ -46,7 +45,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `mangapill:info:${id}`,
             () => mangapill.fetchMangaInfo(id),
             REDIS_TTL,
@@ -69,7 +68,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       const res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `mangapill:read:${chapterId}`,
             () => mangapill.fetchChapterPages(chapterId),
             REDIS_TTL,

@@ -8,7 +8,7 @@ const anilist_1 = __importDefault(require("@consumet/extensions/dist/providers/m
 const models_2 = require("@consumet/extensions/dist/models");
 const cache_1 = __importDefault(require("../../utils/cache"));
 const main_1 = require("../../main");
-const animepahe_1 = __importDefault(require("@consumet/extensions/dist/providers/anime/animepahe"));
+const animesama_1 = __importDefault(require("@consumet/extensions/dist/providers/anime/animesama"));
 const streamable_1 = require("../../utils/streamable");
 const provider_1 = require("../../utils/provider");
 const outboundProxy_1 = require("../../utils/outboundProxy");
@@ -271,7 +271,7 @@ const routes = async (fastify, options) => {
 const generateAnilistMeta = (provider = undefined) => {
     const proxies = (0, outboundProxy_1.getProxyCandidatesSync)();
     const url = proxies.length > 0 ? (proxies.length === 1 ? proxies[0] : proxies) : [];
-    return new anilist_1.default((0, provider_1.configureProvider)(new animepahe_1.default()), {
+    return new anilist_1.default((0, provider_1.configureProvider)(new animesama_1.default()), {
         url: url,
     });
 };

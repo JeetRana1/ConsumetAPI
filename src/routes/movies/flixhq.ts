@@ -2,7 +2,6 @@ import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from '
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
-import { Redis } from 'ioredis';
 import { FlixHQProvider } from '../../providers/custom/flixhqProvider';
 
 const isDirectMediaUrl = (value: string): boolean =>
@@ -92,7 +91,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:home`,
             async () => await FlixHQProvider.fetchHome(),
             REDIS_TTL,
@@ -112,7 +111,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:search:${query}:${page}`,
             async () => await FlixHQProvider.search(query, page),
             REDIS_TTL,
@@ -136,7 +135,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:search:${query}:${page}`,
             async () => await FlixHQProvider.search(query, page),
             REDIS_TTL,
@@ -155,7 +154,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:popular-movies:${page}`,
             async () => await FlixHQProvider.fetchPopularMovies(page),
             REDIS_TTL,
@@ -174,7 +173,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:popular-tv:${page}`,
             async () => await FlixHQProvider.fetchPopularTv(page),
             REDIS_TTL,
@@ -193,7 +192,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:top-movies:${page}`,
             async () => await FlixHQProvider.fetchTopMovies(page),
             REDIS_TTL,
@@ -212,7 +211,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:top-tv:${page}`,
             async () => await FlixHQProvider.fetchTopTv(page),
             REDIS_TTL,
@@ -231,7 +230,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:upcoming:${page}`,
             async () => await FlixHQProvider.fetchUpcoming(page),
             REDIS_TTL,
@@ -254,7 +253,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:info:${id}`,
             async () => await FlixHQProvider.fetchMediaInfo(id),
             REDIS_TTL,
@@ -277,7 +276,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `flixhq:servers:${episodeId}`,
             async () => await FlixHQProvider.fetchServers(episodeId),
             REDIS_TTL,
@@ -329,7 +328,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       let res: any = null;
       if (redis) {
         try {
-          res = await cache.get(redis as Redis, watchCacheKey);
+          res = await cache.get(redis as any, watchCacheKey);
         } catch {
           res = null;
         }
@@ -346,7 +345,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           res.sources.length > 0 &&
           !res?.error
         ) {
-          (redis as Redis)
+          (redis as any)
             .setex(watchCacheKey, REDIS_TTL, JSON.stringify(res))
             .catch(() => {});
         }

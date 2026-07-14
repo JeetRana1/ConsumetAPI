@@ -3,7 +3,6 @@ import { COMICS } from '@consumet/extensions';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
-import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const getComics = new COMICS.GetComics();
@@ -29,7 +28,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `getcomics:search:${comicTitle}:${page}`,
             async () => await getComics.search(comicTitle, page),
             REDIS_TTL,

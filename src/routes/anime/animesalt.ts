@@ -3,7 +3,6 @@ import * as cheerio from 'cheerio';
 import { proxyGet, proxyPost } from '../../utils/outboundProxy';
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
-import { Redis } from 'ioredis';
 import Anilist from '@consumet/extensions/dist/providers/meta/anilist';
 
 const BASE_URL = 'https://animesalt.ac';
@@ -255,7 +254,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const cacheType = requestedType || 'all';
       const results = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `animesalt:search:${query}:${cacheType}`,
             fetchSearch,
             REDIS_TTL,
@@ -566,7 +565,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const infoCacheVersion = hydrateTitles ? 'v5-hydrated' : 'v5-fast';
       const info = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `animesalt:info:${id}:${infoCacheVersion}`,
             fetchInfo,
             REDIS_TTL,

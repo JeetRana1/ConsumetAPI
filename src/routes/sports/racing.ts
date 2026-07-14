@@ -2,7 +2,6 @@ import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from '
 import { Racing } from '../../providers/sports/racing';
 import { redis, REDIS_TTL } from '../../main';
 import cache from '../../utils/cache';
-import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const racing = new Racing();
@@ -26,7 +25,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       let res =
         redis && !forceRefresh
           ? await cache.fetch(
-              redis as Redis,
+              redis as any,
               cacheKey,
               async () => await racing.search(query),
               REDIS_TTL,
@@ -72,7 +71,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     try {
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `sports:racing:watch:${episodeId}`,
             async () => await racing.fetchEpisodeSources(episodeId),
             REDIS_TTL,

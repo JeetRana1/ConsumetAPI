@@ -454,7 +454,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           /(^|\.)net20\.cc$/.test(host) ||
           /(^|\.)nm-cdn\d+\.top$/.test(host) ||
           host.includes('animesalt') ||
-          host.includes('swiftstream') ||
           host.includes('sprintcdn') ||
           host.includes('r66nv9ed');
         const sticky = proxyAffinityByHost.get(host);
@@ -513,15 +512,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               );
             } else if (!originForRequest) {
               originForRequest = 'https://animesalt.ac';
-            }
-          } else if (isHianimeCdn) {
-            // Shared CDNs usually require a valid referer. If it's a JustAnime request, use justanime.to
-            const isJustAnime =
-              /justanime\./i.test(refererForRequest) ||
-              /streamverse-api\./i.test(refererForRequest);
-            if (isJustAnime) {
-              refererForRequest = 'https://justanime.to/';
-              originForRequest = 'https://justanime.to';
             }
           }
 
@@ -655,7 +645,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             host.includes('swiftstream') ||
             host.includes('sprintcdn') ||
             host.includes('r66nv9ed') ||
-            ref.includes('animetsu') ||
             ref.includes('swiftstream') ||
             ref.includes('animesalt') ||
             ref.includes('flixhq') ||

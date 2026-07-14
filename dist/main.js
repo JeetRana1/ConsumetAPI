@@ -28,7 +28,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.tmdbApi = exports.REDIS_TTL = exports.redis = void 0;
 require('dotenv').config();
-const ioredis_1 = __importDefault(require("ioredis"));
 const fastify_1 = __importDefault(require("fastify"));
 const cors_1 = __importDefault(require("@fastify/cors"));
 const axios_1 = __importDefault(require("axios"));
@@ -54,18 +53,8 @@ const chalk_1 = __importDefault(require("chalk"));
 const utils_1 = __importDefault(require("./utils"));
 const streamable_1 = require("./utils/streamable");
 const watchTogether_1 = require("./utils/watchTogether");
-exports.redis = process.env.REDIS_HOST &&
-    new ioredis_1.default({
-        host: process.env.REDIS_HOST,
-        port: Number(process.env.REDIS_PORT),
-        password: process.env.REDIS_PASSWORD,
-        lazyConnect: true,
-        enableOfflineQueue: false,
-        maxRetriesPerRequest: 1,
-        connectTimeout: 2000,
-    });
-// Sets default TTL to 1 hour (3600 seconds) if not provided in .env
-exports.REDIS_TTL = Number(process.env.REDIS_TTL) || 3600;
+exports.redis = null;
+exports.REDIS_TTL = 3600;
 const fastify = (0, fastify_1.default)({
     maxParamLength: 1000,
     logger: true,
@@ -148,12 +137,7 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         }, 1000 * 60 * 60);
     }
     console.log(chalk_1.default.green(`Starting server on port ${PORT}... 🚀`));
-    if (!process.env.REDIS_HOST) {
-        console.warn(chalk_1.default.yellowBright('Redis not found. Cache disabled.'));
-    }
-    else {
-        console.log(chalk_1.default.green(`Redis connected. Default Cache TTL: ${exports.REDIS_TTL} seconds`));
-    }
+    console.log(chalk_1.default.yellowBright('Redis removed. Cache disabled.'));
     if (!process.env.TMDB_KEY)
         console.warn(chalk_1.default.yellowBright('TMDB api key not found. the TMDB meta route may not work.'));
     await fastify.register(books_1.default, { prefix: '/books' });
@@ -204,7 +188,8 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             if (!trimmed)
                 return trimmed;
             try {
-                return buildProxyPath(new URL(trimmed, manifestUrl).toString(), referer, isSegment, baseUrl);
+                const upstreamReferer = manifestUrl || referer;
+                return buildProxyPath(new URL(trimmed, manifestUrl).toString(), upstreamReferer, isSegment, baseUrl);
             }
             catch {
                 return trimmed;
@@ -252,14 +237,25 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         return /\/(?:hls|oppai)\//i.test(url);
     };
     const fetchHlsResource = async (url, isManifest, incomingRange, referer, cookieHeader) => {
-        const proxyCandidates = [...(0, outboundProxy_1.getProxyCandidatesSync)(), ''];
+        const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
+        const proxyCandidates = isAnimeSaltCdn ? [''] : [...(0, outboundProxy_1.getProxyCandidatesSync)(), ''];
         let lastError = null;
+        const effectiveReferer = (() => {
+            const safeReferer = String(referer || '').trim();
+            if (!safeReferer)
+                return safeReferer;
+            const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
+            if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
+                return '';
+            }
+            return safeReferer;
+        })();
         for (const proxyUrl of proxyCandidates) {
             try {
                 const proxyOptions = proxyUrl ? (0, outboundProxy_1.toAxiosProxyOptions)(proxyUrl) : {};
                 const upstreamOrigin = (() => {
                     try {
-                        return new URL(referer).origin;
+                        return new URL(effectiveReferer).origin;
                     }
                     catch {
                         return '';
@@ -267,7 +263,7 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                 })();
                 const response = await axios_1.default.get(url, {
                     headers: {
-                        Referer: referer || 'https://streameeeeee.site/',
+                        Referer: effectiveReferer || 'https://streameeeeee.site/',
                         ...(upstreamOrigin ? { Origin: upstreamOrigin } : {}),
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                         ...(cookieHeader ? { Cookie: cookieHeader } : {}),
@@ -345,6 +341,7 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             const responseText = responseBuffer
                 ? responseBuffer.toString('utf8')
                 : String(response.data || '');
+            const isKeyResponse = /\/keys\/key\.bin(?:$|\?)/i.test(url);
             const responseIsManifest = isManifest || isLikelyHlsManifest(responseText, responseContentType);
             // If it's an M3U8 manifest, rewrite relative URLs to absolute/proxied URLs.
             // Some AnimeSalt variant playlists are extensionless /hls/<token> URLs, so
@@ -361,6 +358,25 @@ exports.tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                 return reply.send(content);
             }
             // For other content (segments, etc.), proxy as-is
+            if (isKeyResponse && responseBuffer) {
+                const trimmedKey = responseText.replace(/\s+/g, '');
+                if (/^[A-Za-z0-9+/=]+$/.test(trimmedKey) && trimmedKey.length >= 24) {
+                    try {
+                        const decodedKey = Buffer.from(trimmedKey, 'base64');
+                        if (decodedKey.length >= 16 && decodedKey.length < responseBuffer.length) {
+                            reply.header('Access-Control-Allow-Origin', '*');
+                            reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+                            reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+                            reply.header('Content-Type', 'application/octet-stream');
+                            reply.header('Content-Length', decodedKey.length);
+                            return reply.send(decodedKey);
+                        }
+                    }
+                    catch {
+                        // Fall back to raw key payload when decoding fails.
+                    }
+                }
+            }
             reply.header('Access-Control-Allow-Origin', '*');
             reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
             reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');

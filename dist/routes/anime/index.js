@@ -4,17 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const extensions_1 = require("@consumet/extensions");
-const satoru_1 = __importDefault(require("./satoru"));
-const justanime_1 = __importDefault(require("./justanime"));
 const animesalt_1 = __importDefault(require("./animesalt"));
-const animekai_1 = __importDefault(require("./animekai"));
-const animetsu_1 = __importDefault(require("./animetsu"));
 const routes = async (fastify, options) => {
-    await fastify.register(satoru_1.default, { prefix: '/satoru' });
-    await fastify.register(justanime_1.default, { prefix: '/justanime' });
     await fastify.register(animesalt_1.default, { prefix: '/animesalt' });
-    await fastify.register(animekai_1.default, { prefix: '/animekai' });
-    await fastify.register(animetsu_1.default, { prefix: '/animetsu' });
     fastify.get('/', async (request, reply) => {
         reply.status(200).send('Welcome to Consumet Anime 🗾');
     });

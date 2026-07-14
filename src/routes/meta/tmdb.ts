@@ -4,7 +4,6 @@ import { MOVIES } from '@consumet/extensions';
 import { load } from 'cheerio';
 import { tmdbApi, redis, REDIS_TTL } from '../../main';
 import cache from '../../utils/cache';
-import { Redis } from 'ioredis';
 import { fetchWithServerFallback, MOVIE_SERVER_FALLBACKS } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
 import { getMovieEmbedFallbackSource } from '../../utils/movieServerFallback';
@@ -350,11 +349,7 @@ const fetchYouTubeTrailer = async (
 
 // Map of anime providers that have direct routes in this API
 const ANIME_PROVIDER_ROUTES: Record<string, string> = {
-  satoru: '/anime/satoru',
-  justanime: '/anime/justanime',
   animesalt: '/anime/animesalt',
-  animekai: '/anime/animekai',
-  animetsu: '/anime/animetsu',
 };
 
 const resolveMovieProvider = (provider?: string) => {
@@ -410,14 +405,14 @@ const resolveHdstream4uTvEpisodeId = async (
               )
                 ? -550
                 : 0;
-            const seasonHit = new RegExp(`season[\s-]*${requestedSeason}(?:\b|-)`, 'i').test(
+            const seasonHit = new RegExp(`season[\\s-]*${requestedSeason}(?:\\b|-)`, 'i').test(
               `${entry.title} ${entry.url}`,
             )
               ? 300
               : -200;
             const yearBonus =
               preferredYear &&
-              new RegExp(`(^|[^\d])${preferredYear}([^\d]|$)`, 'i').test(entry.title)
+              new RegExp(`(^|[^\\d])${preferredYear}([^\\d]|$)`, 'i').test(entry.title)
                 ? 120
                 : 0;
             return {
@@ -494,6 +489,9 @@ const resolveHdstream4uTvEpisodeId = async (
 
   return '';
 };
+
+
+
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const MOVIE_WATCH_ATTEMPT_TIMEOUT_MS = Number(
@@ -761,7 +759,7 @@ const resolveHdstream4uEpisodeId = async (
       const ranked = results
         .map((entry) => {
           const score = titleMatchScore(entry.title, titleCandidates);
-          const yearBonus = preferredYear && new RegExp(`(^|[^\d])${preferredYear}([^\d]|$)`, 'i').test(entry.title)
+          const yearBonus = preferredYear && new RegExp(`(^|[^\\d])${preferredYear}([^\\d]|$)`, 'i').test(entry.title)
             ? 120
             : 0;
           const tvLike = /season|episode|series|web[\s-]*series/i.test(entry.title + ' ' + entry.url);
@@ -830,6 +828,9 @@ const resolveHdstream4uEpisodeId = async (
   ).trim();
 };
 
+
+
+
 const buildDramaSlugVariants = (dramaSlug: string): string[] => {
   const base = normalizeSlug(dramaSlug);
   const set = new Set<string>();
@@ -884,247 +885,9 @@ const convertTmdbImagesToUrls = (data: any) => {
 
   return data;
 };
-const tryAnimeProvidersForMovie = async (
-  request: any,
-  options: { titleCandidates: string[]; server?: StreamingServers },
-) => {
-  const { titleCandidates, server } = options;
-  if (!titleCandidates.length) return null;
-  const providersInOrder = ['satoru'];
 
-  for (const providerKey of providersInOrder) {
-    const baseRoute = ANIME_PROVIDER_ROUTES[providerKey];
-    if (!baseRoute) continue;
 
-    // Limit to top 2 titles for speed
-    const queries = titleCandidates.slice(0, 2);
 
-    // Parallelize title searches
-    const searchPromises = queries.map(async (query) => {
-      try {
-        const searchRes = await request.server.inject({
-          method: 'GET',
-          url: `${baseRoute}/${encodeURIComponent(query)}`,
-        });
-        if (searchRes.statusCode >= 400) return null;
-        const searchPayload: any = safeJsonParse(searchRes.body);
-        const searchRows = Array.isArray(searchPayload?.results)
-          ? searchPayload.results
-          : [];
-        if (!searchRows.length) return null;
-
-        return (
-          searchRows
-            .map((item: any) => ({
-              item,
-              score: titleMatchScore(
-                String(item?.title || item?.name || ''),
-                titleCandidates,
-              ),
-            }))
-            .sort((a: any, b: any) => b.score - a.score)[0]?.item || null
-        );
-      } catch {
-        return null;
-      }
-    });
-
-    const searchResults = await Promise.all(searchPromises);
-
-    // Try to process each found item in parallel
-    const pickPromises = searchResults
-      .filter((picked) => picked?.id)
-      .map(async (picked) => {
-        try {
-          const infoRes = await request.server.inject({
-            method: 'GET',
-            url: `${baseRoute}/info/${encodeURIComponent(String(picked.id))}`,
-          });
-          if (infoRes.statusCode >= 400) return null;
-          const infoPayload: any = safeJsonParse(infoRes.body);
-          const episodes = Array.isArray(infoPayload?.episodes)
-            ? infoPayload.episodes
-            : [];
-          if (!episodes.length) return null;
-
-          const episodeIds = Array.from(
-            new Set(
-              [
-                episodes[0]?.id,
-                episodes[episodes.length - 1]?.id,
-                episodes.find((ep: any) => Number(ep?.number || 0) === 1)?.id,
-              ]
-                .filter((value) => typeof value === 'string' && value.trim())
-                .map((value) => String(value).trim()),
-            ),
-          );
-          if (!episodeIds.length) return null;
-
-          // Try first episode only for speed
-          for (const candidateEpisodeId of episodeIds.slice(0, 1)) {
-            const queryParts: string[] = [];
-            if (server) queryParts.push(`server=${encodeURIComponent(server)}`);
-            const qs = queryParts.length ? `?${queryParts.join('&')}` : '';
-            const watchRes = await request.server.inject({
-              method: 'GET',
-              url: `${baseRoute}/watch/${encodeURIComponent(candidateEpisodeId)}${qs}`,
-            });
-            if (watchRes.statusCode >= 400) continue;
-            const watchPayload: any = safeJsonParse(watchRes.body);
-            if (Array.isArray(watchPayload?.sources) && watchPayload.sources.length) {
-              return watchPayload;
-            }
-          }
-          return null;
-        } catch {
-          return null;
-        }
-      });
-
-    const results = await Promise.all(pickPromises);
-    const firstValid = results.find((r) => r);
-    if (firstValid) return firstValid;
-  }
-
-  return null;
-};
-
-const buildJustanimeTmdbInfo = async (request: any, id: string, type: string) => {
-  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-  const fetchBase = async () => {
-    const res = await baseTmdb.fetchMediaInfo(id, type);
-    if (res && typeof res === 'object') {
-      delete (res as any).cast;
-      delete (res as any).characters;
-      delete (res as any).recommendations;
-      delete (res as any).similar;
-    }
-    return res;
-  };
-
-  const baseInfo: any = redis
-    ? await cache.fetch(
-        redis as Redis,
-        `tmdb:info:${type}:${id}:trailer-v3`,
-        fetchBase,
-        REDIS_TTL,
-      )
-    : await fetchBase();
-
-  await attachBestTrailer(baseInfo, id, type);
-
-  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-  if (!titleCandidates.length) return baseInfo;
-
-  const yearGuess = Number(
-    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
-  );
-
-  // Search JustAnime with multiple title candidates and year variants
-  let pick: any = null;
-  const searchTerms = [];
-
-  // Add title candidates
-  searchTerms.push(...titleCandidates.slice(0, 2));
-
-  // Add simplified versions (remove special characters, colons, etc.)
-  titleCandidates.slice(0, 2).forEach((title) => {
-    const simplified = title.replace(/[^\w\s]/g, '').trim();
-    if (simplified !== title) searchTerms.push(simplified);
-  });
-
-  // Add year variants for better matching
-  if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-    searchTerms.push(
-      ...titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`),
-    );
-  }
-
-  for (const term of searchTerms.slice(0, 6)) {
-    // Try up to 6 search terms
-    try {
-      const searchRes = await request.server.inject({
-        method: 'GET',
-        url: `/anime/justanime/${encodeURIComponent(term)}`,
-      });
-
-      if (searchRes.statusCode < 400) {
-        const payload = safeJsonParse(searchRes.body || '{}');
-        const results: any[] = Array.isArray(payload?.results)
-          ? payload.results
-          : Array.isArray(payload?.data)
-            ? payload.data
-            : [];
-
-        const scored = results
-          .map((item: any) => {
-            // JustAnime title is a nested object: {english, romaji}
-            const titleObj = item?.title;
-            const itemTitle =
-              typeof titleObj === 'string'
-                ? titleObj
-                : String(
-                    titleObj?.english ||
-                      titleObj?.romaji ||
-                      titleObj?.native ||
-                      item?.name ||
-                      '',
-                  );
-            let score = titleMatchScore(itemTitle, titleCandidates);
-
-            if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-              const itemYear = Number(
-                String(item?.year || item?.released || '').slice(0, 4),
-              );
-              if (itemYear === yearGuess) score += 50;
-              else if (Math.abs(itemYear - yearGuess) <= 1) score += 20;
-            }
-
-            return { item, score };
-          })
-          .sort((a: any, b: any) => b.score - a.score);
-
-        const candidate = scored[0]?.item;
-        if (candidate && (!pick || (scored[0]?.score || 0) > (pick.score || 0))) {
-          pick = { ...candidate, score: scored[0]?.score || 0 };
-        }
-      }
-    } catch {
-      continue; // Try next term
-    }
-  }
-
-  if (pick) {
-    const providerId = String(pick.id || pick.anilistId || '');
-    const anilistId = pick.anilistId ? String(pick.anilistId) : null;
-
-    if (providerId) {
-      // Map episodes to JustAnime format: providerId$episode$number
-      if (Array.isArray(baseInfo.seasons)) {
-        baseInfo.seasons = baseInfo.seasons.map((season: any, seasonIdx: number) => {
-          if (!Array.isArray(season.episodes)) return season;
-          return {
-            ...season,
-            episodes: season.episodes.map((ep: any) => ({
-              ...ep,
-              id: `${providerId}$episode$${ep.episode || ep.number}`,
-            })),
-          };
-        });
-      } else if (Array.isArray(baseInfo.episodes)) {
-        baseInfo.episodes = baseInfo.episodes.map((ep: any) => ({
-          ...ep,
-          id: `${providerId}$episode$${ep.episode || ep.number}`,
-        }));
-      }
-      if (anilistId) baseInfo.anilistId = anilistId;
-      baseInfo.id = providerId;
-    }
-  }
-
-  convertTmdbImagesToUrls(baseInfo);
-  return baseInfo;
-};
 
 const buildAnimesaltTmdbInfo = async (request: any, id: string, type: string) => {
   const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
@@ -1141,7 +904,7 @@ const buildAnimesaltTmdbInfo = async (request: any, id: string, type: string) =>
 
   const baseInfo: any = redis
     ? await cache.fetch(
-        redis as Redis,
+        redis as any,
         `tmdb:info:${type}:${id}:trailer-v3`,
         fetchBase,
         REDIS_TTL,
@@ -1210,945 +973,6 @@ const buildAnimesaltTmdbInfo = async (request: any, id: string, type: string) =>
     }
   } catch {
     // ignore mapping errors
-  }
-
-  convertTmdbImagesToUrls(baseInfo);
-  return baseInfo;
-};
-
-const buildAnimetsuTmdbInfo = async (request: any, id: string, type: string) => {
-  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-  const fetchBase = async () => {
-    try {
-      const res = await baseTmdb.fetchMediaInfo(id, type);
-      if (res && typeof res === 'object') {
-        delete (res as any).cast;
-        delete (res as any).characters;
-        delete (res as any).recommendations;
-        delete (res as any).similar;
-      }
-      return res;
-    } catch {
-      if (!tmdbApi)
-        throw new Error('Failed to fetch TMDB base info for Animetsu mapping');
-      const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
-      const directUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${tmdbApi}&language=en-US`;
-      const directRes = await axios.get(directUrl);
-      const raw = directRes?.data || {};
-      const direct: any = {
-        id: raw.id,
-        title: raw.title || raw.name || 'Unknown',
-        name: raw.name || raw.title || 'Unknown',
-        releaseDate: raw.release_date || raw.first_air_date || null,
-        firstAirDate: raw.first_air_date || null,
-        image: raw.poster_path || null,
-        cover: raw.backdrop_path || null,
-        description: raw.overview || '',
-        genres: Array.isArray(raw.genres) ? raw.genres : [],
-        seasons: [],
-        episodes: [],
-      };
-
-      if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
-        const seasonRows = raw.seasons
-          .filter((season: any) => Number(season?.season_number || 0) > 0)
-          .sort(
-            (a: any, b: any) =>
-              Number(a?.season_number || 0) - Number(b?.season_number || 0),
-          );
-        const seasonDetails = await Promise.all(
-          seasonRows.map(async (season: any) => {
-            const seasonNo = Number(season?.season_number || 0);
-            try {
-              const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
-              const seasonRes = await axios.get(seasonUrl);
-              const eps = Array.isArray(seasonRes?.data?.episodes)
-                ? seasonRes.data.episodes.map((ep: any) => ({
-                    id: '',
-                    episode: Number(ep?.episode_number || 0),
-                    number: Number(ep?.episode_number || 0),
-                    title: ep?.name || `Episode ${ep?.episode_number || 0}`,
-                  }))
-                : [];
-              return {
-                season: seasonNo,
-                number: seasonNo,
-                name: season?.name || `Season ${seasonNo}`,
-                episodes: eps,
-              };
-            } catch {
-              return {
-                season: seasonNo,
-                number: seasonNo,
-                name: season?.name || `Season ${seasonNo}`,
-                episodes: [],
-              };
-            }
-          }),
-        );
-        direct.seasons = seasonDetails;
-      }
-
-      return direct;
-    }
-  };
-
-  const baseInfo: any = redis
-    ? await cache.fetch(
-        redis as Redis,
-        `tmdb:info:${type}:${id}:trailer-v3`,
-        fetchBase,
-        REDIS_TTL,
-      )
-    : await fetchBase();
-
-  await attachBestTrailer(baseInfo, id, type);
-
-  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-  if (!titleCandidates.length) return baseInfo;
-
-  const yearGuess = Number(
-    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
-  );
-  let pick: any = null;
-
-  const searchTerms = Array.from(
-    new Set(
-      [
-        ...titleCandidates.slice(0, 2),
-        ...titleCandidates.slice(0, 2).map((title) =>
-          String(title || '')
-            .replace(/[^\w\s]/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim(),
-        ),
-        ...(Number.isFinite(yearGuess) && yearGuess > 1900
-          ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
-          : []),
-      ].filter(Boolean),
-    ),
-  );
-
-  for (const term of searchTerms.slice(0, 6)) {
-    try {
-      const searchRes = await request.server.inject({
-        method: 'GET',
-        url: `/anime/animetsu/search/${encodeURIComponent(term)}`,
-      });
-      if (searchRes.statusCode >= 400) continue;
-
-      const payload = safeJsonParse(searchRes.body || '{}');
-      const results = Array.isArray(payload?.results) ? payload.results : [];
-      const scored = results
-        .map((item: any) => {
-          let score = titleMatchScore(
-            String(item?.title || item?.name || ''),
-            titleCandidates,
-          );
-          if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-            const itemYear = Number(
-              String(item?.releaseDate || item?.year || '').slice(0, 4),
-            );
-            if (itemYear === yearGuess) score += 50;
-            else if (Number.isFinite(itemYear) && Math.abs(itemYear - yearGuess) <= 1)
-              score += 20;
-          }
-          return { item, score };
-        })
-        .sort((a: any, b: any) => b.score - a.score);
-
-      const candidate = scored[0];
-      if (candidate?.item?.id && (!pick || candidate.score > pick.score)) {
-        pick = { ...candidate.item, score: candidate.score };
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  const providerId = String(pick?.id || '').trim();
-  if (!providerId) {
-    convertTmdbImagesToUrls(baseInfo);
-    return baseInfo;
-  }
-
-  let providerEpisodes: any[] = [];
-  let providerInfoPayload: any = null;
-  try {
-    const infoRes = await request.server.inject({
-      method: 'GET',
-      url: `/anime/animetsu/info?id=${encodeURIComponent(providerId)}`,
-    });
-    if (infoRes.statusCode < 400) {
-      providerInfoPayload = safeJsonParse(infoRes.body || '{}');
-      providerEpisodes = Array.isArray(providerInfoPayload?.episodes)
-        ? providerInfoPayload.episodes
-        : [];
-    }
-  } catch {
-    providerEpisodes = [];
-  }
-
-  const sortedProviderEpisodes = [...providerEpisodes].sort(
-    (a: any, b: any) =>
-      Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0),
-  );
-
-  const buildAnimetsuSiteSeasons = async (): Promise<any[]> => {
-    if (!providerInfoPayload || typeof providerInfoPayload !== 'object') return [];
-
-    const relatedEntries = Array.isArray(providerInfoPayload?.relatedSeasons)
-      ? providerInfoPayload.relatedSeasons
-      : Array.isArray(providerInfoPayload?.providerSeasons)
-        ? providerInfoPayload.providerSeasons
-        : [];
-    const rawEntries = relatedEntries.length
-      ? [...relatedEntries]
-      : [providerInfoPayload];
-    if (!rawEntries.some((entry: any) => String(entry?.id || '').trim() === providerId)) {
-      rawEntries.unshift(providerInfoPayload);
-    }
-    const seenIds = new Set<string>();
-    const entries = rawEntries
-      .map((entry: any) => {
-        const entryId = String(entry?.id || '').trim();
-        return entryId ? { ...entry, id: entryId } : null;
-      })
-      .filter(Boolean)
-      .filter((entry: any) => {
-        const entryId = String(entry?.id || '').trim();
-        if (!entryId || seenIds.has(entryId)) return false;
-        seenIds.add(entryId);
-
-        const format = String(entry?.format || '').toUpperCase();
-        const relation = String(
-          entry?.relation || entry?.relation_type || '',
-        ).toLowerCase();
-        const titleText = String(
-          typeof entry?.title === 'string'
-            ? entry.title
-            : entry?.title?.english || entry?.title?.romaji || entry?.name || '',
-        ).toLowerCase();
-        if (format && format !== 'TV') return false;
-        if (/movie|special|ova|ona|pv|recap/i.test(`${format} ${relation} ${titleText}`))
-          return false;
-        return true;
-      });
-
-    const details = await Promise.all(
-      entries.map(async (entry: any, index: number) => {
-        let info = String(entry?.id || '') === providerId ? providerInfoPayload : null;
-        if (!info || !Array.isArray(info?.episodes)) {
-          try {
-            const res = await request.server.inject({
-              method: 'GET',
-              url: `/anime/animetsu/info?id=${encodeURIComponent(String(entry.id))}`,
-            });
-            if (res.statusCode < 400) info = safeJsonParse(res.body || '{}');
-          } catch {
-            info = null;
-          }
-        }
-
-        const episodes = (Array.isArray(info?.episodes) ? info.episodes : [])
-          .map((ep: any, epIndex: number) => {
-            const episodeNo =
-              Number(ep?.episode || ep?.number || ep?.episodeNum || epIndex + 1) ||
-              epIndex + 1;
-            return {
-              id: String(ep?.id || `${entry.id}$episode$${episodeNo}`).trim(),
-              episode: episodeNo,
-              number: episodeNo,
-              episodeNum: episodeNo,
-              title: String(ep?.title || `Episode ${episodeNo}`),
-              image: ep?.image,
-              description: ep?.description,
-              isFiller: ep?.isFiller === true || ep?.is_filler === true,
-            };
-          })
-          .sort((a: any, b: any) => Number(a.episode || 0) - Number(b.episode || 0));
-        if (!episodes.length) return null;
-
-        const relationLabel = String(entry?.relation || '').trim();
-        const titleLabel = String(
-          relationLabel ||
-            (typeof entry?.title === 'string'
-              ? entry.title
-              : entry?.title?.english ||
-                entry?.title?.romaji ||
-                entry?.name ||
-                info?.title ||
-                ''),
-        ).trim();
-        const seasonNo = index + 1;
-        return {
-          season: seasonNo,
-          number: seasonNo,
-          seasonNo,
-          seasonNumber: seasonNo,
-          name: titleLabel || `Season ${seasonNo}`,
-          title: titleLabel || `Season ${seasonNo}`,
-          id: String(entry.id),
-          providerAnimeId: String(entry.id),
-          image: entry?.image || entry?.cover_image?.large || info?.image,
-          cover: entry?.cover || entry?.banner || info?.cover,
-          releaseDate: entry?.releaseDate || entry?.year || info?.releaseDate,
-          episodes,
-        };
-      }),
-    );
-
-    return details.filter(Boolean) as any[];
-  };
-
-  const animetsuSiteSeasons = await buildAnimetsuSiteSeasons();
-  if (animetsuSiteSeasons.length) {
-    baseInfo.seasons = animetsuSiteSeasons;
-    baseInfo.providerSeasons = animetsuSiteSeasons;
-    baseInfo.episodes = [];
-    baseInfo.id = providerId;
-    if (pick?.anilistId) baseInfo.anilistId = String(pick.anilistId);
-    if (pick?.malId) baseInfo.malId = String(pick.malId);
-
-    convertTmdbImagesToUrls(baseInfo);
-    return baseInfo;
-  }
-
-  if (Array.isArray(baseInfo.seasons)) {
-    baseInfo.seasons = baseInfo.seasons.map((season: any) => {
-      if (!Array.isArray(season.episodes)) return season;
-
-      return {
-        ...season,
-        id: providerId,
-        providerAnimeId: providerId,
-        episodes: season.episodes.map((ep: any, idx: number) => {
-          const epNo = Number(ep?.episode || ep?.number || idx + 1) || idx + 1;
-          const mapped = sortedProviderEpisodes.find(
-            (row: any) => Number(row?.number || row?.episode || 0) === epNo,
-          );
-          return {
-            ...ep,
-            id: mapped?.id || `${providerId}$episode$${epNo}`,
-          };
-        }),
-      };
-    });
-  } else if (Array.isArray(baseInfo.episodes)) {
-    baseInfo.episodes = baseInfo.episodes.map((ep: any, idx: number) => {
-      const mapped =
-        sortedProviderEpisodes[idx] ||
-        sortedProviderEpisodes[Number(ep?.episode || ep?.number || idx + 1) - 1];
-      return {
-        ...ep,
-        id: mapped?.id || `${providerId}$episode$${ep.episode || ep.number || idx + 1}`,
-      };
-    });
-  }
-
-  baseInfo.id = providerId;
-  if (pick?.anilistId) baseInfo.anilistId = String(pick.anilistId);
-  if (pick?.malId) baseInfo.malId = String(pick.malId);
-
-  convertTmdbImagesToUrls(baseInfo);
-  return baseInfo;
-};
-
-const inferAnimekaiSeasonNumber = (value: string): number => {
-  const raw = String(value || '').toLowerCase();
-  if (!raw) return 1;
-
-  const seasonMatch = raw.match(/season\s*(\d+)/i);
-  if (seasonMatch?.[1]) {
-    const n = Number(seasonMatch[1]);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-
-  const ordinalMatch = raw.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
-  if (ordinalMatch?.[1]) {
-    const n = Number(ordinalMatch[1]);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-
-  const partMatch = raw.match(/\bpart\s*(\d+)\b/i);
-  if (partMatch?.[1]) {
-    const n = Number(partMatch[1]);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-
-  return 1;
-};
-
-const buildAnimekaiTmdbInfo = async (request: any, id: string, type: string) => {
-  const baseTmdb = new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ()));
-  const fetchBase = async () => {
-    try {
-      const res = await baseTmdb.fetchMediaInfo(id, type);
-      if (res && typeof res === 'object') {
-        delete (res as any).cast;
-        delete (res as any).characters;
-        delete (res as any).recommendations;
-        delete (res as any).similar;
-      }
-      return res;
-    } catch {
-      if (!tmdbApi) {
-        throw new Error('Failed to fetch TMDB base info for AnimeKai mapping');
-      }
-
-      const tmdbType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
-      const baseUrl = `https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${tmdbApi}&language=en-US`;
-      const direct = await axios.get(baseUrl);
-      const raw = direct?.data || {};
-
-      const rescued: any = {
-        id: raw.id,
-        title: raw.title || raw.name || 'Unknown',
-        name: raw.name || raw.title || 'Unknown',
-        releaseDate: raw.release_date || raw.first_air_date || null,
-        firstAirDate: raw.first_air_date || null,
-        image: raw.poster_path || null,
-        cover: raw.backdrop_path || null,
-        description: raw.overview || '',
-        genres: Array.isArray(raw.genres) ? raw.genres : [],
-        seasons: [],
-        episodes: [],
-      };
-
-      if (tmdbType === 'tv' && Array.isArray(raw.seasons)) {
-        const seasonRows = raw.seasons
-          .filter((season: any) => Number(season?.season_number || 0) > 0)
-          .sort(
-            (a: any, b: any) =>
-              Number(a?.season_number || 0) - Number(b?.season_number || 0),
-          );
-
-        const seasonDetails = await Promise.all(
-          seasonRows.map(async (season: any) => {
-            const seasonNo = Number(season?.season_number || 0);
-            try {
-              const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
-              const seasonRes = await axios.get(seasonUrl);
-              const eps = Array.isArray(seasonRes?.data?.episodes)
-                ? seasonRes.data.episodes.map((ep: any) => ({
-                    id: '',
-                    episode: Number(ep?.episode_number || 0),
-                    number: Number(ep?.episode_number || 0),
-                    title: ep?.name || `Episode ${ep?.episode_number || 0}`,
-                  }))
-                : [];
-              return {
-                season: seasonNo,
-                number: seasonNo,
-                name: season?.name || `Season ${seasonNo}`,
-                episodes: eps,
-              };
-            } catch {
-              return {
-                season: seasonNo,
-                number: seasonNo,
-                name: season?.name || `Season ${seasonNo}`,
-                episodes: [],
-              };
-            }
-          }),
-        );
-
-        rescued.seasons = seasonDetails;
-      }
-
-      return rescued;
-    }
-  };
-
-  const baseInfo: any = redis
-    ? await cache.fetch(
-        redis as Redis,
-        `tmdb:info:${type}:${id}:animekai-mapped:v3`,
-        fetchBase,
-        REDIS_TTL,
-      )
-    : await fetchBase();
-
-  await attachBestTrailer(baseInfo, id, type);
-
-  if (String(type || '').toLowerCase() === 'tv' && tmdbApi) {
-    const currentSeasons = Array.isArray(baseInfo?.seasons) ? baseInfo.seasons : [];
-    const nonSpecialCount = currentSeasons.filter(
-      (season: any) => Number(season?.season || season?.number || 0) > 0,
-    ).length;
-    const looksCollapsed = nonSpecialCount <= 1;
-
-    if (looksCollapsed) {
-      try {
-        const tmdbSeriesUrl = `https://api.themoviedb.org/3/tv/${id}?api_key=${tmdbApi}&language=en-US`;
-        const seriesRes = await axios.get(tmdbSeriesUrl);
-        const rawSeasons = Array.isArray(seriesRes?.data?.seasons)
-          ? seriesRes.data.seasons
-          : [];
-        const seasonRows = rawSeasons
-          .filter((season: any) => Number(season?.season_number || 0) > 0)
-          .sort(
-            (a: any, b: any) =>
-              Number(a?.season_number || 0) - Number(b?.season_number || 0),
-          );
-
-        if (seasonRows.length > 1) {
-          const rebuilt = await Promise.all(
-            seasonRows.map(async (season: any) => {
-              const seasonNo = Number(season?.season_number || 0);
-              try {
-                const seasonUrl = `https://api.themoviedb.org/3/tv/${id}/season/${seasonNo}?api_key=${tmdbApi}&language=en-US`;
-                const seasonRes = await axios.get(seasonUrl);
-                const eps = Array.isArray(seasonRes?.data?.episodes)
-                  ? seasonRes.data.episodes.map((ep: any) => ({
-                      id: '',
-                      episode: Number(ep?.episode_number || 0),
-                      number: Number(ep?.episode_number || 0),
-                      title: ep?.name || `Episode ${ep?.episode_number || 0}`,
-                    }))
-                  : [];
-                return {
-                  season: seasonNo,
-                  number: seasonNo,
-                  name: season?.name || `Season ${seasonNo}`,
-                  episodes: eps,
-                };
-              } catch {
-                return {
-                  season: seasonNo,
-                  number: seasonNo,
-                  name: season?.name || `Season ${seasonNo}`,
-                  episodes: [],
-                };
-              }
-            }),
-          );
-
-          baseInfo.seasons = rebuilt;
-        }
-      } catch {
-        // Keep existing base seasons when direct TMDB season rebuild fails.
-      }
-    }
-  }
-
-  const titleCandidates = getTitleCandidatesFromMedia(baseInfo);
-  if (!titleCandidates.length) return baseInfo;
-
-  const yearGuess = Number(
-    String(baseInfo?.releaseDate || baseInfo?.firstAirDate || '').slice(0, 4),
-  );
-  const sequelTerms = titleCandidates.slice(0, 2).flatMap((title) => {
-    const clean = String(title || '').trim();
-    if (!clean) return [];
-    const baseParts = [
-      // Standard season patterns
-      `${clean} season 2`,
-      `${clean} 2nd season`,
-      `${clean} season 3`,
-      `${clean} season 4`,
-      `${clean} season 5`,
-      `${clean} season 6`,
-      // Arc-based patterns (common for anime)
-      `${clean} part 1`,
-      `${clean} part 2`,
-      `${clean} part 3`,
-      // Alternate numbering
-      `${clean} 2`,
-      `${clean} 3`,
-      `${clean} 4`,
-    ];
-
-    // Add numeric year variants for modern animes
-    return baseParts;
-  });
-
-  const searchTerms = Array.from(
-    new Set(
-      [
-        ...titleCandidates.slice(0, 2),
-        ...titleCandidates.slice(0, 2).map((title) =>
-          String(title || '')
-            .replace(/[^\w\s]/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim(),
-        ),
-        ...sequelTerms,
-        ...(Number.isFinite(yearGuess) && yearGuess > 1900
-          ? titleCandidates.slice(0, 2).map((title) => `${title} ${yearGuess}`)
-          : []),
-      ].filter(Boolean),
-    ),
-  ).slice(0, 24); // Increased to 24 to cover expanded sequel terms
-
-  const candidateMap = new Map<string, any>();
-  for (const term of searchTerms) {
-    try {
-      const searchRes = await request.server.inject({
-        method: 'GET',
-        url: `/anime/animekai/search/${encodeURIComponent(term)}?page=1`,
-      });
-      if (searchRes.statusCode >= 400) continue;
-
-      const payload = safeJsonParse(searchRes.body || '{}');
-      const rows: any[] = Array.isArray(payload?.results) ? payload.results : [];
-      for (const row of rows.slice(0, 8)) {
-        const rowId = String(row?.id || '').trim();
-        if (!rowId || candidateMap.has(rowId)) continue;
-        const rowTitle = String(row?.title || row?.name || '').trim();
-        let score = titleMatchScore(rowTitle, titleCandidates);
-
-        const seasonHint = inferAnimekaiSeasonNumber(rowTitle);
-        if (seasonHint === 1) score += 5;
-
-        if (Number.isFinite(yearGuess) && yearGuess > 1900) {
-          const y = Number(String(row?.year || row?.releaseDate || '').slice(0, 4));
-          if (y === yearGuess) score += 50;
-          else if (Number.isFinite(y) && Math.abs(y - yearGuess) <= 1) score += 20;
-        }
-
-        candidateMap.set(rowId, {
-          ...row,
-          _score: score,
-          _seasonHint: seasonHint,
-        });
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  const candidates = Array.from(candidateMap.values())
-    .sort((a, b) => Number(b?._score || 0) - Number(a?._score || 0))
-    .slice(0, 20); // Increased from 10 to 20 to catch more season-specific entries
-
-  if (!candidates.length) {
-    convertTmdbImagesToUrls(baseInfo);
-    return baseInfo;
-  }
-
-  const infos: Array<{
-    id: string;
-    title: string;
-    seasonHint: number;
-    episodes: any[];
-    anilistId?: string;
-  }> = [];
-  const assignedSeasonHints = new Set<number>();
-
-  for (const candidate of candidates) {
-    const candidateId = String(candidate?.id || '').trim();
-    if (!candidateId) continue;
-    try {
-      const infoRes = await request.server.inject({
-        method: 'GET',
-        url: `/anime/animekai/info?id=${encodeURIComponent(candidateId)}`,
-      });
-      if (infoRes.statusCode >= 400) continue;
-      const infoPayload = safeJsonParse(infoRes.body || '{}');
-      const episodes = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes : [];
-      const episodeCount = episodes.length;
-
-      // Skip candidates with VERY few episodes (likely specials/shorts, not full seasons)
-      // Accept 8+ episodes OR anything that looks like 10+ continuous episodes
-      if (!episodeCount) continue;
-      if (episodeCount < 8) {
-        // Only skip if it's clearly too small (less than 50% of typical season average ~13 eps)
-        const minAcceptable = Math.max(
-          8,
-          Math.floor(Number(baseInfo?.seasons?.at(0)?.episode_count || 13) / 2),
-        );
-        if (episodeCount < minAcceptable) continue;
-      }
-
-      let seasonHint =
-        Number(
-          candidate?._seasonHint ||
-            inferAnimekaiSeasonNumber(infoPayload?.title || candidate?.title || ''),
-        ) || 1;
-
-      // IMPROVED: Match by episode count against TMDB seasons for anime-specific sequels
-      // Many anime use arc names (Jujutsu Kaisen: Culling Game) instead of "Season 3"
-      if (Array.isArray(baseInfo?.seasons) && baseInfo.seasons.length > 1) {
-        const tmdbSeasons = baseInfo.seasons
-          .filter((s: any) => Number(s?.season || s?.number || 0) > 0)
-          .map((s: any) => {
-            const seasonNo = Number(s?.season || s?.number || 0);
-            // Try episodes array first, fallback to episode_count field
-            const epCount = Array.isArray(s?.episodes)
-              ? s.episodes.length
-              : Number(s?.episode_count || 0) || 0;
-            return { seasonNo, epCount };
-          })
-          .sort((a: any, b: any) => a.seasonNo - b.seasonNo);
-
-        // Try to match by episode count first (most reliable for arc-named seasons)
-        const matchedBySeason = tmdbSeasons.find((s: any) => s.epCount === episodeCount);
-        if (matchedBySeason && !assignedSeasonHints.has(matchedBySeason.seasonNo)) {
-          seasonHint = matchedBySeason.seasonNo;
-        } else if (
-          Math.abs(seasonHint - 1) < tmdbSeasons.length &&
-          !assignedSeasonHints.has(seasonHint)
-        ) {
-          // Use inferred hint if it's within valid season range and not yet assigned
-        } else {
-          // Last resort: find first unassigned season number
-          const unassignedSeason = tmdbSeasons.find(
-            (s: any) => !assignedSeasonHints.has(s.seasonNo),
-          );
-          if (unassignedSeason) {
-            seasonHint = unassignedSeason.seasonNo;
-          }
-        }
-      }
-
-      // Avoid duplicate season hints (prefer first/highest-episode candidate for each season)
-      if (assignedSeasonHints.has(seasonHint)) continue;
-      assignedSeasonHints.add(seasonHint);
-
-      infos.push({
-        id: candidateId,
-        title: String(infoPayload?.title || candidate?.title || '').trim(),
-        seasonHint,
-        episodes,
-        anilistId: String(candidate?.anilistId || '').trim() || undefined,
-      });
-    } catch {
-      continue;
-    }
-  }
-
-  if (!infos.length) {
-    try {
-      const anilistRes = await request.server.inject({
-        method: 'GET',
-        url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || '')}`,
-      });
-      if (anilistRes.statusCode < 400) {
-        const anilistPayload = safeJsonParse(anilistRes.body || '{}');
-        const anilistRows = Array.isArray(anilistPayload?.results)
-          ? anilistPayload.results
-          : [];
-        const picked = anilistRows
-          .map((item: any) => ({
-            item,
-            score: titleMatchScore(
-              String(item?.title || item?.name || ''),
-              titleCandidates,
-            ),
-          }))
-          .sort((a: any, b: any) => b.score - a.score)[0]?.item;
-        const pickedId = String(picked?.id || '').trim();
-        if (pickedId) baseInfo.anilistId = pickedId;
-      }
-    } catch {
-      // Ignore AniList fallback errors
-    }
-    convertTmdbImagesToUrls(baseInfo);
-    return baseInfo;
-  }
-
-  const best = infos[0];
-  baseInfo.id = best.id;
-  if (best.anilistId) {
-    baseInfo.anilistId = best.anilistId;
-  } else {
-    try {
-      const anilistRes = await request.server.inject({
-        method: 'GET',
-        url: `/meta/anilist/${encodeURIComponent(titleCandidates[0] || best.title || '')}`,
-      });
-      if (anilistRes.statusCode < 400) {
-        const anilistPayload = safeJsonParse(anilistRes.body || '{}');
-        const anilistRows = Array.isArray(anilistPayload?.results)
-          ? anilistPayload.results
-          : [];
-        const picked = anilistRows
-          .map((item: any) => ({
-            item,
-            score: titleMatchScore(
-              String(item?.title || item?.name || ''),
-              titleCandidates,
-            ),
-          }))
-          .sort((a: any, b: any) => b.score - a.score)[0]?.item;
-        const pickedId = String(picked?.id || '').trim();
-        if (pickedId) baseInfo.anilistId = pickedId;
-      }
-    } catch {
-      // Ignore AniList enrichment errors
-    }
-  }
-
-  if (String(type || '').toLowerCase() === 'tv' && Array.isArray(baseInfo?.seasons)) {
-    const existingSeasons = baseInfo.seasons
-      .filter((season: any) => Number(season?.season || season?.number || 0) > 0)
-      .map((season: any) => Number(season?.season || season?.number || 0));
-    const uniqueHints = Array.from(
-      new Set(
-        infos
-          .map((info) => Number(info.seasonHint || 0))
-          .filter((n) => Number.isFinite(n) && n > 0),
-      ),
-    ).sort((a, b) => a - b);
-
-    if (existingSeasons.length <= 1 && uniqueHints.length > 1) {
-      baseInfo.seasons = uniqueHints.map((seasonNo) => {
-        const seasonInfo = infos.find(
-          (info) => Number(info.seasonHint || 0) === seasonNo,
-        );
-        const seasonEpisodes = Array.isArray(seasonInfo?.episodes)
-          ? seasonInfo.episodes
-          : [];
-
-        return {
-          season: seasonNo,
-          number: seasonNo,
-          name: `Season ${seasonNo}`,
-          id: seasonInfo?.id,
-          providerAnimeId: seasonInfo?.id,
-          episodes: seasonEpisodes.map((ep: any, idx: number) => ({
-            id: String(ep?.id || ''),
-            episode: Number(ep?.number || ep?.episode || idx + 1),
-            number: Number(ep?.number || ep?.episode || idx + 1),
-            title: String(ep?.title || `Episode ${idx + 1}`),
-          })),
-        };
-      });
-    }
-
-    const nonSpecialSeasons = baseInfo.seasons
-      .filter((season: any) => Number(season?.season || season?.number || 0) > 0)
-      .sort(
-        (a: any, b: any) =>
-          Number(a?.season || a?.number || 0) - Number(b?.season || b?.number || 0),
-      );
-
-    const assigned = new Map<number, (typeof infos)[number]>();
-    const unassigned = [...infos];
-
-    // 1) Assign direct season hints first.
-    for (const info of infos) {
-      const hint = Number(info.seasonHint || 0);
-      if (!Number.isFinite(hint) || hint <= 0) continue;
-      if (assigned.has(hint)) continue;
-      assigned.set(hint, info);
-    }
-
-    // 2) Assign remaining infos by season order.
-    for (const season of nonSpecialSeasons) {
-      const seasonNo = Number(season?.season || season?.number || 0);
-      if (assigned.has(seasonNo)) continue;
-      const next = unassigned.find((item) => {
-        return !Array.from(assigned.values()).includes(item);
-      });
-      if (!next) continue;
-      assigned.set(seasonNo, next);
-    }
-
-    const singleInfoSequentialMode = infos.length === 1;
-    let globalEpisodeOffset = 0;
-
-    baseInfo.seasons = baseInfo.seasons.map((season: any) => {
-      if (!Array.isArray(season?.episodes)) return season;
-      const seasonNo = Number(season?.season || season?.number || 0);
-      const mappedInfo = assigned.get(seasonNo);
-      if (!mappedInfo) {
-        return season;
-      }
-
-      if (singleInfoSequentialMode) {
-        // Some AnimeKai titles expose all seasons as one continuous episode list.
-        // Distribute IDs by TMDB season episode counts to keep season watch mapping accurate.
-        const mappedEpisodes = Array.isArray(mappedInfo.episodes)
-          ? mappedInfo.episodes
-          : [];
-        const sortedMapped = [...mappedEpisodes].sort(
-          (a: any, b: any) =>
-            Number(a?.number || a?.episode || 0) - Number(b?.number || b?.episode || 0),
-        );
-        // Get expected episode count from TMDB season - try episodes array first, then episode_count field
-        const seasonEpisodeCount = Array.isArray(season?.episodes)
-          ? season.episodes.length
-          : Number(season?.episode_count || 0) || sortedMapped.length;
-        const seasonSlice = sortedMapped.slice(
-          globalEpisodeOffset,
-          globalEpisodeOffset + seasonEpisodeCount,
-        );
-        globalEpisodeOffset += seasonEpisodeCount;
-
-        const byIndex = new Map<number, any>();
-        for (let i = 0; i < seasonSlice.length; i++) {
-          byIndex.set(i + 1, seasonSlice[i]);
-        }
-
-        return {
-          ...season,
-          id: mappedInfo.id,
-          providerAnimeId: mappedInfo.id,
-          episodes: season.episodes.map((ep: any, idx: number) => {
-            const mapped = byIndex.get(idx + 1);
-            if (!mapped?.id) return ep;
-            return {
-              ...ep,
-              id: String(mapped.id),
-            };
-          }),
-        };
-      }
-
-      const byEpNumber = new Map<number, any>();
-      for (const ep of mappedInfo.episodes) {
-        const n = Number(ep?.number || ep?.episode || 0);
-        if (!Number.isFinite(n) || n <= 0) continue;
-        if (!byEpNumber.has(n)) byEpNumber.set(n, ep);
-      }
-
-      // If TMDB season has no episodes populated, use the AnimeKai episodes directly
-      const seasonEpisodes =
-        !Array.isArray(season?.episodes) || season.episodes.length === 0
-          ? Array.isArray(mappedInfo.episodes)
-            ? mappedInfo.episodes.map((ep: any, idx: number) => ({
-                id: String(ep?.id || ''),
-                episode: Number(ep?.number || ep?.episode || idx + 1),
-                number: Number(ep?.number || ep?.episode || idx + 1),
-                title: String(ep?.title || `Episode ${idx + 1}`),
-              }))
-            : season?.episodes || []
-          : season.episodes.map((ep: any, idx: number) => {
-              const epNo = Number(ep?.episode || ep?.number || idx + 1);
-              const mapped = byEpNumber.get(epNo);
-              if (!mapped?.id) return ep;
-              return {
-                ...ep,
-                id: String(mapped.id),
-              };
-            });
-
-      return {
-        ...season,
-        id: mappedInfo.id,
-        providerAnimeId: mappedInfo.id,
-        episodes: seasonEpisodes,
-      };
-    });
-  } else if (Array.isArray(baseInfo?.episodes)) {
-    const byEpNumber = new Map<number, any>();
-    for (const ep of best.episodes) {
-      const n = Number(ep?.number || ep?.episode || 0);
-      if (!Number.isFinite(n) || n <= 0) continue;
-      if (!byEpNumber.has(n)) byEpNumber.set(n, ep);
-    }
-    baseInfo.episodes = baseInfo.episodes.map((ep: any, idx: number) => {
-      const epNo = Number(ep?.episode || ep?.number || idx + 1);
-      const mapped = byEpNumber.get(epNo);
-      if (!mapped?.id) return ep;
-      return {
-        ...ep,
-        id: String(mapped.id),
-      };
-    });
   }
 
   convertTmdbImagesToUrls(baseInfo);
@@ -2281,7 +1105,7 @@ const buildFlixhqTmdbInfo = async (request: any, id: string, type: string) => {
 
   const baseInfo: any = redis
     ? await cache.fetch(
-        redis as Redis,
+        redis as any,
         `tmdb:info:${type}:${id}:flixhq-mapped:v3`,
         fetchBase,
         REDIS_TTL,
@@ -2551,7 +1375,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `tmdb:search:${query}:${page || 1}`,
             fetchSearch,
             REDIS_TTL,
@@ -2836,7 +1660,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       const directRes = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `tmdb:info:direct:${type}:${id}:seasons-v2`,
             fetchDirect,
             REDIS_TTL,
@@ -2849,15 +1673,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       // Fall through to provider-backed path as a last resort.
     }
 
-    if (providerLower === 'justanime') {
-      try {
-        const res = await buildJustanimeTmdbInfo(request, id, type);
-        return reply.status(200).send(res);
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ message });
-      }
-    }
 
     if (providerLower === 'animesalt') {
       try {
@@ -2869,25 +1684,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     }
 
-    if (providerLower === 'animekai') {
-      try {
-        const res = await buildAnimekaiTmdbInfo(request, id, type);
-        return reply.status(200).send(res);
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ message });
-      }
-    }
-
-    if (providerLower === 'animetsu') {
-      try {
-        const res = await buildAnimetsuTmdbInfo(request, id, type);
-        return reply.status(200).send(res);
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ message });
-      }
-    }
 
     if (providerLower === 'flixhq') {
       try {
@@ -2953,7 +1749,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`,
             fetchInfo,
             REDIS_TTL,
@@ -3071,7 +1867,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       const directRes = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `tmdb:info:direct:${type}:${id}:seasons-v2`,
             fetchDirect,
             REDIS_TTL,
@@ -3084,15 +1880,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       // Fall through to provider-backed path as a last resort.
     }
 
-    if (providerLower === 'justanime') {
-      try {
-        const res = await buildJustanimeTmdbInfo(request, id, type);
-        return reply.status(200).send(res);
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ message });
-      }
-    }
 
     if (providerLower === 'animesalt') {
       try {
@@ -3104,25 +1891,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     }
 
-    if (providerLower === 'animekai') {
-      try {
-        const res = await buildAnimekaiTmdbInfo(request, id, type);
-        return reply.status(200).send(res);
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ message });
-      }
-    }
 
-    if (providerLower === 'animetsu') {
-      try {
-        const res = await buildAnimetsuTmdbInfo(request, id, type);
-        return reply.status(200).send(res);
-      } catch (err: any) {
-        const message = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ message });
-      }
-    }
     if (providerLower === 'flixhq') {
       try {
         const res = await buildFlixhqTmdbInfo(request, id, type);
@@ -3163,7 +1932,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       let res = redis
         ? await cache.fetch(
-            redis as Redis,
+            redis as any,
             `tmdb:info:${type}:${id}:${provider || 'default'}:trailer-v3`,
             fetchInfo,
             REDIS_TTL,
@@ -3349,7 +2118,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     // Try to return from cache first
     if (cacheKey && redis) {
       try {
-        const cached = await (redis as Redis).get(cacheKey);
+        const cached = await (redis as any).get(cacheKey);
         if (cached) {
           const payload = JSON.parse(cached);
           const cachedCookie = String(payload?.headers?.Cookie || '').trim();
@@ -3357,7 +2126,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             // Older cached HDStream4u watch payloads are missing the browser-session
             // cookie needed by hubstream manifests. Recompute instead of serving stale data.
           } else {
-          return reply.status(200).send(payload);
+            return reply.status(200).send(payload);
           }
         }
       } catch {
@@ -3395,7 +2164,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const fastest = await Promise.any(candidatePayloads).catch(() => null);
             if (fastest) {
               if (cacheKey && redis) {
-                (redis as Redis)
+                (redis as any)
                   .setex(cacheKey, REDIS_TTL, JSON.stringify(fastest))
                   .catch(() => {});
               }
@@ -3408,27 +2177,19 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     }
 
+
+
     // Check if it's an anime provider
     if (providerLower && ANIME_PROVIDER_ROUTES[providerLower]) {
       let resolvedEpisodeId = episodeId;
 
       // Attempt to resolve episodeId from season/episode if it's a provider-specific mapping provider
       if (
-        (providerLower === 'justanime' ||
-          providerLower === 'animesalt' ||
-          providerLower === 'animekai' ||
-          providerLower === 'animetsu') &&
+        providerLower === 'animesalt' &&
         (!resolvedEpisodeId || !resolvedEpisodeId.includes('$'))
       ) {
         try {
-          const info: any =
-            providerLower === 'justanime'
-              ? await buildJustanimeTmdbInfo(request, id, type || 'tv')
-              : providerLower === 'animesalt'
-                ? await buildAnimesaltTmdbInfo(request, id, type || 'tv')
-                : providerLower === 'animetsu'
-                  ? await buildAnimetsuTmdbInfo(request, id, type || 'tv')
-                  : await buildAnimekaiTmdbInfo(request, id, type || 'tv');
+          const info: any = await buildAnimesaltTmdbInfo(request, id, type || 'tv');
 
           const requestedSeason = Number(
             (request.query as { season?: number }).season || 1,
@@ -3463,16 +2224,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const animeBaseUrl = ANIME_PROVIDER_ROUTES[providerLower];
       const queryParts: string[] = [];
       if (server) {
-        const serverKey = providerLower === 'satoru' ? 'serverId' : 'server';
-        queryParts.push(`${serverKey}=${encodeURIComponent(server)}`);
+        queryParts.push(`server=${encodeURIComponent(server)}`);
       }
       if (providerLower === 'hianime') queryParts.push('category=both');
-      if (
-        providerLower === 'animetsu' &&
-        (sourceType === 'dub' || sourceType === 'sub')
-      ) {
-        queryParts.push(`source_type=${encodeURIComponent(sourceType)}`);
-      }
       if (directOnly) queryParts.push('directOnly=true');
       const queryString = queryParts.length ? `?${queryParts.join('&')}` : '';
       const redirectUrl = `${animeBaseUrl}/watch/${resolvedEpisodeId}${queryString}`;
@@ -3555,7 +2309,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                       )
                     ) {
                       if (cacheKey && redis) {
-                        (redis as Redis)
+                        (redis as any)
                           .setex(cacheKey, REDIS_TTL, JSON.stringify(watchPayload))
                           .catch(() => {});
                       }
@@ -3695,7 +2449,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
     let discoveredMovieOrTvInfo: any = null;
 
-    if ((type === 'movie' || type === 'tv') && (!providerLower || providerLower === 'hdstream4u') && id) {
+    if (
+      (type === 'movie' || type === 'tv') &&
+      (!providerLower || providerLower === 'hdstream4u') &&
+      id
+    ) {
       try {
         const discoveryTmdb = new META.TMDB(
           tmdbApi,
@@ -3717,25 +2475,12 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         }
 
         const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
-        if (type === 'movie' && isAnimeLikeMovie(mediaInfo) && titleCandidates.length) {
-          const animeFallback = await tryAnimeProvidersForMovie(request, {
-            titleCandidates,
-            server,
-          });
-          if (animeFallback) {
-            // Cache watch result for fast subsequent loads
-            if (cacheKey && redis) {
-              (redis as Redis)
-                .setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback))
-                .catch(() => {});
-            }
-            return reply.status(200).send(animeFallback);
-          }
-        }
-
         if (titleCandidates.length) {
           try {
-            const hdstreamEpisodeId = (type === 'tv' && episodeId) ? episodeId : await resolveHdstream4uEpisodeId(request, mediaInfo);
+            const hdstreamEpisodeId =
+              type === 'tv' && episodeId
+                ? episodeId
+                : await resolveHdstream4uEpisodeId(request, mediaInfo);
             if (hdstreamEpisodeId) {
               const delegated = await request.server.inject({
                 method: 'GET',
@@ -3746,7 +2491,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 const sources = Array.isArray(payload?.sources) ? payload.sources : [];
                 if (sources.length > 0) {
                   if (cacheKey && redis) {
-                    (redis as Redis)
+                    (redis as any)
                       .setex(cacheKey, REDIS_TTL, JSON.stringify(payload))
                       .catch(() => {});
                   }
@@ -3798,8 +2543,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           const foreignProviderUrl = /^https?:\/\//i.test(sourceId);
           const foreignProviderHint =
             lowerSourceId.includes('animesalt') ||
-            lowerSourceId.includes('hianime') ||
-            lowerSourceId.includes('satoru');
+            lowerSourceId.includes('hianime');
           if (foreignProviderUrl || foreignProviderHint) {
             sourceId = '';
           }
@@ -3850,7 +2594,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             ) {
               // Cache watch result for fast subsequent loads
               if (cacheKey && redis) {
-                (redis as Redis)
+                (redis as any)
                   .setex(cacheKey, REDIS_TTL, JSON.stringify(payload))
                   .catch(() => {});
               }
@@ -3873,7 +2617,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             const sources = Array.isArray(payload?.sources) ? payload.sources : [];
             if (sources.length > 0) {
               if (cacheKey && redis) {
-                (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
+                (redis as any).setex(cacheKey, REDIS_TTL, JSON.stringify(payload)).catch(() => {});
               }
               return reply.status(200).send(payload);
             }
@@ -3900,7 +2644,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       // Cache watch result for fast subsequent loads
       if (cacheKey && redis && res) {
-        (redis as Redis).setex(cacheKey, REDIS_TTL, JSON.stringify(res)).catch(() => {});
+        (redis as any).setex(cacheKey, REDIS_TTL, JSON.stringify(res)).catch(() => {});
       }
       reply.status(200).send(res);
     } catch (err: any) {
@@ -3931,7 +2675,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             ) {
               // Cache watch result for fast subsequent loads
               if (cacheKey && redis) {
-                (redis as Redis)
+                (redis as any)
                   .setex(cacheKey, REDIS_TTL, JSON.stringify(payload))
                   .catch(() => {});
               }
@@ -3940,44 +2684,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           }
         } catch {
           // Continue to existing fallbacks below.
-        }
-      }
-
-      if (type === 'movie' && id) {
-        try {
-          const discoveryTmdb = configureMeta(
-            new META.TMDB(tmdbApi, configureProvider(new MOVIES.FlixHQ())),
-          );
-          let mediaInfo: any;
-          try {
-            mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
-          } catch {
-            mediaInfo = await getDirectTmdbInfo(id, type);
-          }
-
-          if (!mediaInfo || !mediaInfo.title || mediaInfo.title === 'Unknown') {
-            const rescued = await getDirectTmdbInfo(id, type);
-            if (rescued) mediaInfo = { ...(mediaInfo || {}), ...rescued };
-          }
-
-          const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
-          if (titleCandidates.length) {
-            const animeFallback = await tryAnimeProvidersForMovie(request, {
-              titleCandidates,
-              server,
-            });
-            if (animeFallback) {
-              // Cache watch result for fast subsequent loads
-              if (cacheKey && redis) {
-                (redis as Redis)
-                  .setex(cacheKey, REDIS_TTL, JSON.stringify(animeFallback))
-                  .catch(() => {});
-              }
-              return reply.status(200).send(animeFallback);
-            }
-          }
-        } catch {
-          // Ignore anime fallback errors and continue existing fallback logic.
         }
       }
 
@@ -3993,7 +2699,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           if (fallback) {
             // Cache watch result for fast subsequent loads
             if (cacheKey && redis) {
-              (redis as Redis)
+              (redis as any)
                 .setex(cacheKey, REDIS_TTL, JSON.stringify(fallback))
                 .catch(() => {});
             }

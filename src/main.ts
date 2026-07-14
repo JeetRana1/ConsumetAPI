@@ -1,6 +1,5 @@
 require('dotenv').config();
 
-import Redis from 'ioredis';
 import Fastify from 'fastify';
 import FastifyCors from '@fastify/cors';
 import axios from 'axios';
@@ -29,20 +28,9 @@ import Utils from './utils';
 import { normalizeStreamLinks } from './utils/streamable';
 import { registerWatchTogether } from './utils/watchTogether';
 
-export const redis =
-  process.env.REDIS_HOST &&
-  new Redis({
-    host: process.env.REDIS_HOST,
-    port: Number(process.env.REDIS_PORT),
-    password: process.env.REDIS_PASSWORD,
-    lazyConnect: true,
-    enableOfflineQueue: false,
-    maxRetriesPerRequest: 1,
-    connectTimeout: 2000,
-  });
+export const redis = null;
 
-// Sets default TTL to 1 hour (3600 seconds) if not provided in .env
-export const REDIS_TTL = Number(process.env.REDIS_TTL) || 3600;
+export const REDIS_TTL = 3600;
 
 const fastify = Fastify({
   maxParamLength: 1000,
@@ -145,11 +133,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   }
 
   console.log(chalk.green(`Starting server on port ${PORT}... 🚀`));
-  if (!process.env.REDIS_HOST) {
-    console.warn(chalk.yellowBright('Redis not found. Cache disabled.'));
-  } else {
-    console.log(chalk.green(`Redis connected. Default Cache TTL: ${REDIS_TTL} seconds`));
-  }
+  console.log(chalk.yellowBright('Redis removed. Cache disabled.'));
 
   if (!process.env.TMDB_KEY)
     console.warn(
@@ -217,9 +201,10 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       if (!trimmed) return trimmed;
 
       try {
+        const upstreamReferer = manifestUrl || referer;
         return buildProxyPath(
           new URL(trimmed, manifestUrl).toString(),
-          referer,
+          upstreamReferer,
           isSegment,
           baseUrl,
         );
@@ -288,18 +273,28 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     referer: string,
     cookieHeader: string,
   ) => {
-    const proxyCandidates = [...getProxyCandidatesSync(), ''];
+    const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
+    const proxyCandidates = isAnimeSaltCdn ? [''] : [...getProxyCandidatesSync(), ''];
     let lastError: unknown = null;
+    const effectiveReferer = (() => {
+      const safeReferer = String(referer || '').trim();
+      if (!safeReferer) return safeReferer;
+      const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
+      if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
+        return '';
+      }
+      return safeReferer;
+    })();
 
     for (const proxyUrl of proxyCandidates) {
       try {
         const proxyOptions = proxyUrl ? toAxiosProxyOptions(proxyUrl) : {};
         const upstreamOrigin = (() => {
-          try { return new URL(referer).origin; } catch { return ''; }
+          try { return new URL(effectiveReferer).origin; } catch { return ''; }
         })();
         const response = await axios.get(url, {
           headers: {
-            Referer: referer || 'https://streameeeeee.site/',
+            Referer: effectiveReferer || 'https://streameeeeee.site/',
             ...(upstreamOrigin ? { Origin: upstreamOrigin } : {}),
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -404,6 +399,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       const responseText = responseBuffer
         ? responseBuffer.toString('utf8')
         : String(response.data || '');
+      const isKeyResponse = /\/keys\/key\.bin(?:$|\?)/i.test(url);
       const responseIsManifest =
         isManifest || isLikelyHlsManifest(responseText, responseContentType);
 
@@ -427,6 +423,25 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       }
 
       // For other content (segments, etc.), proxy as-is
+      if (isKeyResponse && responseBuffer) {
+        const trimmedKey = responseText.replace(/\s+/g, '');
+        if (/^[A-Za-z0-9+/=]+$/.test(trimmedKey) && trimmedKey.length >= 24) {
+          try {
+            const decodedKey = Buffer.from(trimmedKey, 'base64');
+            if (decodedKey.length >= 16 && decodedKey.length < responseBuffer.length) {
+              reply.header('Access-Control-Allow-Origin', '*');
+              reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+              reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+              reply.header('Content-Type', 'application/octet-stream');
+              reply.header('Content-Length', decodedKey.length);
+              return reply.send(decodedKey);
+            }
+          } catch {
+            // Fall back to raw key payload when decoding fails.
+          }
+        }
+      }
+
       reply.header('Access-Control-Allow-Origin', '*');
       reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
       reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');

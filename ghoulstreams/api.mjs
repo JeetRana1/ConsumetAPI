@@ -173,10 +173,12 @@ const getAvailabilitySnapshot = () => {
 };
 
 const mediaCache = new Map();
+const mediaRefererCache = new Map();
+const mediaInflight = new Map();
 const MEDIA_CACHE_MAX = 150;
 const MEDIA_CACHE_TTL_SEGMENT = 3600_000;
 const MEDIA_CACHE_TTL_PLAYLIST = 30_000;
-const MEDIA_CACHE_TTL_LIVE_PLAYLIST = 3000;
+const MEDIA_CACHE_TTL_LIVE_PLAYLIST = 30_000;
 const MEDIA_CACHE_STALE_LIMIT = 300_000;
 const MEDIA_CACHE_MAX_SIZE = 5_000_000;
 const isSegment = (url) => /\.ts(?:[?#]|$)/i.test(url) || /\.txt\?.*X-Amz-/i.test(url);
@@ -196,6 +198,16 @@ const setCache = (key, data, isSeg) => {
     if (oldest) mediaCache.delete(oldest[0]);
   }
   mediaCache.set(key, { data, expires: Date.now() + (isSeg ? MEDIA_CACHE_TTL_SEGMENT : MEDIA_CACHE_TTL_PLAYLIST), created: Date.now() });
+};
+
+const getInflight = (key) => mediaInflight.get(key) || null;
+const setInflight = (key, promise) => {
+  mediaInflight.set(key, promise);
+  const clear = () => {
+    if (mediaInflight.get(key) === promise) mediaInflight.delete(key);
+  };
+  promise.then(clear).catch(clear);
+  return promise;
 };
 
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1078,6 +1090,7 @@ app.get('/api/media-proxy', async (req, res) => {
         const fetchUpstream = async () => {
             const candidates = [];
             const pushUnique = (v) => { if (v && /^https?:\/\//i.test(v) && !candidates.includes(v)) candidates.push(v); };
+            pushUnique(mediaRefererCache.get(cacheKey));
             pushUnique(referer);
             pushUnique(rootReferer);
             pushUnique(normalizedTargetUrl);
@@ -1104,7 +1117,10 @@ app.get('/api/media-proxy', async (req, res) => {
                     ? { 'User-Agent': USER_AGENT, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': ref, 'Origin': (() => { try { return new URL(ref).origin; } catch { return ''; } })() }
                     : { 'User-Agent': USER_AGENT, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9' };
                 const resp = await quickFetch(normalizedTargetUrl, { headers });
-                if (resp.ok || resp.status === 206) return { response: resp, usedReferer: ref };
+                if (resp.ok || resp.status === 206) {
+                    if (ref) mediaRefererCache.set(cacheKey, ref);
+                    return { response: resp, usedReferer: ref };
+                }
                 lastResponse = resp;
             }
             return { response: lastResponse, usedReferer: '' };
@@ -1131,6 +1147,25 @@ app.get('/api/media-proxy', async (req, res) => {
                 });
                 return res.send(cached);
             }
+            const inflight = getInflight(cacheKey + ':rewritten');
+            if (inflight) {
+                const rewritten = await inflight.catch(() => null);
+                if (rewritten) {
+                    res.status(200);
+                    res.removeHeader('ETag');
+                    res.removeHeader('Last-Modified');
+                    res.removeHeader('Cache-Control');
+                    res.set({
+                        'Content-Type': 'application/vnd.apple.mpegurl',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate, proxy-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                        'Surrogate-Control': 'no-store',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    return res.send(rewritten);
+                }
+            }
         } else {
             const cached = getFromCache(cacheKey);
             if (cached) {
@@ -1145,9 +1180,31 @@ app.get('/api/media-proxy', async (req, res) => {
             }
         }
 
-        const { response, usedReferer } = await fetchUpstream();
+        const fetchPromise = (async () => {
+            const { response, usedReferer } = await fetchUpstream();
+            return { response, usedReferer };
+        })();
+        const { response, usedReferer } = isPlaylist ? await setInflight(cacheKey + ':upstream', fetchPromise) : await fetchPromise;
 
         if (!response || (!response.ok && response.status !== 206)) {
+            if (isPlaylist) {
+                const stalePlaylist = getFromCache(cacheKey + ':rewritten', true);
+                if (stalePlaylist) {
+                    res.status(200);
+                    res.removeHeader('ETag');
+                    res.removeHeader('Last-Modified');
+                    res.removeHeader('Cache-Control');
+                    res.set({
+                        'Content-Type': 'application/vnd.apple.mpegurl',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate, proxy-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                        'Surrogate-Control': 'no-store',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    return res.send(stalePlaylist);
+                }
+            }
             if (!isPlaylist) {
                 const staleMedia = getFromCache(cacheKey, true);
                 if (staleMedia) {
@@ -1163,9 +1220,13 @@ app.get('/api/media-proxy', async (req, res) => {
         }
 
         if (isPlaylist) {
-            const body = await response.text();
-            const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl, proxyBaseUrl);
-            mediaCache.set(cacheKey + ':rewritten', { data: rewritten, expires: Date.now() + MEDIA_CACHE_TTL_LIVE_PLAYLIST, created: Date.now() });
+            const rewritePromise = (async () => {
+                const body = await response.text();
+                const rewritten = rewritePlaylist(body, normalizedTargetUrl, rootReferer || usedReferer || referer || normalizedTargetUrl, proxyBaseUrl);
+                mediaCache.set(cacheKey + ':rewritten', { data: rewritten, expires: Date.now() + MEDIA_CACHE_TTL_LIVE_PLAYLIST, created: Date.now() });
+                return rewritten;
+            })();
+            const rewritten = await setInflight(cacheKey + ':rewritten', rewritePromise);
             res.status(response.status);
             res.removeHeader('ETag');
             res.removeHeader('Last-Modified');

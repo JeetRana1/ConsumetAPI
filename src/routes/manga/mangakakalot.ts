@@ -4,7 +4,6 @@ import { configureProvider } from '../../utils/provider';
 
 import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
-import { Redis } from 'ioredis';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const mangakakalot = configureProvider(new MANGA.MangaKakalot());
@@ -12,7 +11,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   const mangahere = configureProvider(new MANGA.MangaHere());
 
   const fromCache = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
-    return redis ? await cache.fetch(redis as Redis, key, fn, REDIS_TTL) : await fn();
+    return redis ? await cache.fetch(redis as any, key, fn, REDIS_TTL) : await fn();
   };
 
   const tryMany = async <T>(fns: Array<() => Promise<T>>): Promise<T> => {
