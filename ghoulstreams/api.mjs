@@ -138,6 +138,7 @@ if (HAS_LOCAL_FRONTEND) {
 }
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const EMBED_DEBUG = String(process.env.GHOULSTREAMS_EMBED_DEBUG || '').toLowerCase() === 'true';
 const AVAILABILITY_TTL_MS = 1000 * 60 * 45;
 
 const isAbsoluteHttpUrl = (value) => /^https?:\/\//i.test(String(value || '').trim());
@@ -972,7 +973,7 @@ app.get('/api/iframe-proxy', async (req, res) => {
 
         const proxyBase = `${req.protocol}://${req.get('host')}`;
         const escTargetUrl = encodeURIComponent(targetUrl);
-        const debugOverlay = `<script>
+        const debugOverlay = !EMBED_DEBUG ? '' : `<script>
 (function(){
   function emit(msg){
     try { window.parent && window.parent.postMessage('[gs-embed] ' + msg, '*'); } catch {}
@@ -1052,7 +1053,7 @@ return rf.call(this,u,o)
 (function(){
   var d=document.createDocumentFragment();
   var s=document.createElement('script');
-  s.textContent='if(typeof Hls!==\\"undefined\\"&&Hls.DefaultConfig){Hls.DefaultConfig.liveSyncDuration=45;Hls.DefaultConfig.liveMaxLatencyDuration=90;Hls.DefaultConfig.maxBufferLength=45;Hls.DefaultConfig.maxMaxBufferLength=60;Hls.DefaultConfig.maxBufferSize=120*1000*1000;Hls.DefaultConfig.backBufferLength=45;Hls.DefaultConfig.liveBackBufferLength=30;Hls.DefaultConfig.maxLiveSyncPlaybackRate=1.25}';
+  s.textContent='if(typeof Hls!==\\"undefined\\"&&Hls.DefaultConfig){Hls.DefaultConfig.liveSyncDuration=45;Hls.DefaultConfig.liveMaxLatencyDuration=90;Hls.DefaultConfig.maxBufferLength=30;Hls.DefaultConfig.maxMaxBufferLength=45;Hls.DefaultConfig.maxBufferSize=72*1000*1000;Hls.DefaultConfig.backBufferLength=30;Hls.DefaultConfig.liveBackBufferLength=18;Hls.DefaultConfig.maxLiveSyncPlaybackRate=1.05;Hls.DefaultConfig.startLevel=0;Hls.DefaultConfig.abrEwmaDefaultEstimate=220000;Hls.DefaultConfig.capLevelToPlayerSize=true;Hls.DefaultConfig.testBandwidth=false;Hls.DefaultConfig.fragLoadingRetryDelay=1200;Hls.DefaultConfig.levelLoadingRetryDelay=1500}';
   d.appendChild(s);
   document.head.appendChild(d);
 })();
@@ -1203,7 +1204,7 @@ app.get('/api/media-proxy', async (req, res) => {
         };
 
         const cacheKey = normalizedTargetUrl;
-        if (isPlaylist || isSeg) {
+        if (EMBED_DEBUG && (isPlaylist || isSeg)) {
             console.log('[media-proxy]', isPlaylist ? 'playlist' : 'segment', normalizedTargetUrl, 'referer=', referer || '-', 'root=', rootReferer || '-');
         }
         if (isPlaylist) {
