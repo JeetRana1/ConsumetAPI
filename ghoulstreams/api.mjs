@@ -11,10 +11,15 @@ const app = express();
 const provider = new BuffStreams();
 const streamAvailability = new Map();
 const sourcesCache = new Map();
+const eventInfoCache = new Map();
+const matchDetailsCache = new Map();
+const endpointInflight = new Map();
 const directoryCache = { data: null, ts: 0 };
 const DIRECTORY_CACHE_TTL = 6_000;
 const searchCache = { data: null, ts: 0, key: '' };
 const SEARCH_CACHE_TTL = 12_000;
+const EVENT_INFO_CACHE_TTL = 8_000;
+const MATCH_DETAILS_CACHE_TTL = 8_000;
 const HAS_LOCAL_FRONTEND = fs.existsSync(path.join(__dirname, 'index.html'));
 
 const ONE_YEAR_SECONDS = 31536000;
@@ -142,6 +147,31 @@ const EMBED_DEBUG = String(process.env.GHOULSTREAMS_EMBED_DEBUG || '').toLowerCa
 const AVAILABILITY_TTL_MS = 1000 * 60 * 45;
 
 const isAbsoluteHttpUrl = (value) => /^https?:\/\//i.test(String(value || '').trim());
+
+const getTimedCacheValue = (cache, key, ttlMs) => {
+    const entry = cache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.ts <= ttlMs) return entry.value;
+    cache.delete(key);
+    return null;
+};
+
+const setTimedCacheValue = (cache, key, value) => {
+    cache.set(key, { value, ts: Date.now() });
+    return value;
+};
+
+const withInflight = async (key, factory) => {
+    const existing = endpointInflight.get(key);
+    if (existing) return existing;
+    const promise = Promise.resolve().then(factory);
+    endpointInflight.set(key, promise);
+    const clear = () => {
+        if (endpointInflight.get(key) === promise) endpointInflight.delete(key);
+    };
+    promise.then(clear, clear);
+    return promise;
+};
 
 const pruneAvailability = () => {
     const now = Date.now();
@@ -497,17 +527,25 @@ app.post('/api/matchDetails', async (req, res) => {
     try {
         const { title, sport, lockId } = req.body || {};
         if (!title) return res.json({ success: false, error: 'title required' });
+        const cacheKey = `${String(title).trim().toLowerCase()}|${String(sport || 'sports').trim().toLowerCase()}`;
+        const cached = getTimedCacheValue(matchDetailsCache, cacheKey, MATCH_DETAILS_CACHE_TTL);
+        if (cached !== null) {
+            return res.json({ success: true, data: cached });
+        }
         const backendBase = (process.env.CONSUMET_API_BASE || process.env.SITE_API_BASE || 'http://localhost:3000').replace(/\/$/, '');
         const liveUrl = `${backendBase}/sports/buffstreams/livesport?title=${encodeURIComponent(title)}&sport=${encodeURIComponent(sport || 'sports')}`;
-        const response = await fetch(liveUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            signal: AbortSignal.timeout(8000),
+        const data = await withInflight(`match:${cacheKey}`, async () => {
+            const response = await fetch(liveUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                signal: AbortSignal.timeout(8000),
+            });
+            if (!response.ok) {
+                return null;
+            }
+            const payload = await response.json();
+            return payload?.data || payload || null;
         });
-        if (!response.ok) {
-            return res.json({ success: true, data: null });
-        }
-        const data = await response.json();
-        res.json({ success: true, data: data?.data || data || null });
+        res.json({ success: true, data: setTimedCacheValue(matchDetailsCache, cacheKey, data) });
     } catch (error) {
         console.error('Error in /api/matchDetails:', error?.message || error);
         res.json({ success: true, data: null });
@@ -837,11 +875,23 @@ app.post('/api/report-stream-status', (req, res) => {
 app.post('/api/fetchInfo', async (req, res) => {
     try {
         const { id } = req.body;
-        console.log('Fetching info for:', id);
-        let info = await provider.fetchInfo(id);
-        if (!info && BuffStreams.forceBuffstreamsProbe) {
-            await BuffStreams.forceBuffstreamsProbe();
-            info = await provider.fetchInfo(id);
+        const cacheKey = String(id || '').trim();
+        if (!cacheKey) return res.json({ success: false, error: 'id required' });
+        const cached = getTimedCacheValue(eventInfoCache, cacheKey, EVENT_INFO_CACHE_TTL);
+        if (cached) {
+            return res.json({ success: true, data: cached });
+        }
+        const info = await withInflight(`info:${cacheKey}`, async () => {
+            console.log('Fetching info for:', cacheKey);
+            let freshInfo = await provider.fetchInfo(cacheKey);
+            if (!freshInfo && BuffStreams.forceBuffstreamsProbe) {
+                await BuffStreams.forceBuffstreamsProbe();
+                freshInfo = await provider.fetchInfo(cacheKey);
+            }
+            return freshInfo || null;
+        });
+        if (info) {
+            setTimedCacheValue(eventInfoCache, cacheKey, info);
         }
         res.json({ success: true, data: info });
     } catch (error) {
