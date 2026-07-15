@@ -133,47 +133,18 @@ const streamUpstreamToReply = async (targetUrl, headers, reply) => {
             continue;
           responseHeaders[key] = String(value);
         }
-        const isM3U8 = /\.m3u8/i.test(targetUrl) || /application\/vnd\.apple\.mpegurl/i.test(String(res.headers["content-type"] || ""));
-        const writeHead = () => reply.raw.writeHead(res.statusCode || 200, responseHeaders);
-        if (isM3U8) {
-          delete responseHeaders["content-length"];
-          res.on("data", (chunk) => chunks.push(chunk));
-          res.on("error", reject);
-          reply.raw.on("close", () => req.destroy());
-          res.on("end", () => {
-            const body = Buffer.concat(chunks).toString("utf-8");
-            const origin = url.origin;
-            const rewritten = body.replace(/^(?!\s*#)(\S+)$/gm, (match) => {
-              const m = match.trim();
-              if (!m || /^https?:\/\//i.test(m) || m.startsWith("//"))
-                return m;
-              if (m.startsWith("/"))
-                return origin + m;
-              const base = targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
-              return base + m;
-            });
-            const buf = Buffer.from(rewritten, "utf-8");
-            if (proxyCache.size < PROXY_CACHE_MAX) {
-              proxyCache.set(cacheKey, { body: buf, headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
-            }
-            writeHead();
-            reply.raw.end(buf);
-            resolve();
-          });
-        } else {
-          res.on("data", (chunk) => chunks.push(chunk));
-          res.on("error", reject);
-          reply.raw.on("close", () => req.destroy());
-          res.on("end", () => {
-            const buf = Buffer.concat(chunks);
-            if (proxyCache.size < PROXY_CACHE_MAX && !responseHeaders["content-range"]) {
-              proxyCache.set(cacheKey, { body: buf, headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
-            }
-            writeHead();
-            reply.raw.end(buf);
-            resolve();
-          });
-        }
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("error", reject);
+        reply.raw.on("close", () => req.destroy());
+        res.on("end", () => {
+          const buf = Buffer.concat(chunks);
+          if (proxyCache.size < PROXY_CACHE_MAX && !responseHeaders["content-range"]) {
+            proxyCache.set(cacheKey, { body: buf, headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
+          }
+          reply.raw.writeHead(res.statusCode || 200, responseHeaders);
+          reply.raw.end(buf);
+          resolve();
+        });
       }
     );
     req.on("error", reject);
@@ -598,7 +569,7 @@ const routes = async (fastify, _options) => {
           "$1$2$3" + base + "/"
         );
       }
-      const proxyBase = `https://${request.headers.host}`;
+      const proxyBase = `${request.protocol}://${request.headers.host}`;
       const escTargetUrl = encodeURIComponent(targetUrl);
       const xhrOverride = `<script>
 var PROXY_BASE='${proxyBase}';
