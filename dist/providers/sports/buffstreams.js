@@ -49,8 +49,7 @@ class BuffStreams extends import_models.MovieParser {
   get index18Url() {
     return `${this.baseUrl}/index18`;
   }
-  get categoryPages() {
-    const b = this.baseUrl;
+  getAllCategoryPages(b) {
     return {
       nfl: `${b}/nflstreams2`,
       soccer: `${b}/soccer-live-streams`,
@@ -62,6 +61,9 @@ class BuffStreams extends import_models.MovieParser {
       mlb: `${b}/mlb-live-streams`,
       ncaa: `${b}/ncaastreams`
     };
+  }
+  get categoryPages() {
+    return this.getAllCategoryPages(this.baseUrl);
   }
   buildHeaders(referer) {
     const origin = (() => {
@@ -262,7 +264,7 @@ class BuffStreams extends import_models.MovieParser {
       return "mma";
     if (lower.includes("/soccer") || lower.includes("/football") || lower.includes("soccer") || lower.includes("world cup") || lower.includes("world championship"))
       return "soccer";
-    if (lower.includes("/f1/") || lower.includes("formula 1") || lower.includes("f1") || lower.includes("nascar"))
+    if (lower.includes("/f1/") || lower.includes("formula 1") || lower.includes("f1") || lower.includes("nascar") || lower.includes("indycar"))
       return "f1";
     if (lower.includes("/ncaa/") || lower.includes("ncaa"))
       return "ncaa";
@@ -456,7 +458,8 @@ class BuffStreams extends import_models.MovieParser {
     return this.parseStreamsFromHTML(html);
   }
   async fetchAllStreams() {
-    const urls = [this.homeUrl, this.index18Url];
+    const b = this.baseUrl;
+    const urls = [`${b}/index7`, `${b}/index18`, ...Object.values(this.getAllCategoryPages(b))];
     const results = await Promise.allSettled(
       urls.map((url) => this.fetchCategoryStreams(url))
     );
@@ -633,14 +636,16 @@ class BuffStreams extends import_models.MovieParser {
       if (!raw || raw === "all") {
         streams = await this.fetchAllStreams();
       } else {
+        const b = this.baseUrl;
         const categoryKey = raw.replace(/^category:/, "");
+        const catPages = this.getAllCategoryPages(b);
         const urls = [];
         if (categoryKey === "fighting") {
-          urls.push(this.categoryPages.boxing, this.categoryPages.mma);
-        } else if (this.categoryPages[categoryKey]) {
-          urls.push(this.categoryPages[categoryKey]);
+          urls.push(catPages.boxing, catPages.mma);
+        } else if (catPages[categoryKey]) {
+          urls.push(catPages[categoryKey]);
         }
-        urls.push(this.homeUrl, this.index18Url);
+        urls.push(`${b}/index7`, `${b}/index18`);
         const results = await Promise.allSettled(
           urls.map((url) => this.fetchCategoryStreams(url))
         );

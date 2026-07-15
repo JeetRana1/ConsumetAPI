@@ -1,15 +1,13 @@
 const KNOWN_DOMAINS: string[] = [
   ...(process.env.BUFFSTREAMS_BASE_URL ? [process.env.BUFFSTREAMS_BASE_URL.replace(/\/+$/, '')] : []),
   'https://buffstreams.ir',
-  'https://buffstreams.sx',
 ];
 
-let cachedUrl: string = KNOWN_DOMAINS[0] || 'https://buffstreams.ir';
+let cachedUrl: string = KNOWN_DOMAINS[0];
 let lastProbeMs = 0;
 const PROBE_TTL_MS = 2 * 60 * 1000;
 let probing: Promise<void> | null = null;
 let probeBackoff = 0;
-let roundRobinIndex = 0;
 
 async function probeDomain(url: string): Promise<boolean> {
   try {
@@ -59,8 +57,7 @@ startProbe();
 
 export const BaseUrlResolver = {
   getBaseUrl(): string {
-    roundRobinIndex = (roundRobinIndex + 1) % KNOWN_DOMAINS.length;
-    return KNOWN_DOMAINS[roundRobinIndex];
+    return KNOWN_DOMAINS[0];
   },
 
   async forceProbe(): Promise<string> {

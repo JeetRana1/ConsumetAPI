@@ -23,15 +23,13 @@ __export(domain_resolver_exports, {
 module.exports = __toCommonJS(domain_resolver_exports);
 const KNOWN_DOMAINS = [
   ...process.env.BUFFSTREAMS_BASE_URL ? [process.env.BUFFSTREAMS_BASE_URL.replace(/\/+$/, "")] : [],
-  "https://buffstreams.ir",
-  "https://buffstreams.sx"
+  "https://buffstreams.ir"
 ];
-let cachedUrl = KNOWN_DOMAINS[0] || "https://buffstreams.ir";
+let cachedUrl = KNOWN_DOMAINS[0];
 let lastProbeMs = 0;
 const PROBE_TTL_MS = 2 * 60 * 1e3;
 let probing = null;
 let probeBackoff = 0;
-let roundRobinIndex = 0;
 async function probeDomain(url) {
   try {
     const controller = new AbortController();
@@ -75,8 +73,7 @@ function startProbe() {
 startProbe();
 const BaseUrlResolver = {
   getBaseUrl() {
-    roundRobinIndex = (roundRobinIndex + 1) % KNOWN_DOMAINS.length;
-    return KNOWN_DOMAINS[roundRobinIndex];
+    return KNOWN_DOMAINS[0];
   },
   async forceProbe() {
     const url = await probeAll();
