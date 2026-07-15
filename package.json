@@ -6,7 +6,7 @@
         "start": "node dist/main.js",
         "start:ghoulstreams": "node ghoulstreams/api.mjs",
         "dev": "nodemon src/main.ts",
-        "build": "node --max-old-space-size=2048 ./node_modules/typescript/bin/tsc",
+        "build": "node ./node_modules/typescript/bin/tsc",
         "typecheck": "node --max-old-space-size=2048 ./node_modules/typescript/bin/tsc --noEmit --pretty false",
         "lint": "prettier --write \"src/**/*.ts\""
     },
