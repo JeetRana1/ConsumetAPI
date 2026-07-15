@@ -90,15 +90,25 @@ const streamUpstreamToReply = async (targetUrl, headers, reply) => {
         headers
       },
       (res) => {
+        reply.hijack();
         reply.status(res.statusCode || 200);
+        const responseHeaders = {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, Range, Origin, Referer, User-Agent, Accept, Accept-Encoding",
+          "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+          "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Type"
+        };
         for (const [key, value] of Object.entries(res.headers)) {
           if (value === void 0)
             continue;
-          if (key.toLowerCase() === "transfer-encoding")
+          const lower = key.toLowerCase();
+          if (lower === "transfer-encoding")
             continue;
-          reply.header(key, value);
+          if (lower.startsWith("access-control-"))
+            continue;
+          responseHeaders[key] = String(value);
         }
-        setCorsHeaders(reply);
+        reply.raw.writeHead(res.statusCode || 200, responseHeaders);
         res.on("error", reject);
         reply.raw.on("close", () => req.destroy());
         res.pipe(reply.raw);
