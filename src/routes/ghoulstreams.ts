@@ -93,7 +93,6 @@ const streamUpstreamToReply = async (
   }
 
   return await new Promise<void>((resolve, reject) => {
-    const chunks: Buffer[] = [];
     const req = client.request(
       targetUrl,
       {
@@ -119,16 +118,21 @@ const streamUpstreamToReply = async (
           responseHeaders[key] = String(value);
         }
 
-        res.on('data', (chunk) => chunks.push(chunk));
+        const shouldCache = proxyCache.size < PROXY_CACHE_MAX && !responseHeaders['content-range'];
+        let cacheBuf: Buffer[] | null = shouldCache ? [] : null;
+
+        if (shouldCache) {
+          res.on('data', (chunk) => cacheBuf!.push(chunk));
+        }
+
+        reply.raw.writeHead(res.statusCode || 200, responseHeaders);
+        res.pipe(reply.raw);
         res.on('error', reject);
         reply.raw.on('close', () => req.destroy());
         res.on('end', () => {
-          const buf = Buffer.concat(chunks);
-          if (proxyCache.size < PROXY_CACHE_MAX && !responseHeaders['content-range']) {
-            proxyCache.set(cacheKey, { body: buf, headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
+          if (shouldCache && cacheBuf!.length > 0) {
+            proxyCache.set(cacheKey, { body: Buffer.concat(cacheBuf!), headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
           }
-          reply.raw.writeHead(res.statusCode || 200, responseHeaders);
-          reply.raw.end(buf);
           resolve();
         });
       },
