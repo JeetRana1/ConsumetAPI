@@ -544,7 +544,7 @@ var PROXY_BASE='${proxyBase}';
 function _shouldProxy(u){
 var url=typeof u==='string'?u:'';
 if(!url) return false;
-return /^https?:\\/\\//i.test(url) && (/\\/playlist\\//i.test(url) || /chatgpt\\.hereisman\\.net/i.test(url));
+return /^https?:///i.test(url);
 }
 var ro=XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open=function(m,u){
