@@ -456,7 +456,7 @@ class BuffStreams extends import_models.MovieParser {
     return this.parseStreamsFromHTML(html);
   }
   async fetchAllStreams() {
-    const urls = [this.homeUrl, this.index18Url];
+    const urls = [this.homeUrl, this.index18Url, ...Object.values(this.categoryPages)];
     const results = await Promise.allSettled(
       urls.map((url) => this.fetchCategoryStreams(url))
     );

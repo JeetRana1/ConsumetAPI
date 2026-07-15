@@ -573,7 +573,7 @@ export class BuffStreams extends MovieParser {
   }
 
   private async fetchAllStreams(): Promise<any[]> {
-    const urls = [this.homeUrl, this.index18Url];
+    const urls = [this.homeUrl, this.index18Url, ...Object.values(this.categoryPages)];
     const results = await Promise.allSettled(
       urls.map((url) => this.fetchCategoryStreams(url)),
     );
