@@ -456,7 +456,7 @@ class BuffStreams extends import_models.MovieParser {
     return this.parseStreamsFromHTML(html);
   }
   async fetchAllStreams() {
-    const urls = [this.homeUrl, this.index18Url, ...Object.values(this.categoryPages)];
+    const urls = [this.homeUrl, this.index18Url];
     const results = await Promise.allSettled(
       urls.map((url) => this.fetchCategoryStreams(url))
     );
@@ -636,12 +636,11 @@ class BuffStreams extends import_models.MovieParser {
         const categoryKey = raw.replace(/^category:/, "");
         const urls = [];
         if (categoryKey === "fighting") {
-          urls.push(this.categoryPages.boxing, this.categoryPages.mma, this.index18Url);
+          urls.push(this.categoryPages.boxing, this.categoryPages.mma);
         } else if (this.categoryPages[categoryKey]) {
           urls.push(this.categoryPages[categoryKey]);
-        } else {
-          urls.push(this.homeUrl);
         }
+        urls.push(this.homeUrl, this.index18Url);
         const results = await Promise.allSettled(
           urls.map((url) => this.fetchCategoryStreams(url))
         );
@@ -654,7 +653,11 @@ class BuffStreams extends import_models.MovieParser {
               `${s.url || ""} ${s.title || ""} ${s.sectionTitle || ""}`
             )
           );
-        } else if (raw && !raw.startsWith("category:")) {
+        } else if (raw && raw.startsWith("category:")) {
+          streams = streams.filter(
+            (s) => String(s.type || "").toLowerCase() === categoryKey || `${s.url || ""} ${s.title || ""} ${s.sectionTitle || ""}`.toLowerCase().includes(categoryKey)
+          );
+        } else if (raw) {
           streams = streams.filter(
             (s) => `${s.title} ${s.statusText || ""} ${s.type} ${s.sectionTitle || ""}`.toLowerCase().includes(raw)
           );
@@ -662,7 +665,7 @@ class BuffStreams extends import_models.MovieParser {
       }
       if (!streams.length && import_domain_resolver.BaseUrlResolver.getProbeBackoff() < 3) {
         const newDomain = await import_domain_resolver.BaseUrlResolver.forceProbe();
-        if (newDomain) {
+        if (newDomain && (!raw || raw === "all")) {
           streams = await this.fetchAllStreams();
         }
       }
