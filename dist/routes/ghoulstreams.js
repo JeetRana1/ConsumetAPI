@@ -44,6 +44,22 @@ const WATCH_LOOKUP_TTL_MS = 1e3 * 20;
 const streamAvailability = /* @__PURE__ */ new Map();
 const watchLookupCache = /* @__PURE__ */ new Map();
 const watchLookupInFlight = /* @__PURE__ */ new Map();
+const proxyCache = /* @__PURE__ */ new Map();
+const PROXY_CACHE_TTL_MS = 1e4;
+const PROXY_CACHE_MAX = 500;
+const pruneProxyCache = () => {
+  const now = Date.now();
+  let count = 0;
+  for (const [key, entry] of proxyCache) {
+    if (entry.expiresAt <= now) {
+      proxyCache.delete(key);
+      count++;
+    }
+    if (count > 100)
+      break;
+  }
+};
+setInterval(pruneProxyCache, 3e4);
 const isAbsoluteHttpUrl = (value) => /^https?:\/\//i.test(String(value || "").trim());
 const getQueryValue = (query, ...keys) => {
   const map = /* @__PURE__ */ new Map();
@@ -82,7 +98,16 @@ const setCorsHeaders = (reply) => {
 const streamUpstreamToReply = async (targetUrl, headers, reply) => {
   const url = new URL(targetUrl);
   const client = url.protocol === "https:" ? import_node_https.default : import_node_http.default;
+  const cacheKey = targetUrl;
+  const cached = proxyCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    reply.hijack();
+    reply.raw.writeHead(cached.status, cached.headers);
+    reply.raw.end(cached.body);
+    return;
+  }
   return await new Promise((resolve, reject) => {
+    const chunks = [];
     const req = client.request(
       targetUrl,
       {
@@ -108,11 +133,47 @@ const streamUpstreamToReply = async (targetUrl, headers, reply) => {
             continue;
           responseHeaders[key] = String(value);
         }
-        reply.raw.writeHead(res.statusCode || 200, responseHeaders);
-        res.on("error", reject);
-        reply.raw.on("close", () => req.destroy());
-        res.pipe(reply.raw);
-        res.on("end", resolve);
+        const isM3U8 = /\.m3u8/i.test(targetUrl) || /application\/vnd\.apple\.mpegurl/i.test(String(res.headers["content-type"] || ""));
+        const writeHead = () => reply.raw.writeHead(res.statusCode || 200, responseHeaders);
+        if (isM3U8) {
+          delete responseHeaders["content-length"];
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("error", reject);
+          reply.raw.on("close", () => req.destroy());
+          res.on("end", () => {
+            const body = Buffer.concat(chunks).toString("utf-8");
+            const origin = url.origin;
+            const rewritten = body.replace(/^(?!\s*#)(\S+)$/gm, (match) => {
+              const m = match.trim();
+              if (!m || /^https?:\/\//i.test(m) || m.startsWith("//"))
+                return m;
+              if (m.startsWith("/"))
+                return origin + m;
+              const base = targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
+              return base + m;
+            });
+            const buf = Buffer.from(rewritten, "utf-8");
+            if (proxyCache.size < PROXY_CACHE_MAX) {
+              proxyCache.set(cacheKey, { body: buf, headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
+            }
+            writeHead();
+            reply.raw.end(buf);
+            resolve();
+          });
+        } else {
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("error", reject);
+          reply.raw.on("close", () => req.destroy());
+          res.on("end", () => {
+            const buf = Buffer.concat(chunks);
+            if (proxyCache.size < PROXY_CACHE_MAX && !responseHeaders["content-range"]) {
+              proxyCache.set(cacheKey, { body: buf, headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
+            }
+            writeHead();
+            reply.raw.end(buf);
+            resolve();
+          });
+        }
       }
     );
     req.on("error", reject);
