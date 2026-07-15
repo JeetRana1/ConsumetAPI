@@ -582,7 +582,8 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
           '$1$2$3' + base + '/'
         );
       }
-      const proxyBase = `${request.protocol}://${request.headers.host}`;
+      const proto = (request.headers['x-forwarded-proto'] as string) || request.protocol;
+      const proxyBase = `${proto}://${request.headers.host}`;
       const escTargetUrl = encodeURIComponent(targetUrl);
       const xhrOverride = `<script>
 var PROXY_BASE='${proxyBase}';
