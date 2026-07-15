@@ -369,6 +369,18 @@ export class Racing extends MovieParser {
           return { sources: [] } as ISource;
         }
       } else {
+        if (/(ok\.ru|vk\.com|vkvideo)/i.test(embedUrl) && !/\.(m3u8|mp4)(\?|#|$)/i.test(embedUrl)) {
+          return {
+            sources: [{
+              url: embedUrl,
+              isM3U8: false,
+              quality: 'auto',
+              server: 'OK.ru Embed',
+              isEmbed: true,
+            }],
+            headers: this.buildBrowserHeaders(pageUrl),
+          } as unknown as ISource;
+        }
         const iframeHtml = await this.fetchIframeDocument(embedUrl, pageUrl);
         if (!iframeHtml) {
           console.log(`[racing] Failed to fetch iframe document: ${embedUrl}`);
