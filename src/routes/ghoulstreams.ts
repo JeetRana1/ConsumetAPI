@@ -178,11 +178,7 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
 
   fastify.addHook('onRequest', async (request, reply) => {
     if (request.url.startsWith('/api/')) {
-      setCorsHeaders(reply);
       await noStoreHeaders(request, reply);
-    }
-    if (request.method === 'OPTIONS' && request.url.startsWith('/api/')) {
-      reply.status(204).send();
     }
   });
 
