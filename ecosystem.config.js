@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'consumet-api',
     script: 'dist/main.js',
-    cwd: process.env.HOME + '/ConsumetAPI',
+    cwd: process.env.HOME + '/FluxiumLab',
     interpreter: 'node',
     cron_restart: '0 0 * * *',
     env: {
