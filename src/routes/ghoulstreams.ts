@@ -5,6 +5,7 @@ import https from 'node:https';
 import { BuffStreams } from '../providers/sports/buffstreams';
 import { Racing } from '../providers/sports/racing';
 import { LiveSportHelper } from '../providers/sports/livesport-helper';
+import cheerio from 'cheerio';
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -445,6 +446,128 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
       }
     },
   );
+
+  fastify.post('/api/resolve-server-embed', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { url } = (request.body as { url?: string }) || {};
+      if (!url) return reply.send({ success: false, error: 'no_url' });
+      const response = await axios.get(url, {
+        headers: { 'User-Agent': USER_AGENT },
+        timeout: 10000,
+      });
+      const html = String(response.data || '');
+      const $ = cheerio.load(html);
+      const knownIds = ['wp_player', 'player', 'main-player', 'video-player', 'stream-player', 'embed-player', 'live-stream'];
+      for (const id of knownIds) {
+        const iframe = $(`iframe#${id}`);
+        if (iframe.length) {
+          const src = iframe.attr('src');
+          if (src) return reply.send({ success: true, embedUrl: src });
+        }
+      }
+      const knownClasses = ['embed-responsive-item', 'player-iframe', 'stream-iframe', 'video-iframe'];
+      for (const cls of knownClasses) {
+        const iframe = $(`iframe.${cls}`);
+        if (iframe.length) {
+          const src = iframe.attr('src');
+          if (src) return reply.send({ success: true, embedUrl: src });
+        }
+      }
+      const allIframes = $('iframe');
+      for (let i = 0; i < allIframes.length; i++) {
+        const src = $(allIframes[i]).attr('src') || '';
+        if (/gooz\.aapmains|embed|stream|player|watch/i.test(src) && !/youtube.*chat|live.*chat|googleads|doubleclick|facebook/i.test(src)) {
+          return reply.send({ success: true, embedUrl: src });
+        }
+      }
+      for (let i = 0; i < allIframes.length; i++) {
+        const src = $(allIframes[i]).attr('src') || '';
+        if (src && src.startsWith('http') && !/youtube.*chat|googleads|doubleclick/i.test(src)) {
+          return reply.send({ success: true, embedUrl: src });
+        }
+      }
+      const embedPattern = /gooz\.aapmains\.net\/new-stream-embed\/(\d+)/i;
+      const jsMatch = html.match(embedPattern);
+      if (jsMatch) {
+        return reply.send({ success: true, embedUrl: 'https://' + jsMatch[0] });
+      }
+      return reply.send({ success: true, embedUrl: '' });
+    } catch (error: any) {
+      return reply.send({ success: false, error: error?.message || 'resolve_failed' });
+    }
+  });
+
+  fastify.get('/api/iframe-proxy', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const targetUrl = String((request.query as { url?: string }).url || '').trim();
+      const referer = String((request.query as { referer?: string }).referer || '').trim();
+      if (!targetUrl) return reply.status(400).send('Missing url param');
+      const upstreamHeaders: Record<string, string> = {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      };
+      if (referer) {
+        upstreamHeaders['Referer'] = referer;
+        try { upstreamHeaders['Origin'] = new URL(referer).origin; } catch {}
+      }
+      const resp = await axios.get(targetUrl, {
+        headers: upstreamHeaders,
+        timeout: 15000,
+        responseType: 'text',
+      });
+      let html = String(resp.data || '');
+      const base = (() => { try { return new URL(targetUrl).origin; } catch { return ''; } })();
+      if (base) {
+        html = html.replace(
+          /(<(?:img|script|link|source|video|audio|iframe)\b[^>]*?)(src=|href=)(["'])(?!https?:\/\/|\/\/|data:|#|javascript:)/gi,
+          '$1$2$3' + base + '/'
+        );
+      }
+      const proxyBase = `${request.protocol}://${request.headers.host}`;
+      const escTargetUrl = encodeURIComponent(targetUrl);
+      const xhrOverride = `<script>
+var PROXY_BASE='${proxyBase}';
+function _shouldProxy(u){
+var url=typeof u==='string'?u:'';
+if(!url) return false;
+return /^https?:\\/\\//i.test(url) && (/\\/playlist\\//i.test(url) || /chatgpt\\.hereisman\\.net/i.test(url));
+}
+var ro=XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open=function(m,u){
+var url=typeof u==='string'?u:'';
+if(_shouldProxy(url)&&url.indexOf(PROXY_BASE)<0){u=PROXY_BASE+'/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
+return ro.apply(this,arguments)
+};
+var rf=window.fetch;
+window.fetch=function(u,o){
+var url=typeof u==='string'?u:'';
+if(_shouldProxy(url)&&url.indexOf(PROXY_BASE)<0){u=PROXY_BASE+'/api/media-proxy?url='+encodeURIComponent(url)+'&referer=${escTargetUrl}&root_referer=${escTargetUrl}'}
+return rf.call(this,u,o)
+};
+</script>`;
+      const hlsPatch = `<script>
+(function(){
+var d=document.createDocumentFragment();
+var s=document.createElement('script');
+s.textContent='if(typeof Hls!==\\"undefined\\"&&Hls.DefaultConfig){Hls.DefaultConfig.liveSyncDuration=45;Hls.DefaultConfig.liveMaxLatencyDuration=90;Hls.DefaultConfig.maxBufferLength=30;Hls.DefaultConfig.maxMaxBufferLength=45;Hls.DefaultConfig.maxBufferSize=72*1000*1000;Hls.DefaultConfig.backBufferLength=30;Hls.DefaultConfig.liveBackBufferLength=18;Hls.DefaultConfig.maxLiveSyncPlaybackRate=1.05;Hls.DefaultConfig.startLevel=0;Hls.DefaultConfig.abrEwmaDefaultEstimate=220000;Hls.DefaultConfig.capLevelToPlayerSize=true;Hls.DefaultConfig.testBandwidth=false;Hls.DefaultConfig.fragLoadingRetryDelay=1200;Hls.DefaultConfig.levelLoadingRetryDelay=1500}';
+d.appendChild(s);
+document.head.appendChild(d);
+})();
+</script>`;
+      html = html.replace('</head>', xhrOverride + hlsPatch + '</head>');
+      reply.header('Content-Type', 'text/html; charset=utf-8');
+      reply.header('X-Frame-Options', 'ALLOWALL');
+      reply.header('Content-Security-Policy', "frame-ancestors * 'self'; script-src * 'unsafe-inline' 'unsafe-eval' blob:; worker-src blob: *; style-src * 'unsafe-inline'");
+      reply.header('Access-Control-Allow-Origin', '*');
+      reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      reply.header('Pragma', 'no-cache');
+      reply.header('Expires', '0');
+      return reply.status(200).send(html);
+    } catch (error: any) {
+      return reply.status(502).send('Proxy error: ' + (error?.message || ''));
+    }
+  });
 };
 
 export default routes;
