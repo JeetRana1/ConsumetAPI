@@ -259,6 +259,23 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
         );
         if (Array.isArray((data as any)?.sources) && (data as any).sources.length > 0) {
           setStreamAvailability(target, true, 'source_available');
+        } else if (
+          !Array.isArray((data as any)?.sources) ||
+          (data as any).sources.length === 0
+        ) {
+          const fallbackEmbed = String((data as any)?.embedUrl || '').trim();
+          if (fallbackEmbed) {
+            (data as any).sources = [
+              {
+                url: fallbackEmbed,
+                server: 'Embed',
+                quality: 'auto',
+                isM3U8: false,
+                engine: 'iframe',
+                headers: (data as any)?.headers || {},
+              },
+            ];
+          }
         }
         return reply.send({ success: true, data });
       } catch (error: any) {
