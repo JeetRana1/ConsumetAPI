@@ -613,7 +613,7 @@ return rf.call(this,u,o)
 (function(){
 var d=document.createDocumentFragment();
 var s=document.createElement('script');
-s.textContent='if(typeof Hls!==\\"undefined\\"&&Hls.DefaultConfig){Hls.DefaultConfig.liveSyncDuration=45;Hls.DefaultConfig.liveMaxLatencyDuration=90;Hls.DefaultConfig.maxBufferLength=30;Hls.DefaultConfig.maxMaxBufferLength=45;Hls.DefaultConfig.maxBufferSize=72*1000*1000;Hls.DefaultConfig.backBufferLength=30;Hls.DefaultConfig.liveBackBufferLength=18;Hls.DefaultConfig.maxLiveSyncPlaybackRate=1.05;Hls.DefaultConfig.startLevel=0;Hls.DefaultConfig.abrEwmaDefaultEstimate=220000;Hls.DefaultConfig.capLevelToPlayerSize=true;Hls.DefaultConfig.testBandwidth=false;Hls.DefaultConfig.fragLoadingRetryDelay=1200;Hls.DefaultConfig.levelLoadingRetryDelay=1500}';
+s.textContent='if(typeof Hls!==\\"undefined\\"&&Hls.DefaultConfig){Hls.DefaultConfig.liveSyncDuration=90;Hls.DefaultConfig.maxBufferLength=90;Hls.DefaultConfig.maxMaxBufferLength=120;Hls.DefaultConfig.maxBufferSize=200*1000*1000;Hls.DefaultConfig.backBufferLength=60;Hls.DefaultConfig.liveBackBufferLength=30;Hls.DefaultConfig.maxLiveSyncPlaybackRate=1.02;Hls.DefaultConfig.startLevel=0;Hls.DefaultConfig.abrEwmaDefaultEstimate=500000;Hls.DefaultConfig.capLevelToPlayerSize=true;Hls.DefaultConfig.testBandwidth=false;Hls.DefaultConfig.lowLatencyMode=false;Hls.DefaultConfig.startFragPrefetch=true;Hls.DefaultConfig.fragLoadingTimeOut=15000;Hls.DefaultConfig.fragLoadingRetryDelay=500;Hls.DefaultConfig.levelLoadingRetryDelay=500}';
 d.appendChild(s);
 document.head.appendChild(d);
 })();
