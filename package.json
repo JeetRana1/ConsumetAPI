@@ -6,7 +6,7 @@
         "start": "node dist/main.js",
         "start:ghoulstreams": "node ghoulstreams/api.mjs",
         "dev": "nodemon src/main.ts",
-        "build": "node ./node_modules/esbuild/bin/esbuild src/main.ts --bundle --platform=node --outfile=dist/main.js --external:playwright --external:playwright-core --tsconfig=tsconfig.json",
+        "build": "node scripts/build.mjs",
         "typecheck": "node --max-old-space-size=2048 ./node_modules/typescript/bin/tsc --noEmit --pretty false",
         "lint": "prettier --write \"src/**/*.ts\""
     },

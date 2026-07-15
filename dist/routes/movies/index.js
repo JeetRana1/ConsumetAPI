@@ -1,48 +1,72 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
-Object.defineProperty(exports, "__esModule", { value: true });
-const extensions_1 = require("@consumet/extensions");
-const flixhq_1 = __importDefault(require("./flixhq"));
-const hdstream4u_1 = __importDefault(require("./hdstream4u"));
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var movies_exports = {};
+__export(movies_exports, {
+  default: () => movies_default
+});
+module.exports = __toCommonJS(movies_exports);
+var import_extensions = require("@consumet/extensions");
+var import_flixhq = __toESM(require("./flixhq"));
+var import_hdstream4u = __toESM(require("./hdstream4u"));
 const routes = async (fastify, options) => {
-    await fastify.register(flixhq_1.default, { prefix: '/flixhq' });
-    await fastify.register(hdstream4u_1.default, { prefix: '/hdstream4u' });
-    fastify.get('/', async (request, reply) => {
-        reply.status(200).send('Welcome to Consumet Movies and TV Shows');
-    });
-    fastify.get('/:movieProvider', async (request, reply) => {
-        const queries = {
-            movieProvider: '',
-            page: 1,
-        };
-        queries.movieProvider = decodeURIComponent(request.params.movieProvider);
-        queries.page = request.query.page;
-        if (queries.page < 1)
-            queries.page = 1;
-        const provider = extensions_1.PROVIDERS_LIST.MOVIES.find((provider) => provider.toString.name === queries.movieProvider);
-        try {
-            if (provider) {
-                reply.redirect(`/movies/${provider.toString.name}`);
-            }
-            else {
-                reply
-                    .status(404)
-                    .send({ message: 'Page not found, please check the providers list.' });
-            }
-        }
-        catch (err) {
-            reply
-                .status(500)
-                .send({ message: 'Something went wrong. Please try again later.' });
-        }
-    });
-    // Legacy route support for players calling /movies/:id/:title
-    fastify.get('/:id/:title', async (request, reply) => {
-        const { id, title } = request.params;
-        // We assume it's a movie if called on /movies/
-        return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=flixhq`);
-    });
+  await fastify.register(import_flixhq.default, { prefix: "/flixhq" });
+  await fastify.register(import_hdstream4u.default, { prefix: "/hdstream4u" });
+  fastify.get("/", async (request, reply) => {
+    reply.status(200).send("Welcome to Consumet Movies and TV Shows");
+  });
+  fastify.get("/:movieProvider", async (request, reply) => {
+    const queries = {
+      movieProvider: "",
+      page: 1
+    };
+    queries.movieProvider = decodeURIComponent(
+      request.params.movieProvider
+    );
+    queries.page = request.query.page;
+    if (queries.page < 1)
+      queries.page = 1;
+    const provider = import_extensions.PROVIDERS_LIST.MOVIES.find(
+      (provider2) => provider2.toString.name === queries.movieProvider
+    );
+    try {
+      if (provider) {
+        reply.redirect(`/movies/${provider.toString.name}`);
+      } else {
+        reply.status(404).send({ message: "Page not found, please check the providers list." });
+      }
+    } catch (err) {
+      reply.status(500).send({ message: "Something went wrong. Please try again later." });
+    }
+  });
+  fastify.get("/:id/:title", async (request, reply) => {
+    const { id, title } = request.params;
+    return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=flixhq`);
+  });
 };
-exports.default = routes;
+var movies_default = routes;
