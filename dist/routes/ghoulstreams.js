@@ -140,7 +140,6 @@ const streamUpstreamToReply = async (targetUrl, headers, reply) => {
         reply.raw.writeHead(res.statusCode || 200, responseHeaders);
         res.pipe(reply.raw);
         res.on("error", reject);
-        reply.raw.on("close", () => req.destroy());
         res.on("end", () => {
           if (shouldCache && cacheBuf.length > 0) {
             proxyCache.set(cacheKey, { body: Buffer.concat(cacheBuf), headers: responseHeaders, status: res.statusCode || 200, expiresAt: Date.now() + PROXY_CACHE_TTL_MS });
@@ -444,6 +443,8 @@ const routes = async (fastify, _options) => {
         reply.removeHeader("last-modified");
         return await streamUpstreamToReply(targetUrl, outboundHeaders, reply);
       } catch (error) {
+        if (reply.raw.headersSent)
+          return;
         setCorsHeaders(reply);
         return reply.status(500).send(error?.message || "media_proxy_failed");
       }
