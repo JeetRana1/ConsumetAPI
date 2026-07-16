@@ -7,6 +7,8 @@ import { Racing } from '../providers/sports/racing';
 import { LiveSportHelper } from '../providers/sports/livesport-helper';
 import cheerio from 'cheerio';
 
+const proxyAgent = new https.Agent({ keepAlive: true, maxSockets: 16, timeout: 10000 });
+
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const AVAILABILITY_TTL_MS = 1000 * 60 * 45;
@@ -98,6 +100,8 @@ const streamUpstreamToReply = async (
       {
         method: 'GET',
         headers,
+        agent: url.protocol === 'https:' ? proxyAgent : undefined,
+        timeout: 8000,
       },
       (res) => {
         reply.hijack();
@@ -594,7 +598,7 @@ var PROXY_BASE='${proxyBase}';
 function _shouldProxy(u){
 var url=typeof u==='string'?u:'';
 if(!url) return false;
-return /^https?:\\/\\//i.test(url) && (/\\/playlist\\//i.test(url) || /chatgpt\\.hereisman\\.net/i.test(url) || /\\.r2\\.cloudflarestorage\\.com\\//i.test(url));
+return /^https?:\\/\\//i.test(url) && (/\\/playlist\\//i.test(url) || /chatgpt\\.hereisman\\.net/i.test(url));
 }
 var ro=XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open=function(m,u){
