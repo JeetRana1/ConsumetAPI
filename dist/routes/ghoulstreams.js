@@ -38,7 +38,6 @@ var import_buffstreams = require("../providers/sports/buffstreams");
 var import_racing = require("../providers/sports/racing");
 var import_livesport_helper = require("../providers/sports/livesport-helper");
 var import_cheerio = __toESM(require("cheerio"));
-const proxyAgent = new import_node_https.default.Agent({ keepAlive: true, maxSockets: 16, timeout: 1e4 });
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const AVAILABILITY_TTL_MS = 1e3 * 60 * 45;
 const WATCH_LOOKUP_TTL_MS = 1e3 * 20;
@@ -112,9 +111,7 @@ const streamUpstreamToReply = async (targetUrl, headers, reply) => {
       targetUrl,
       {
         method: "GET",
-        headers,
-        agent: url.protocol === "https:" ? proxyAgent : void 0,
-        timeout: 8e3
+        headers
       },
       (res) => {
         reply.hijack();

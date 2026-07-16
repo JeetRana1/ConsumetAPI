@@ -7,8 +7,6 @@ import { Racing } from '../providers/sports/racing';
 import { LiveSportHelper } from '../providers/sports/livesport-helper';
 import cheerio from 'cheerio';
 
-const proxyAgent = new https.Agent({ keepAlive: true, maxSockets: 16, timeout: 10000 });
-
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const AVAILABILITY_TTL_MS = 1000 * 60 * 45;
@@ -100,8 +98,6 @@ const streamUpstreamToReply = async (
       {
         method: 'GET',
         headers,
-        agent: url.protocol === 'https:' ? proxyAgent : undefined,
-        timeout: 8000,
       },
       (res) => {
         reply.hijack();
