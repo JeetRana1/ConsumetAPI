@@ -3,6 +3,9 @@ import axios from 'axios';
 import http from 'node:http';
 import https from 'node:https';
 import { BuffStreams } from '../providers/sports/buffstreams';
+
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64, maxCachedSessions: 512 });
 import { Racing } from '../providers/sports/racing';
 import { LiveSportHelper } from '../providers/sports/livesport-helper';
 import cheerio from 'cheerio';
@@ -98,6 +101,7 @@ const streamUpstreamToReply = async (
       {
         method: 'GET',
         headers,
+        agent: url.protocol === 'https:' ? httpsAgent : httpAgent,
       },
       (res) => {
         reply.hijack();
