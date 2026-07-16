@@ -598,6 +598,7 @@ var PROXY_BASE='${proxyBase}';
 function _shouldProxy(u){
 var url=typeof u==='string'?u:'';
 if(!url) return false;
+if(/\\.(ts|m4s|m4v)(\\?|$)/i.test(url)) return false;
 return /^https?:\\/\\//i.test(url);
 }
 var ro=XMLHttpRequest.prototype.open;
