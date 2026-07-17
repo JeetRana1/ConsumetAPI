@@ -541,17 +541,31 @@ document.head.appendChild(d);
             const fitToggle = `<script>
 function _fitMain(){
 var i=['<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 2v3M12 19v3M3 12H1M21 12h2"/></svg>','<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="6" y="7" width="12" height="10" rx="1"/></svg>','<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M1 8h2M1 16h2M21 8h2M21 16h2"/></svg>','<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 9l-3 3 3 3M16 9l3 3-3 3"/></svg>'];
-var vals=['fill','contain','cover','scale-down'],lbl=['Fill','Contain','Cover','Stretch'],idx=0,vid=null;
+var vals=['cover','contain','fill','scale-down'],lbl=['Cover','Contain','Fill','Stretch'],idx=0,vid=null;
 var b=document.createElement('div');
 b.id='__fitBtn';
 b.style.cssText='position:fixed;top:12px;right:12px;z-index:2147483647;cursor:pointer;display:none;align-items:center;gap:5px;background:rgba(0,0,0,.72);color:#fff;border-radius:6px;padding:5px 9px;font:11px/1 Arial,sans-serif;-webkit-user-select:none;user-select:none;border:1px solid rgba(255,255,255,.12)';
 b.onmouseover=function(){this.style.background='rgba(0,0,0,.88)'};
 b.onmouseout=function(){this.style.background='rgba(0,0,0,.72)'};
-function show(){var v=document.querySelector('video');if(v&&v!==vid){vid=v;idx=0;v.style.objectFit=vals[0];b.style.display='flex';b.innerHTML=i[0]+' '+lbl[0];b.title=lbl[0]}else if(!document.querySelector('video')){b.style.display='none'}}
-b.onclick=function(){if(!vid)return;idx=(idx+1)%vals.length;vid.style.objectFit=vals[idx];b.innerHTML=i[idx]+' '+lbl[idx];b.title=lbl[idx]};
-function move(e){try{var f=document.fullscreenElement||document.webkitFullscreenElement;if(f&&f!==document.documentElement&&f!==document.body){if(!f.contains(b))f.appendChild(b)}else if(!f&&b.parentNode!==document.body)document.body.appendChild(b)}catch(e){}}
-document.addEventListener('fullscreenchange',move);
-document.addEventListener('webkitfullscreenchange',move);
+function apply(n){if(!vid)return;idx=n;vid.style.objectFit=vals[idx];b.innerHTML=i[idx]+' '+lbl[idx];b.title=lbl[idx]}
+function show(){var v=document.querySelector('video');if(v&&v!==vid){vid=v;apply(0);b.style.display='flex'}else if(!document.querySelector('video')){b.style.display='none'}}
+b.onclick=function(){apply((idx+1)%vals.length)};
+function onfs(){
+try{
+var f=document.fullscreenElement||document.webkitFullscreenElement;
+if(f&&f!==document.documentElement&&f!==document.body){
+if(!f.contains(b))f.appendChild(b);
+if(vid){vid.style.width='100%';vid.style.height='100%'}
+try{if(/Mobi|Android/i.test(navigator.userAgent)&&screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape')}catch(e){}
+}else if(!f){
+if(vid){vid.style.width='';vid.style.height=''}
+if(b.parentNode!==document.body)document.body.appendChild(b);
+try{if(screen.orientation&&screen.orientation.unlock)screen.orientation.unlock()}catch(e){}
+}
+}catch(e){}
+}
+document.addEventListener('fullscreenchange',onfs);
+document.addEventListener('webkitfullscreenchange',onfs);
 document.body.appendChild(b);
 show();
 new MutationObserver(show).observe(document.body,{childList:true,subtree:true});
