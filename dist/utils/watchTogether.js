@@ -25,6 +25,7 @@ const { WebSocketServer, WebSocket } = require("ws");
 const rooms = /* @__PURE__ */ new Map();
 const clients = /* @__PURE__ */ new Map();
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const HOST_RECONNECT_GRACE_MS = 12e3;
 function createRoomCode() {
   let code = "";
   do {
@@ -44,6 +45,8 @@ function publicRoomList() {
   return [...rooms.values()].filter((room) => room.isPublic).map((room) => ({
     code: room.code,
     title: room.title,
+    image: room.image,
+    hostName: room.members.get(room.hostId)?.name || "Host",
     count: room.members.size,
     createdAt: room.createdAt
   }));
@@ -110,24 +113,102 @@ function destroyRoom(code, reason = "Host left the watch party") {
   rooms.delete(code);
   broadcastPublicRooms();
 }
-function leaveRoom(socket) {
+function leaveRoom(socket, options = {}) {
   const state = clients.get(socket);
-  if (!state?.roomCode)
+  if (!state?.roomCode) {
+    console.log("[wp] leaveRoom early return (no state or no roomCode)");
     return;
+  }
+  console.log("[wp] leaveRoom roomCode=%s role=%s hostId=%s state.id=%s", state.roomCode, state.role, rooms.get(state.roomCode)?.hostId, state.id);
   const room = rooms.get(state.roomCode);
   if (!room)
     return;
   if (room.hostId === state.id) {
-    destroyRoom(room.code);
+    room.members.delete(state.id);
+    delete state.roomCode;
+    delete state.role;
+    if (options.immediateHostTransfer) {
+      if (room.hostReconnectTimer) {
+        clearTimeout(room.hostReconnectTimer);
+        room.hostReconnectTimer = null;
+      }
+      const nextHost = [...room.members.values()][0];
+      if (nextHost) {
+        room.hostId = nextHost.id;
+        room.hostAway = false;
+        room.hostDisconnectedAt = void 0;
+        nextHost.role = "host";
+        room.members.set(nextHost.id, nextHost);
+        broadcast(room.code, "host:transferred", { newHostId: nextHost.id, newHostName: nextHost.name });
+        broadcast(room.code, "room:members", {
+          count: room.members.size,
+          members: [...room.members.values()]
+        });
+        broadcastPublicRooms();
+      } else {
+        destroyRoom(room.code, "Host left the watch party");
+      }
+      return;
+    }
+    const pausedSnapshot = getRoomStateSnapshot(room);
+    room.state = {
+      ...room.state,
+      currentTime: Number(pausedSnapshot.currentTime || 0) || 0,
+      paused: true,
+      updatedAt: Date.now()
+    };
+    room.hostAway = true;
+    room.hostDisconnectedAt = Date.now();
+    broadcast(room.code, "player:sync", { action: "pause", ...getRoomStateSnapshot(room) });
+    broadcast(room.code, "host:away", { message: "Host disconnected, reconnecting..." });
+    room.hostReconnectTimer = setTimeout(() => {
+      if (!room.hostAway)
+        return;
+      if (room.members.size === 0) {
+        destroyRoom(room.code, "Host did not reconnect");
+        return;
+      }
+      const nextHost = [...room.members.values()][0];
+      if (nextHost) {
+        room.hostId = nextHost.id;
+        room.hostAway = false;
+        room.hostDisconnectedAt = void 0;
+        room.hostReconnectTimer = null;
+        broadcast(room.code, "host:transferred", { newHostId: nextHost.id, newHostName: nextHost.name });
+      } else {
+        destroyRoom(room.code, "All members left the watch party");
+        return;
+      }
+      broadcast(room.code, "room:members", {
+        count: room.members.size,
+        members: [...room.members.values()]
+      });
+      broadcastPublicRooms();
+    }, HOST_RECONNECT_GRACE_MS);
+    broadcast(room.code, "room:members", {
+      count: room.members.size,
+      members: [...room.members.values()]
+    });
+    broadcastPublicRooms();
     return;
   }
   room.members.delete(state.id);
+  delete state.roomCode;
+  delete state.role;
+  if (room.hostId === state.id) {
+    const nextHost = [...room.members.values()][0];
+    if (nextHost) {
+      room.hostId = nextHost.id;
+      broadcast(room.code, "host:transferred", { newHostId: nextHost.id, newHostName: nextHost.name });
+    } else {
+      destroyRoom(room.code, "All members left the watch party");
+      return;
+    }
+  }
   broadcast(room.code, "room:members", {
     count: room.members.size,
     members: [...room.members.values()]
   });
-  delete state.roomCode;
-  delete state.role;
   broadcastPublicRooms();
 }
 function registerWatchTogether(fastify) {
@@ -171,6 +252,7 @@ function registerWatchTogether(fastify) {
           hostId: state.id,
           isPublic: Boolean(msg.isPublic),
           title: String(msg.title || "Watch Party").slice(0, 120),
+          image: String(msg.image || "").slice(0, 500) || void 0,
           createdAt: Date.now(),
           members: /* @__PURE__ */ new Map([
             [state.id, { id: state.id, name: state.name, role: "host" }]
@@ -186,9 +268,11 @@ function registerWatchTogether(fastify) {
         send(socket, "room:created", {
           code,
           role: "host",
+          userId: state.id,
           room: {
             code,
             title: room.title,
+            image: room.image,
             isPublic: room.isPublic,
             count: room.members.size
           },
@@ -204,23 +288,76 @@ function registerWatchTogether(fastify) {
           send(socket, "room:error", { message: "Room not found" });
           return;
         }
-        leaveRoom(socket);
+        leaveRoom(socket, { immediateHostTransfer: true });
         state.name = String(msg.name || state.name).slice(0, 32);
         state.roomCode = code;
-        state.role = "guest";
-        room.members.set(state.id, { id: state.id, name: state.name, role: "guest" });
-        send(socket, "room:joined", {
-          code,
-          role: "guest",
-          room: {
+        const previousUserId = String(msg.previousUserId || "");
+        const isSameHost = previousUserId && room.hostId === previousUserId;
+        if (isSameHost && !room.hostAway) {
+          console.log("[wp] sameHost, hostAway=false, force-disconnecting old socket");
+          for (const [sock, st] of clients) {
+            if (st.id === previousUserId && sock !== socket) {
+              console.log("[wp] found old host socket, closing and deleting");
+              try {
+                sock.close();
+              } catch (e) {
+                console.log("[wp] sock.close error", e);
+              }
+              clients.delete(sock);
+              break;
+            }
+          }
+        } else {
+          console.log("[wp] isSameHost=%s hostAway=%s prevUserId=%s room.hostId=%s", isSameHost, room.hostAway, previousUserId, room.hostId);
+        }
+        const isHostReconnect = isSameHost;
+        if (isHostReconnect) {
+          console.log("[wp] host reconnection path (isHostReconnect=true)");
+          room.members.delete(room.hostId);
+          state.role = "host";
+          room.hostId = state.id;
+          room.members.set(state.id, { id: state.id, name: state.name, role: "host" });
+          if (room.hostReconnectTimer)
+            clearTimeout(room.hostReconnectTimer);
+          room.hostAway = false;
+          room.hostDisconnectedAt = void 0;
+          room.hostReconnectTimer = null;
+          send(socket, "room:joined", {
             code,
-            title: room.title,
-            isPublic: room.isPublic,
-            count: room.members.size
-          },
-          state: getRoomStateSnapshot(room),
-          members: [...room.members.values()]
-        });
+            role: "host",
+            userId: state.id,
+            room: {
+              code,
+              title: room.title,
+              image: room.image,
+              isPublic: room.isPublic,
+              count: room.members.size
+            },
+            state: getRoomStateSnapshot(room),
+            members: [...room.members.values()]
+          });
+          broadcast(code, "host:reconnected", { name: state.name });
+        } else {
+          state.role = "guest";
+          if (previousUserId) {
+            room.members.delete(previousUserId);
+          }
+          room.members.set(state.id, { id: state.id, name: state.name, role: "guest" });
+          send(socket, "room:joined", {
+            code,
+            role: "guest",
+            userId: state.id,
+            room: {
+              code,
+              title: room.title,
+              image: room.image,
+              isPublic: room.isPublic,
+              count: room.members.size
+            },
+            state: getRoomStateSnapshot(room),
+            members: [...room.members.values()]
+          });
+        }
         broadcast(code, "room:members", {
           count: room.members.size,
           members: [...room.members.values()]
@@ -229,8 +366,99 @@ function registerWatchTogether(fastify) {
         return;
       }
       if (msg.type === "room:leave") {
-        leaveRoom(socket);
+        leaveRoom(socket, { immediateHostTransfer: true });
         send(socket, "room:left");
+        return;
+      }
+      if (msg.type === "room:claim-host") {
+        const room = state.roomCode ? rooms.get(state.roomCode) : null;
+        if (!room || !room.hostAway)
+          return;
+        if (room.hostId === state.id)
+          return;
+        if (!room.members.has(state.id))
+          return;
+        if (room.hostReconnectTimer) {
+          clearTimeout(room.hostReconnectTimer);
+          room.hostReconnectTimer = null;
+        }
+        const claimant = room.members.get(state.id);
+        if (!claimant)
+          return;
+        room.hostId = state.id;
+        state.role = "host";
+        claimant.role = "host";
+        room.members.set(state.id, claimant);
+        room.hostAway = false;
+        room.hostDisconnectedAt = void 0;
+        broadcast(room.code, "host:transferred", { newHostId: state.id, newHostName: state.name });
+        broadcast(room.code, "room:members", {
+          count: room.members.size,
+          members: [...room.members.values()]
+        });
+        broadcastPublicRooms();
+        return;
+      }
+      if (msg.type === "host:navigating-home") {
+        const room = state.roomCode ? rooms.get(state.roomCode) : null;
+        if (!room || room.hostId !== state.id)
+          return;
+        room.title = "Watch Party";
+        room.image = "";
+        room.state.route = void 0;
+        room.state.currentTime = 0;
+        room.state.paused = true;
+        room.state.updatedAt = Date.now();
+        broadcast(state.roomCode, "host:navigated-home", { code: state.roomCode }, socket);
+        broadcastPublicRooms();
+        return;
+      }
+      if (msg.type === "host:promote") {
+        const room = state.roomCode ? rooms.get(state.roomCode) : null;
+        if (!room || room.hostId !== state.id || room.hostAway)
+          return;
+        const targetId = String(msg.targetUserId || "");
+        const target = room.members.get(targetId);
+        if (!target || target.role !== "guest")
+          return;
+        const oldHostEntry = room.members.get(room.hostId);
+        if (oldHostEntry)
+          oldHostEntry.role = "guest";
+        room.hostId = targetId;
+        target.role = "host";
+        broadcast(room.code, "host:transferred", { newHostId: targetId, newHostName: target.name });
+        broadcast(room.code, "room:members", {
+          count: room.members.size,
+          members: [...room.members.values()]
+        });
+        return;
+      }
+      if (msg.type === "host:kick") {
+        const room = state.roomCode ? rooms.get(state.roomCode) : null;
+        if (!room || room.hostId !== state.id || room.hostAway)
+          return;
+        const targetId = String(msg.targetUserId || "");
+        if (!targetId || targetId === room.hostId)
+          return;
+        const kickedSocket = [...clients.entries()].find(([, s]) => s.roomCode === room.code && s.id === targetId)?.[0];
+        if (kickedSocket) {
+          const kickedState = clients.get(kickedSocket);
+          if (kickedState) {
+            delete kickedState.roomCode;
+            delete kickedState.role;
+          }
+          send(kickedSocket, "room:kicked", { message: "You have been removed from the room by the host." });
+          kickedSocket.close();
+        }
+        room.members.delete(targetId);
+        broadcast(room.code, "room:members", {
+          count: room.members.size,
+          members: [...room.members.values()]
+        });
+        broadcastPublicRooms();
+        if (room.members.size === 0) {
+          destroyRoom(room.code, "All members left the watch party");
+        }
         return;
       }
       if (msg.type === "host:state") {
@@ -283,6 +511,12 @@ function registerWatchTogether(fastify) {
           updatedAt: Date.now(),
           route: Object.keys(route).length ? route : room.state.route
         };
+        if (typeof msg.title === "string") {
+          room.title = String(msg.title || "Watch Party").slice(0, 120);
+        }
+        if (typeof msg.image === "string") {
+          room.image = String(msg.image || "").slice(0, 500) || void 0;
+        }
         broadcast(
           room.code,
           "media_changed",
@@ -296,6 +530,7 @@ function registerWatchTogether(fastify) {
           },
           socket
         );
+        broadcastPublicRooms();
         return;
       }
       if (msg.type === "chat:send") {
@@ -313,10 +548,32 @@ function registerWatchTogether(fastify) {
       }
     });
     socket.on("close", () => {
+      console.log("[wp] socket close event");
       leaveRoom(socket);
       clients.delete(socket);
     });
   });
+  setInterval(() => {
+    const now = Date.now();
+    rooms.forEach((room, code) => {
+      if (room.members.size === 0) {
+        destroyRoom(code, "Room closed (no members)");
+        return;
+      }
+      if (room.hostAway && room.hostDisconnectedAt && membersExceptHost(room).length === 0) {
+        if (now - room.hostDisconnectedAt > 12e4) {
+          destroyRoom(code, "Room closed (host away)");
+          return;
+        }
+      }
+      if (now - room.createdAt > 864e5) {
+        destroyRoom(code, "Room expired (max 24 hours)");
+      }
+    });
+  }, 1e4);
+}
+function membersExceptHost(room) {
+  return [...room.members.values()].filter((m) => m.id !== room.hostId);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
