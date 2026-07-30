@@ -968,7 +968,7 @@ ${txt}`);
 ${cues.join("\n\n")}` : "";
     };
     try {
-      const { getCachedSubtitleText } = await import("./browserRuntimeExtractor");
+      const { getCachedSubtitleText } = await import("./browserRuntimeExtractor.js");
       const cachedSubtitle = getCachedSubtitleText(url);
       if (cachedSubtitle) {
         let raw2 = sanitizeCueText(cachedSubtitle);
@@ -997,7 +997,7 @@ ${raw2.replace(/\r+/g, "").replace(/^\uFEFF/, "")}`;
           }
           for (const proxyUrl of chain) {
             try {
-              const { toAxiosProxyOptions: tap } = await import("./outboundProxy");
+              const { toAxiosProxyOptions: tap } = await import("./outboundProxy.js");
               const proxyOpts = tap(proxyUrl);
               const resp = await import_axios.default.get(targetRequest.requestUrl, {
                 proxy: false,

@@ -3,15 +3,19 @@ require('dotenv').config();
 import Fastify from 'fastify';
 import FastifyCors from '@fastify/cors';
 import axios from 'axios';
+import http from 'http';
 import https from 'https';
 import { getProxyCandidatesSync, toAxiosProxyOptions } from './utils/outboundProxy';
 
 // --- Global Axios Optimization ---
-// Solves ECONNRESET and 403 blocks by forcing IPv4 and setting a browser User-Agent
 axios.defaults.httpsAgent = new https.Agent({ family: 4, keepAlive: true });
 axios.defaults.headers.common['User-Agent'] =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 axios.defaults.headers.common['Accept'] = 'application/json, text/plain, */*';
+
+// Dedicated keep-alive agents for HLS segment streaming
+const hlsHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64 });
+const hlsHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64, family: 4 });
 
 import books from './routes/books';
 import anime from './routes/anime';
@@ -422,62 +426,89 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         return reply.send(content);
       }
 
-      // For other content (segments, etc.), proxy as-is
-      if (isKeyResponse && responseBuffer) {
-        const trimmedKey = responseText.replace(/\s+/g, '');
-        if (/^[A-Za-z0-9+/=]+$/.test(trimmedKey) && trimmedKey.length >= 24) {
-          try {
-            const decodedKey = Buffer.from(trimmedKey, 'base64');
-            if (decodedKey.length >= 16 && decodedKey.length < responseBuffer.length) {
-              reply.header('Access-Control-Allow-Origin', '*');
-              reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
-              reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
-              reply.header('Content-Type', 'application/octet-stream');
-              reply.header('Content-Length', decodedKey.length);
-              return reply.send(decodedKey);
+      // For segments (non-manifest), stream directly using keep-alive agents
+      if (!responseIsManifest) {
+        if (isKeyResponse && responseBuffer) {
+          const trimmedKey = responseText.replace(/\s+/g, '');
+          if (/^[A-Za-z0-9+/=]+$/.test(trimmedKey) && trimmedKey.length >= 24) {
+            try {
+              const decodedKey = Buffer.from(trimmedKey, 'base64');
+              if (decodedKey.length >= 16 && decodedKey.length < responseBuffer.length) {
+                reply.header('Access-Control-Allow-Origin', '*');
+                reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+                reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+                reply.header('Content-Type', 'application/octet-stream');
+                reply.header('Content-Length', decodedKey.length);
+                return reply.send(decodedKey);
+              }
+            } catch {
+              // Fall back to raw key payload when decoding fails.
             }
-          } catch {
-            // Fall back to raw key payload when decoding fails.
           }
         }
-      }
 
-      reply.header('Access-Control-Allow-Origin', '*');
-      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
-      reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      reply.header(
-        'Content-Type',
-        response.headers['content-type'] || 'application/octet-stream',
-      );
-      if (response.headers['content-length'])
-        reply.header('Content-Length', response.headers['content-length']);
-      if (response.headers['content-range'])
-        reply.header('Content-Range', response.headers['content-range']);
-      if (response.headers['accept-ranges'])
-        reply.header('Accept-Ranges', response.headers['accept-ranges']);
-
-      // Optional verbose debug to inspect proxied HLS segment responses
-      if (String(process.env.HLS_PROXY_DEBUG || '').toLowerCase() === 'true') {
+        // Stream segment directly via keep-alive agents
         try {
-          const buf = Buffer.from(response.data || Buffer.alloc(0));
-          console.log('[HLS PROXY DEBUG] url=', url);
-          console.log('[HLS PROXY DEBUG] incoming Range=', incomingRange || '<none>');
-          console.log('[HLS PROXY DEBUG] proxied headers:', {
-            'content-range': response.headers['content-range'],
-            'accept-ranges': response.headers['accept-ranges'],
-            'content-length': response.headers['content-length'],
-            'content-type': response.headers['content-type'],
-          });
-          console.log('[HLS PROXY DEBUG] proxied body byteLength=', buf.length);
-        } catch (e) {
-          console.log(
-            '[HLS PROXY DEBUG] error while logging proxy response',
-            (e as any)?.message || String(e),
+          const upstreamUrl = new URL(url);
+          const isHttps = upstreamUrl.protocol === 'https:';
+          const transport = isHttps ? https : http;
+          const agent = isHttps ? hlsHttpsAgent : hlsHttpAgent;
+
+          const segmentReq = transport.request(
+            {
+              hostname: upstreamUrl.hostname,
+              port: upstreamUrl.port || (isHttps ? 443 : 80),
+              path: upstreamUrl.pathname + upstreamUrl.search,
+              method: 'GET',
+              agent,
+              headers: {
+                'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                Referer: requestReferer,
+                ...(incomingRange ? { Range: incomingRange } : {}),
+                ...(cookieParam ? { Cookie: cookieParam } : {}),
+                Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*',
+                'Accept-Encoding': 'identity',
+              },
+            },
+            (upstreamRes) => {
+              const resHeaders: Record<string, string> = {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range',
+                'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                'Content-Type':
+                  upstreamRes.headers['content-type'] || 'application/octet-stream',
+              };
+              if (upstreamRes.headers['content-length'])
+                resHeaders['Content-Length'] = upstreamRes.headers['content-length'] as string;
+              if (upstreamRes.headers['content-range'])
+                resHeaders['Content-Range'] = upstreamRes.headers['content-range'] as string;
+              if (upstreamRes.headers['accept-ranges'])
+                resHeaders['Accept-Ranges'] = upstreamRes.headers['accept-ranges'] as string;
+
+              reply.raw.writeHead(upstreamRes.statusCode || 200, resHeaders);
+              upstreamRes.pipe(reply.raw);
+            },
           );
+
+          segmentReq.on('error', (err: Error) => {
+            console.error('HLS segment stream error:', err.message);
+            if (!reply.sent) {
+              reply.raw.writeHead(500, { 'Content-Type': 'application/json' });
+              reply.raw.end(JSON.stringify({ error: 'Segment proxy failed' }));
+            }
+          });
+
+          segmentReq.end();
+          return reply;
+        } catch (err: any) {
+          console.error('HLS segment stream error:', err.message);
+          return reply.status(500).send({ error: 'Segment proxy failed' });
         }
       }
 
-      return reply.send(Buffer.from(response.data));
+      // Should never reach here — all paths in the non-manifest block return above
+      return reply.status(500).send({ error: 'Unexpected proxy state' });
     } catch (error: any) {
       console.error('HLS Proxy error:', error.message);
       return reply.status(500).send({ error: 'Proxy failed' });

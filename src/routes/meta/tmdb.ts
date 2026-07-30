@@ -442,15 +442,24 @@ const resolveHdstream4uTvEpisodeId = async (
   if (infoRes.statusCode >= 400) return '';
   const payload = safeJsonParse(infoRes.body || '{}');
   const entries = Array.isArray(payload?.episodes) ? payload.episodes : [];
+  const isBonusEntry = (entry: any): boolean =>
+    String(entry?.category || '').toLowerCase() === 'bonus' ||
+    Number(entry?.seasonNumber) === 0 ||
+    /bonus/i.test(String(entry?.seasonName || entry?.title || ''));
+  const numberedEntries = entries.filter((entry: any) => !isBonusEntry(entry));
+  const getEntrySeason = (entry: any): number => {
+    const value = Number(entry?.seasonNumber ?? entry?.season ?? 1);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  };
   const match = entries.find(
     (entry: any) =>
-      Number(entry?.seasonNumber || entry?.season || 1) === requestedSeason &&
+      !isBonusEntry(entry) &&
+      getEntrySeason(entry) === requestedSeason &&
       Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode,
   );
   const normalizeEpisodeId = (entry: any): string => {
     const raw = String(entry?.episodeId || entry?.url || entry?.id || '').trim();
-    // If the episodeId is a hubstream hash URL, extract the hash and look up
-    // the equivalent hdstream4u file URL from the entries list.
+    // Hubstream episode IDs need to be resolved back to the matching HDStream4u file URL.
     if (/^https?:\/\/(?:[^.]+\.)*hubstream\.(?:art|pw|cc|ink|foo|boo)\/?#/i.test(raw)) {
       for (const candidate of entries) {
         const candidateUrl = String(candidate?.episodeId || candidate?.url || candidate?.id || '').trim();
@@ -464,10 +473,25 @@ const resolveHdstream4uTvEpisodeId = async (
 
   if (match) return normalizeEpisodeId(match);
 
+  // Some TV pages place Bonus episodes outside the numbered season while the
+  // frontend exposes them at their TMDB episode position. Map that position
+  // back to the provider's direct Bonus watch URL when no numbered match exists.
+  const bonusEntries = entries.filter(
+    (entry: any) =>
+      String(entry?.category || '').toLowerCase() === 'bonus' &&
+      Number(entry?.bonusSeasonNumber || entry?.seasonNumber || requestedSeason) === requestedSeason,
+  );
+  if (bonusEntries.length) {
+    const numberedCount = entries.filter((entry: any) => String(entry?.category || '').toLowerCase() !== 'bonus').length;
+    const bonusIndex = requestedEpisode - numberedCount - 1;
+    const bonusEntry = bonusEntries[Math.max(0, bonusIndex)];
+    if (bonusEntry) return normalizeEpisodeId(bonusEntry);
+  }
+
   // HDStream4u season pages sometimes expose only the requested season's episodes
   // but still label every row as season 1. When that happens, fall back to episode
   // number matching so TMDB SxEy requests can still resolve.
-  const episodeOnlyMatches = entries.filter(
+  const episodeOnlyMatches = numberedEntries.filter(
     (entry: any) =>
       Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode,
   );
@@ -477,7 +501,7 @@ const resolveHdstream4uTvEpisodeId = async (
 
   const seasonValues = Array.from(
     new Set(
-      entries
+      numberedEntries
         .map((entry: any) => Number(entry?.seasonNumber || entry?.season || 1))
         .filter((value: number) => Number.isFinite(value) && value > 0),
     ),
@@ -807,6 +831,14 @@ const resolveHdstream4uEpisodeId = async (
   const fallbackEpisode = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes[0] : null;
 
   if (!isTv) {
+    // HDStream's direct Player-2 file links can be present before their raw
+    // extractor is ready. The Watch Online/Hubstream player is the reliable
+    // playable candidate when both are listed.
+    const watchOnline = servers.find((server: any) =>
+      /hubstream\.(?:art|pw|cc|ink|foo|boo)\/#/i.test(String(server?.url || '')),
+    );
+    if (watchOnline?.url) return String(watchOnline.url).trim();
+
     const directFileId = String(
       directFileServer?.fileCode || directFileServer?.url || '',
     ).trim();
@@ -2432,7 +2464,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       }
     }
 
-    if (!episodeId && type === 'tv' && id && providerLower === 'hdstream4u') {
+    const syntheticTmdbEpisodeId = type === 'tv' && id && providerLower === 'hdstream4u' &&
+      new RegExp(`^${String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-s\\d+e\\d+$`, 'i').test(String(episodeId || ''));
+    if ((!episodeId || syntheticTmdbEpisodeId) && type === 'tv' && id && providerLower === 'hdstream4u') {
       try {
         episodeId =
           (await resolveHdstream4uTvEpisodeId(

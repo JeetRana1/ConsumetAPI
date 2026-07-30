@@ -1069,7 +1069,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     };
 
     try {
-      const { getCachedSubtitleText } = await import('./browserRuntimeExtractor');
+      const { getCachedSubtitleText } = await import('./browserRuntimeExtractor.js');
       const cachedSubtitle = getCachedSubtitleText(url);
       if (cachedSubtitle) {
         let raw = sanitizeCueText(cachedSubtitle);
@@ -1105,7 +1105,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           }
           for (const proxyUrl of chain) {
             try {
-              const { toAxiosProxyOptions: tap } = await import('./outboundProxy');
+              const { toAxiosProxyOptions: tap } = await import('./outboundProxy.js');
               const proxyOpts = tap(proxyUrl);
               const resp = await axios.get(targetRequest.requestUrl, {
                 proxy: false,

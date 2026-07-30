@@ -371,8 +371,14 @@ const resolveHdstream4uTvEpisodeId = async (request, id, type, season, episode) 
     return "";
   const payload = safeJsonParse(infoRes.body || "{}");
   const entries = Array.isArray(payload?.episodes) ? payload.episodes : [];
+  const isBonusEntry = (entry) => String(entry?.category || "").toLowerCase() === "bonus" || Number(entry?.seasonNumber) === 0 || /bonus/i.test(String(entry?.seasonName || entry?.title || ""));
+  const numberedEntries = entries.filter((entry) => !isBonusEntry(entry));
+  const getEntrySeason = (entry) => {
+    const value = Number(entry?.seasonNumber ?? entry?.season ?? 1);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  };
   const match = entries.find(
-    (entry) => Number(entry?.seasonNumber || entry?.season || 1) === requestedSeason && Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode
+    (entry) => !isBonusEntry(entry) && getEntrySeason(entry) === requestedSeason && Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode
   );
   const normalizeEpisodeId = (entry) => {
     const raw = String(entry?.episodeId || entry?.url || entry?.id || "").trim();
@@ -388,7 +394,17 @@ const resolveHdstream4uTvEpisodeId = async (request, id, type, season, episode) 
   };
   if (match)
     return normalizeEpisodeId(match);
-  const episodeOnlyMatches = entries.filter(
+  const bonusEntries = entries.filter(
+    (entry) => String(entry?.category || "").toLowerCase() === "bonus" && Number(entry?.bonusSeasonNumber || entry?.seasonNumber || requestedSeason) === requestedSeason
+  );
+  if (bonusEntries.length) {
+    const numberedCount = entries.filter((entry) => String(entry?.category || "").toLowerCase() !== "bonus").length;
+    const bonusIndex = requestedEpisode - numberedCount - 1;
+    const bonusEntry = bonusEntries[Math.max(0, bonusIndex)];
+    if (bonusEntry)
+      return normalizeEpisodeId(bonusEntry);
+  }
+  const episodeOnlyMatches = numberedEntries.filter(
     (entry) => Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode
   );
   if (episodeOnlyMatches.length === 1) {
@@ -396,7 +412,7 @@ const resolveHdstream4uTvEpisodeId = async (request, id, type, season, episode) 
   }
   const seasonValues = Array.from(
     new Set(
-      entries.map((entry) => Number(entry?.seasonNumber || entry?.season || 1)).filter((value) => Number.isFinite(value) && value > 0)
+      numberedEntries.map((entry) => Number(entry?.seasonNumber || entry?.season || 1)).filter((value) => Number.isFinite(value) && value > 0)
     )
   );
   if (seasonValues.length === 1) {
@@ -653,6 +669,11 @@ const resolveHdstream4uEpisodeId = async (request, mediaInfo) => {
   const primary = servers.find((server) => /watch\s*online/i.test(String(server?.name || ""))) || servers.find((server) => /^https?:\/\//i.test(String(server?.url || ""))) || servers[0];
   const fallbackEpisode = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes[0] : null;
   if (!isTv) {
+    const watchOnline = servers.find(
+      (server) => /hubstream\.(?:art|pw|cc|ink|foo|boo)\/#/i.test(String(server?.url || ""))
+    );
+    if (watchOnline?.url)
+      return String(watchOnline.url).trim();
     const directFileId = String(
       directFileServer?.fileCode || directFileServer?.url || ""
     ).trim();
@@ -1953,7 +1974,8 @@ const routes = async (fastify, options) => {
       } catch {
       }
     }
-    if (!episodeId && type === "tv" && id && providerLower === "hdstream4u") {
+    const syntheticTmdbEpisodeId = type === "tv" && id && providerLower === "hdstream4u" && new RegExp(`^${String(id).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-s\\d+e\\d+$`, "i").test(String(episodeId || ""));
+    if ((!episodeId || syntheticTmdbEpisodeId) && type === "tv" && id && providerLower === "hdstream4u") {
       try {
         episodeId = await resolveHdstream4uTvEpisodeId(
           request,
