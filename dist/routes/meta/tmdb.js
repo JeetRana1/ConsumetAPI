@@ -32,14 +32,13 @@ __export(tmdb_exports, {
 });
 module.exports = __toCommonJS(tmdb_exports);
 var import_extensions = require("@consumet/extensions");
-var import_extensions2 = require("@consumet/extensions");
 var import_main = require("../../main");
 var import_cache = __toESM(require("../../utils/cache"));
 var import_streamable = require("../../utils/streamable");
-var import_provider = require("../../utils/provider");
 var import_movieServerFallback = require("../../utils/movieServerFallback");
 var import_axios = __toESM(require("axios"));
 var import_googleapis = require("googleapis");
+var import_hdstream4uProvider = require("../../providers/custom/hdstream4uProvider");
 const configureMeta = (meta) => {
   if (meta && meta.client?.defaults) {
     meta.client.defaults.headers.common["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -313,7 +312,7 @@ const resolveMovieProvider = (provider) => {
     return void 0;
   switch (provider.toLowerCase()) {
     case "flixhq":
-      return (0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ());
+      return void 0;
     default:
       return void 0;
   }
@@ -333,9 +332,12 @@ const resolveHdstream4uTvEpisodeId = async (request, id, type, season, episode) 
       String(tmdbInfo?.releaseDate || tmdbInfo?.first_air_date || "").slice(0, 4)
     );
     const targetSeasonLabel = `season ${requestedSeason}`;
-    for (const title of titleCandidates) {
+    const searchResults = await Promise.all(
+      titleCandidates.map((title) => searchHdhub4uByTitle(`${title} ${targetSeasonLabel}`).catch(() => []))
+    );
+    for (const [index, results] of searchResults.entries()) {
       try {
-        const results = await searchHdhub4uByTitle(`${title} ${targetSeasonLabel}`);
+        const title = titleCandidates[index];
         const normTitle = normalizeText(title);
         const ranked = results.map((entry) => {
           const score = titleMatchScore(entry.title, titleCandidates);
@@ -363,6 +365,8 @@ const resolveHdstream4uTvEpisodeId = async (request, id, type, season, episode) 
     }
   } catch {
   }
+  if (/^\d+$/.test(targetId))
+    return "";
   const infoRes = await request.server.inject({
     method: "GET",
     url: `/movies/hdstream4u/info?id=${encodeURIComponent(targetId)}&type=${encodeURIComponent(type || "tv")}`
@@ -628,29 +632,22 @@ const resolveHdstream4uEpisodeId = async (request, mediaInfo) => {
   if (!titleCandidates.length)
     return "";
   const preferredYear = Number(String(mediaInfo?.releaseDate || mediaInfo?.first_air_date || "").slice(0, 4));
-  let matchedUrl = "";
-  for (const title of titleCandidates) {
-    try {
-      const results = await searchHdhub4uByTitle(title);
-      const ranked = results.map((entry) => {
-        const score = titleMatchScore(entry.title, titleCandidates);
-        const yearBonus = preferredYear && new RegExp(`(^|[^\\d])${preferredYear}([^\\d]|$)`, "i").test(entry.title) ? 120 : 0;
-        const tvLike = /season|episode|series|web[\s-]*series/i.test(entry.title + " " + entry.url);
-        const typeBonus = mediaInfo?.type === "tv" || mediaInfo?.media_type === "tv" ? tvLike ? 80 : -40 : tvLike ? -60 : 40;
-        return { url: entry.url, score: score + yearBonus + typeBonus };
-      }).filter((entry) => entry.score >= 700).sort((a, b) => b.score - a.score);
-      if (ranked[0]?.url) {
-        matchedUrl = ranked[0].url;
-        break;
-      }
-    } catch {
-    }
-  }
+  const searchResults = await Promise.all(
+    titleCandidates.map((title) => searchHdhub4uByTitle(title).catch(() => []))
+  );
+  let matchedUrl = searchResults.flat().map((entry) => {
+    const score = titleMatchScore(entry.title, titleCandidates);
+    const yearBonus = preferredYear && new RegExp(`(^|[^\\d])${preferredYear}([^\\d]|$)`, "i").test(entry.title) ? 120 : 0;
+    const tvLike = /season|episode|series|web[\s-]*series/i.test(entry.title + " " + entry.url);
+    const typeBonus = mediaInfo?.type === "tv" || mediaInfo?.media_type === "tv" ? tvLike ? 80 : -40 : tvLike ? -60 : 40;
+    return { url: entry.url, score: score + yearBonus + typeBonus };
+  }).filter((entry) => entry.score >= 700).sort((a, b) => b.score - a.score)[0]?.url || "";
   if (!matchedUrl) {
-    matchedUrl = await findBestHdhub4uUrl(
+    const sitemapUrl = await findBestHdhub4uUrl(
       titleCandidates,
       Number.isFinite(preferredYear) ? preferredYear : void 0
     );
+    matchedUrl = sitemapUrl;
   }
   if (!matchedUrl)
     return "";
@@ -669,16 +666,16 @@ const resolveHdstream4uEpisodeId = async (request, mediaInfo) => {
   const primary = servers.find((server) => /watch\s*online/i.test(String(server?.name || ""))) || servers.find((server) => /^https?:\/\//i.test(String(server?.url || ""))) || servers[0];
   const fallbackEpisode = Array.isArray(infoPayload?.episodes) ? infoPayload.episodes[0] : null;
   if (!isTv) {
-    const watchOnline = servers.find(
-      (server) => /hubstream\.(?:art|pw|cc|ink|foo|boo)\/#/i.test(String(server?.url || ""))
-    );
-    if (watchOnline?.url)
-      return String(watchOnline.url).trim();
     const directFileId = String(
       directFileServer?.fileCode || directFileServer?.url || ""
     ).trim();
     if (directFileId)
       return directFileId;
+    const watchOnline = servers.find(
+      (server) => /hubstream\.(?:art|pw|cc|ink|foo|boo)\/#/i.test(String(server?.url || ""))
+    );
+    if (watchOnline?.url)
+      return String(watchOnline.url).trim();
     const providerMediaId = String(
       infoPayload?.id || matchedUrl || infoPayload?.url || ""
     ).trim();
@@ -746,7 +743,7 @@ const convertTmdbImagesToUrls = (data) => {
   return data;
 };
 const buildAnimesaltTmdbInfo = async (request, id, type) => {
-  const baseTmdb = new import_extensions.META.TMDB(import_main.tmdbApi, (0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ()));
+  const baseTmdb = new import_extensions.META.TMDB(import_main.tmdbApi);
   const fetchBase = async () => {
     const res = await baseTmdb.fetchMediaInfo(id, type);
     if (res && typeof res === "object") {
@@ -820,7 +817,7 @@ const buildAnimesaltTmdbInfo = async (request, id, type) => {
   return baseInfo;
 };
 const buildFlixhqTmdbInfo = async (request, id, type) => {
-  const baseTmdb = new import_extensions.META.TMDB(import_main.tmdbApi, (0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ()));
+  const baseTmdb = new import_extensions.META.TMDB(import_main.tmdbApi);
   const fetchBase = async () => {
     let res = null;
     try {
@@ -1148,7 +1145,7 @@ const routes = async (fastify, options) => {
     const query = request.params.query;
     const page = request.query.page;
     const tmdb = configureMeta(
-      new import_extensions.META.TMDB(import_main.tmdbApi, (0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ()))
+      new import_extensions.META.TMDB(import_main.tmdbApi)
     );
     try {
       const fetchSearch = async () => {
@@ -1160,11 +1157,14 @@ const routes = async (fastify, options) => {
         fetchSearch,
         import_main.REDIS_TTL
       ) : await fetchSearch();
-      if (!res || !Array.isArray(res.results) || res.results.length === 0) {
-        const rescued = await getDirectTmdbSearch(query, page);
-        if (rescued && rescued.results.length > 0) {
-          res = { ...rescued, message: "Search results rescued via direct fetch" };
-        }
+      const rescued = await getDirectTmdbSearch(query, page);
+      if (rescued?.results?.length) {
+        res = {
+          ...rescued,
+          results: rescued.results
+        };
+      } else if (!res || !Array.isArray(res.results) || res.results.length === 0) {
+        res = { results: [], total_results: 0, message: "No TMDB results found" };
       }
       reply.status(200).send(res);
     } catch (err) {
@@ -1184,11 +1184,35 @@ const routes = async (fastify, options) => {
     try {
       if (!import_main.tmdbApi)
         return null;
-      const url = `https://api.themoviedb.org/3/search/multi?api_key=${import_main.tmdbApi}&query=${encodeURIComponent(query)}&page=${page}`;
-      const res = await import_axios.default.get(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-      if (res.data && Array.isArray(res.data.results)) {
+      const encodedQuery = encodeURIComponent(query);
+      const headers = { "User-Agent": "Mozilla/5.0" };
+      const [multiRes, movieRes, tvRes] = await Promise.all(
+        ["multi", "movie", "tv"].map(
+          (kind) => import_axios.default.get(
+            `https://api.themoviedb.org/3/search/${kind}?api_key=${import_main.tmdbApi}&query=${encodedQuery}&page=${page}`,
+            { headers }
+          )
+        )
+      );
+      const merged = /* @__PURE__ */ new Map();
+      for (const [kind, response] of [
+        ["multi", multiRes],
+        ["movie", movieRes],
+        ["tv", tvRes]
+      ]) {
+        for (const item of Array.isArray(response.data?.results) ? response.data.results : []) {
+          if (item?.id === void 0 || item?.id === null || item.media_type === "person")
+            continue;
+          const type = kind === "tv" || item.media_type === "tv" ? "tv" : "movie";
+          const key = `${type}:${item.id}`;
+          if (!merged.has(key))
+            merged.set(key, { ...item, media_type: type });
+        }
+      }
+      if (merged.size) {
+        const results = Array.from(merged.values());
         return {
-          results: res.data.results.filter((item) => item?.id !== void 0 && item?.id !== null).map((item) => ({
+          results: results.map((item) => ({
             id: String(item.id),
             title: item.title || item.name || "Unknown",
             image: item.poster_path ? `https://image.tmdb.org/t/p/original${item.poster_path}` : null,
@@ -1196,8 +1220,16 @@ const routes = async (fastify, options) => {
             releaseDate: item.release_date || item.first_air_date,
             rating: item.vote_average
           })),
-          total_results: res.data.total_results,
-          total_pages: res.data.total_pages
+          total_results: Math.max(
+            Number(multiRes.data?.total_results || 0),
+            Number(movieRes.data?.total_results || 0),
+            Number(tvRes.data?.total_results || 0)
+          ),
+          total_pages: Math.max(
+            Number(multiRes.data?.total_pages || 0),
+            Number(movieRes.data?.total_pages || 0),
+            Number(tvRes.data?.total_pages || 0)
+          )
         };
       }
     } catch (err) {
@@ -1327,7 +1359,7 @@ const routes = async (fastify, options) => {
     let type = sanitizeType(request.query.type);
     const provider = request.query.provider;
     const providerLower = provider?.toLowerCase();
-    let tmdb = createTmdbClient((0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ()));
+    let tmdb = createTmdbClient(void 0);
     if (!id)
       return reply.status(400).send({ message: "The 'id' query is required" });
     if (!type || type !== "movie" && type !== "tv") {
@@ -1427,7 +1459,7 @@ const routes = async (fastify, options) => {
         }
       } else {
         const possibleProvider = import_extensions.PROVIDERS_LIST.MOVIES.find(
-          (p) => p.name.toLowerCase() === provider.toLocaleLowerCase()
+          (p) => p.name.toLowerCase() === provider.toLocaleLowerCase() && p.name.toLowerCase() !== "flixhq"
         );
         tmdb = createTmdbClient(possibleProvider);
         if (!tmdb) {
@@ -1504,7 +1536,7 @@ const routes = async (fastify, options) => {
     let type = sanitizeType(request.query.type);
     const provider = request.query.provider;
     const providerLower = provider?.toLowerCase();
-    let tmdb = createTmdbClient((0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ()));
+    let tmdb = createTmdbClient(void 0);
     if (!type || type !== "movie" && type !== "tv") {
       console.log(`[SmartGuess] type missing for id ${id}, attempting resolution...`);
       try {
@@ -1665,7 +1697,7 @@ const routes = async (fastify, options) => {
     try {
       let res = await getDirectTmdbTrending(type, timePeriod, page);
       if (!res || !Array.isArray(res.results) || res.results.length === 0) {
-        const tmdb = createTmdbClient((0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ()));
+        const tmdb = createTmdbClient(void 0);
         if (tmdb) {
           res = await tmdb.fetchTrending(type, timePeriod, page);
         }
@@ -1769,23 +1801,23 @@ const routes = async (fastify, options) => {
           const infoPayload = safeJsonParse(infoRes.body || "{}");
           const candidates = extractHdstreamMovieCandidateIds(infoPayload).slice(0, 3);
           if (candidates.length) {
-            const candidatePayloads = candidates.map(async (candidateId) => {
-              const delegated = await withSoftTimeout(
-                request.server.inject({
-                  method: "GET",
-                  url: `/movies/hdstream4u/watch?episodeId=${encodeURIComponent(candidateId)}&mediaId=${encodeURIComponent(String(id))}`
-                }),
-                4500
+            let fastest = null;
+            for (const candidateId of candidates) {
+              const payload = await withSoftTimeout(
+                import_hdstream4uProvider.HdStream4uProvider.fetchSources(
+                  candidateId,
+                  "hdstream4u",
+                  false,
+                  { mediaId: String(id) }
+                ),
+                3e4
               );
-              if (!delegated || delegated.statusCode >= 400)
-                throw new Error("candidate failed");
-              const payload = safeJsonParse(delegated.body || "{}");
               const sources = Array.isArray(payload?.sources) ? payload.sources : [];
-              if (!sources.length)
-                throw new Error("candidate empty");
-              return payload;
-            });
-            const fastest = await Promise.any(candidatePayloads).catch(() => null);
+              if (sources.length) {
+                fastest = payload;
+                break;
+              }
+            }
             if (fastest) {
               if (cacheKey && import_main.redis) {
                 import_main.redis.setex(cacheKey, import_main.REDIS_TTL, JSON.stringify(fastest)).catch(() => {
@@ -1839,7 +1871,7 @@ const routes = async (fastify, options) => {
       try {
         let titleForSearch = "";
         try {
-          const baseTmdb = new import_extensions.META.TMDB(import_main.tmdbApi, (0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ()));
+          const baseTmdb = new import_extensions.META.TMDB(import_main.tmdbApi);
           let mediaInfo;
           try {
             mediaInfo = await baseTmdb.fetchMediaInfo(id, "movie");
@@ -1992,13 +2024,15 @@ const routes = async (fastify, options) => {
       try {
         const discoveryTmdb = new import_extensions.META.TMDB(
           import_main.tmdbApi,
-          (0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ())
+          void 0
         );
-        let mediaInfo;
-        try {
-          mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
-        } catch {
-          mediaInfo = await getDirectTmdbInfo(id, type);
+        let mediaInfo = await getDirectTmdbInfo(id, type);
+        if (!mediaInfo) {
+          try {
+            mediaInfo = await discoveryTmdb.fetchMediaInfo(id, type);
+          } catch {
+            mediaInfo = null;
+          }
         }
         discoveredMovieOrTvInfo = mediaInfo;
         if (!mediaInfo || !mediaInfo.title || mediaInfo.title === "Unknown") {
@@ -2033,7 +2067,7 @@ const routes = async (fastify, options) => {
       } catch {
       }
     }
-    let movieProvider = (0, import_provider.configureProvider)(new import_extensions2.MOVIES.FlixHQ());
+    let movieProvider = void 0;
     let tmdb = configureMeta(new import_extensions.META.TMDB(import_main.tmdbApi, movieProvider));
     if (typeof provider !== "undefined") {
       const selectedProvider = resolveMovieProvider(provider);

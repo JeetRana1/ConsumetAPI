@@ -22,6 +22,8 @@ __export(hdstream4u_exports, {
 });
 module.exports = __toCommonJS(hdstream4u_exports);
 var import_hdstream4uProvider = require("../../providers/custom/hdstream4uProvider");
+const sourceCache = /* @__PURE__ */ new Map();
+const SOURCE_CACHE_TTL_MS = 5 * 60 * 1e3;
 const routes = async (fastify, options) => {
   fastify.get("/", (_, rp) => {
     rp.status(200).send({
@@ -47,7 +49,21 @@ const routes = async (fastify, options) => {
     const { episodeId, server, mediaId } = request.query;
     if (!episodeId)
       return reply.status(400).send({ error: "episodeId is required" });
-    const res = await import_hdstream4uProvider.HdStream4uProvider.fetchSources(episodeId, server, false, { mediaId });
+    const cacheKey = `${episodeId}|${server || ""}|${mediaId || ""}`;
+    const cached = sourceCache.get(cacheKey);
+    if (cached && cached.expires > Date.now()) {
+      return reply.status(200).send(cached.value);
+    }
+    let res = await import_hdstream4uProvider.HdStream4uProvider.fetchSources(episodeId, server, false, { mediaId });
+    if (!res?.sources?.length) {
+      res = await import_hdstream4uProvider.HdStream4uProvider.fetchSources(episodeId, server, false, { mediaId });
+    }
+    const hasShortLivedHls = res?.sources?.some(
+      (source) => Boolean(source?.isM3U8 || source?.isM3u8 || /\.m3u8(?:[?#]|$)/i.test(String(source?.url || "")))
+    );
+    if (res?.sources?.length && !hasShortLivedHls) {
+      sourceCache.set(cacheKey, { expires: Date.now() + SOURCE_CACHE_TTL_MS, value: res });
+    }
     reply.status(200).send(res);
   });
 };

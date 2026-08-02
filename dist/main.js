@@ -284,6 +284,12 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
           ...proxyOptions
         });
         const responseContentType = String(response.headers["content-type"] || "");
+        if (response.status >= 400) {
+          const upstreamError = new Error(`Upstream HLS response (${response.status})`);
+          upstreamError.statusCode = response.status;
+          lastError = upstreamError;
+          continue;
+        }
         if (isManifest && !isLikelyHlsManifest(String(response.data || ""), responseContentType)) {
           lastError = new Error(`Invalid HLS manifest response (${response.status})`);
           continue;
@@ -430,7 +436,12 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       return reply.status(500).send({ error: "Unexpected proxy state" });
     } catch (error) {
       console.error("HLS Proxy error:", error.message);
-      return reply.status(500).send({ error: "Proxy failed" });
+      const upstreamStatus = Number(error?.statusCode || error?.response?.status || 0);
+      const status = upstreamStatus >= 400 && upstreamStatus < 600 ? upstreamStatus : 502;
+      return reply.status(status).send({
+        error: "Proxy failed",
+        ...upstreamStatus ? { upstreamStatus } : {}
+      });
     }
   });
   try {

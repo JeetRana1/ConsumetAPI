@@ -235,12 +235,14 @@ const parseSubtitlesFromText = (
   const add = (url?: string, lang?: string, kind?: string, isDefault?: boolean) => {
     const normalized = normalizeUrl(url);
     if (!normalized || !isUsableMediaUrl(normalized)) return;
-    if (!/\.(vtt|srt|ass)(\?|$)/i.test(normalized)) return;
-    const resolvedLang = normalizeSubtitleLang(lang, normalized);
-    const existing = found.get(normalized);
+    const baseKey = normalized.replace(/#.*$/, '');
+    if (!/\.(vtt|srt|ass)(\?|$)/i.test(baseKey)) return;
+    if (/\/thumbnail(?:s)?\.vtt(?:\?|$)/i.test(baseKey)) return;
+    const resolvedLang = normalizeSubtitleLang(lang, baseKey);
+    const existing = found.get(baseKey);
     if (existing && resolvedLang === 'Unknown') return;
-    found.set(normalized, {
-      url: normalized,
+    found.set(baseKey, {
+      url: baseKey,
       lang: resolvedLang,
       kind,
       default: Boolean(isDefault),
@@ -310,12 +312,14 @@ const parseSubtitlesFromValue = (
   const add = (url?: string, lang?: string, kind?: string, isDefault?: boolean) => {
     const absolute = absoluteUrl(url, baseUrl);
     if (!absolute || !isUsableMediaUrl(absolute)) return;
-    if (!/\.(vtt|srt|ass)(\?|#|$)/i.test(absolute)) return;
-    const resolvedLang = normalizeSubtitleLang(lang, absolute);
-    const existing = found.get(absolute);
+    const baseKey = absolute.replace(/#.*$/, '');
+    if (!/\.(vtt|srt|ass)(\?|$)/i.test(baseKey)) return;
+    if (/\/thumbnail(?:s)?\.vtt(?:\?|$)/i.test(baseKey)) return;
+    const resolvedLang = normalizeSubtitleLang(lang, baseKey);
+    const existing = found.get(baseKey);
     if (existing && resolvedLang === 'Unknown') return;
-    found.set(absolute, {
-      url: absolute,
+    found.set(baseKey, {
+      url: baseKey,
       lang: resolvedLang,
       kind,
       default: Boolean(isDefault),
@@ -423,16 +427,29 @@ export const extractPlaybackWithPlaywright = async (
   const addSubtitles = (
     items: Array<{ url: string; lang: string; kind?: string; default?: boolean }>,
   ) => {
-    for (const item of items) subtitles.set(item.url, item);
+    for (const item of items) {
+      const baseKey = String(item.url || '').replace(/#.*$/, '');
+      if (!baseKey || !/\.(vtt|srt|ass)(\?|$)/i.test(baseKey)) continue;
+      if (/\/thumbnail(?:s)?\.vtt/i.test(baseKey)) continue;
+      const existing = subtitles.get(baseKey);
+      if (existing && (existing.lang !== 'Unknown' || item.lang === 'Unknown')) continue;
+      subtitles.set(baseKey, {
+        ...item,
+        url: baseKey,
+        lang: normalizeSubtitleLang(item.lang, baseKey),
+      });
+    }
   };
 
   const addSubtitleUrl = (url?: string, lang = 'Unknown') => {
     const normalized = absoluteUrl(url, normalizedEmbed);
     if (!normalized || !isUsableMediaUrl(normalized)) return;
-    if (!/\.(vtt|srt|ass)(\?|#|$)/i.test(normalized)) return;
-    subtitles.set(normalized, {
-      url: normalized,
-      lang: normalizeSubtitleLang(lang, normalized),
+    const baseKey = normalized.replace(/#.*$/, '');
+    if (!/\.(vtt|srt|ass)(\?|$)/i.test(baseKey)) return;
+    if (/\/thumbnail(?:s)?\.vtt(?:\?|$)/i.test(baseKey)) return;
+    subtitles.set(baseKey, {
+      url: baseKey,
+      lang: normalizeSubtitleLang(lang, baseKey),
     });
   };
 
@@ -822,7 +839,10 @@ export const extractPlaybackWithPlaywright = async (
           ...track,
           url: absoluteUrl(track.url, normalizedEmbed) || '',
         }))
-        .filter((track: { url: string }) => /\.(vtt|srt|ass)(\?|#|$)/i.test(String(track.url || ''))),
+        .filter((track: { url: string }) => {
+        const trackUrl = String(track.url || '').replace(/#.*$/, '');
+        return /\.(vtt|srt|ass)(\?|$)/i.test(trackUrl) && !/\/thumbnail(?:s)?\.vtt/i.test(trackUrl);
+      }),
     );
 
     const decodedPayloads = await page

@@ -32,10 +32,8 @@ __export(movies_exports, {
 });
 module.exports = __toCommonJS(movies_exports);
 var import_extensions = require("@consumet/extensions");
-var import_flixhq = __toESM(require("./flixhq"));
 var import_hdstream4u = __toESM(require("./hdstream4u"));
 const routes = async (fastify, options) => {
-  await fastify.register(import_flixhq.default, { prefix: "/flixhq" });
   await fastify.register(import_hdstream4u.default, { prefix: "/hdstream4u" });
   fastify.get("/", async (request, reply) => {
     reply.status(200).send("Welcome to Consumet Movies and TV Shows");
@@ -66,7 +64,7 @@ const routes = async (fastify, options) => {
   });
   fastify.get("/:id/:title", async (request, reply) => {
     const { id, title } = request.params;
-    return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=flixhq`);
+    return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=hdstream4u`);
   });
 };
 var movies_default = routes;

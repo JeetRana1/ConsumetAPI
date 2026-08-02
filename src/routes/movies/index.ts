@@ -1,11 +1,9 @@
 import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from 'fastify';
 import { PROVIDERS_LIST } from '@consumet/extensions';
 
-import flixhq from './flixhq';
 import hdstream4u from './hdstream4u';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
-  await fastify.register(flixhq, { prefix: '/flixhq' });
   await fastify.register(hdstream4u, { prefix: '/hdstream4u' });
 
   fastify.get('/', async (request: any, reply: any) => {
@@ -49,7 +47,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/:id/:title', async (request: FastifyRequest, reply: FastifyReply) => {
     const { id, title } = request.params as { id: string; title: string };
     // We assume it's a movie if called on /movies/
-    return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=flixhq`);
+    return reply.redirect(`/meta/tmdb/watch?id=${id}&type=movie&provider=hdstream4u`);
   });
 };
 
