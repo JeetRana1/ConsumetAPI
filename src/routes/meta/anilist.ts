@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from '
 import { META } from '@consumet/extensions';
 import { Genres, SubOrSub } from '@consumet/extensions/dist/models';
 import Anilist from '@consumet/extensions/dist/providers/meta/anilist';
+import Myanimelist from '@consumet/extensions/dist/providers/meta/mal';
 import { StreamingServers } from '@consumet/extensions/dist/models';
 
 import cache from '../../utils/cache';
@@ -22,14 +23,106 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   });
 
   fastify.get('/:query', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = (request.params as { query: string }).query;
+    const page = Number((request.query as { page?: number }).page) || 1;
+    const perPage = Number((request.query as { perPage?: number }).perPage) || 15;
     try {
-      const anilist = generateAnilistMeta();
-      const query = (request.params as { query: string }).query;
-      const page = (request.query as { page: number }).page;
-      const perPage = (request.query as { perPage: number }).perPage;
+      let res: any = null;
+      try {
+        const anilist = generateAnilistMeta();
+        res = await anilist.search(query, page, perPage);
+      } catch (err: any) {
+        console.warn(
+          '[Anilist] GraphQL search failed, trying fallbacks:',
+          err?.message || err,
+        );
+        res = null;
+      }
 
-      const res = await anilist.search(query, page, perPage);
-      reply.status(200).send(res);
+      if (res && Array.isArray(res.results) && res.results.length > 0) {
+        reply.status(200).send(res);
+        return;
+      }
+
+      // MyAnimeList is reachable from hosts where AniList's GraphQL endpoint is
+      // IP-blocked, and (via the anime page) returns both English and romaji
+      // titles plus the release year, making it a strong anime-detection source.
+      try {
+        const malRows = await searchMyanimelist(query, 5);
+        if (malRows.length > 0) {
+          reply.status(200).send({
+            currentPage: page,
+            hasNextPage: false,
+            totalPages: 1,
+            totalResults: malRows.length,
+            results: malRows,
+          });
+          return;
+        }
+      } catch (err: any) {
+        console.warn('[Anilist] MAL fallback search failed:', err?.message || err);
+      }
+
+      // AnimeSalt only indexes anime, so its catalog is a reliable substitute
+      // for anime detection when AniList and MyAnimeList are unreachable.
+      // Map rows into the AniList search shape so existing title-matching
+      // logic keeps working.
+      try {
+        const fallbackRes = await request.server.inject({
+          method: 'GET',
+          url: `/anime/animesalt/${encodeURIComponent(query)}`,
+        });
+        if (fallbackRes.statusCode === 200) {
+          let fallbackRows: any[] = [];
+          try {
+            fallbackRows = JSON.parse(fallbackRes.body || '[]');
+          } catch {
+            fallbackRows = [];
+          }
+          if (Array.isArray(fallbackRows) && fallbackRows.length > 0) {
+            const mapped = fallbackRows.slice(0, perPage).map((row) => {
+              const title = String(row?.title || '').trim();
+              return {
+                id: String(row?.id || ''),
+                malId: null,
+                title: {
+                  romaji: title,
+                  english: title,
+                  native: title,
+                  userPreferred: title,
+                },
+                image: row?.image || null,
+                cover: null,
+                description: null,
+                status: null,
+                rating: null,
+                genres: [],
+                totalEpisodes: null,
+                currentEpisodeCount: null,
+                type: row?.type || 'tv',
+                releaseDate: null,
+                year: null,
+                startDate: null,
+              };
+            });
+            reply.status(200).send({
+              currentPage: page,
+              hasNextPage: false,
+              totalPages: 1,
+              totalResults: mapped.length,
+              results: mapped,
+            });
+            return;
+          }
+        }
+      } catch (err: any) {
+        console.warn(
+          '[Anilist] AnimeSalt fallback search failed:',
+          err?.message || err,
+        );
+      }
+
+      reply.status(200).send({ results: [], message: 'No results found' });
     } catch (err: any) {
       console.error('[Anilist] Search error:', err?.message || err);
       reply.status(200).send({ results: [], message: err?.message || 'Search failed' });
@@ -387,6 +480,60 @@ const generateAnilistMeta = (provider: string | undefined = undefined): Anilist 
   const url = proxies.length > 0 ? (proxies.length === 1 ? proxies[0] : proxies) : [];
   return new Anilist(configureProvider(new AnimeSama()), {
     url: url as string | string[],
+  });
+};
+
+/**
+ * Searches MyAnimeList (MAL) and enriches the top results by fetching each
+ * anime page for its English/romaji/native titles and release year. Results
+ * are mapped into the AniList search shape so downstream title-matching logic
+ * works unchanged.
+ */
+const searchMyanimelist = async (query: string, limit = 5): Promise<any[]> => {
+  const mal = new Myanimelist();
+  const searchRes = await mal.search(query, 1);
+  const rows = Array.isArray(searchRes?.results) ? searchRes.results : [];
+  const top = rows.slice(0, limit);
+  if (top.length === 0) return [];
+
+  const enriched = await Promise.all(
+    top.map(async (row: any) => {
+      let info: any = null;
+      try {
+        info = await mal.fetchMalInfoById(row.id);
+      } catch {
+        info = null;
+      }
+      return { row, info };
+    }),
+  );
+
+  return enriched.map(({ row, info }) => {
+    const title = info?.title || {};
+    const romaji = title.romaji || String(row.title || '');
+    const english = title.english || title.userPreferred || String(row.title || '');
+    const native = title.native || english;
+    const year =
+      Number.isFinite(info?.startDate?.year) ? info.startDate.year : null;
+    const totalEpisodes =
+      row?.totalEpisodes ?? info?.totalEpisodes ?? null;
+    return {
+      id: String(row.id || ''),
+      malId: row.id ? Number(row.id) : null,
+      title: { romaji, english, native, userPreferred: english || romaji },
+      image: row?.image || info?.image || null,
+      cover: info?.image || null,
+      description: info?.description || row?.description || null,
+      status: info?.status ?? null,
+      rating: row?.rating ?? info?.rating ?? null,
+      genres: Array.isArray(info?.genres) ? info.genres : [],
+      totalEpisodes,
+      currentEpisodeCount: totalEpisodes,
+      type: row?.type || info?.type || 'tv',
+      releaseDate: year != null ? String(year) : null,
+      year,
+      startDate: info?.startDate || null,
+    };
   });
 };
 

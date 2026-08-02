@@ -33,6 +33,7 @@ __export(anilist_exports, {
 module.exports = __toCommonJS(anilist_exports);
 var import_models = require("@consumet/extensions/dist/models");
 var import_anilist = __toESM(require("@consumet/extensions/dist/providers/meta/anilist"));
+var import_mal = __toESM(require("@consumet/extensions/dist/providers/meta/mal"));
 var import_models2 = require("@consumet/extensions/dist/models");
 var import_cache = __toESM(require("../../utils/cache"));
 var import_main = require("../../main");
@@ -49,13 +50,95 @@ const routes = async (fastify, options) => {
     });
   });
   fastify.get("/:query", async (request, reply) => {
+    const query = request.params.query;
+    const page = Number(request.query.page) || 1;
+    const perPage = Number(request.query.perPage) || 15;
     try {
-      const anilist = generateAnilistMeta();
-      const query = request.params.query;
-      const page = request.query.page;
-      const perPage = request.query.perPage;
-      const res = await anilist.search(query, page, perPage);
-      reply.status(200).send(res);
+      let res = null;
+      try {
+        const anilist = generateAnilistMeta();
+        res = await anilist.search(query, page, perPage);
+      } catch (err) {
+        console.warn(
+          "[Anilist] GraphQL search failed, trying fallbacks:",
+          err?.message || err
+        );
+        res = null;
+      }
+      if (res && Array.isArray(res.results) && res.results.length > 0) {
+        reply.status(200).send(res);
+        return;
+      }
+      try {
+        const malRows = await searchMyanimelist(query, 5);
+        if (malRows.length > 0) {
+          reply.status(200).send({
+            currentPage: page,
+            hasNextPage: false,
+            totalPages: 1,
+            totalResults: malRows.length,
+            results: malRows
+          });
+          return;
+        }
+      } catch (err) {
+        console.warn("[Anilist] MAL fallback search failed:", err?.message || err);
+      }
+      try {
+        const fallbackRes = await request.server.inject({
+          method: "GET",
+          url: `/anime/animesalt/${encodeURIComponent(query)}`
+        });
+        if (fallbackRes.statusCode === 200) {
+          let fallbackRows = [];
+          try {
+            fallbackRows = JSON.parse(fallbackRes.body || "[]");
+          } catch {
+            fallbackRows = [];
+          }
+          if (Array.isArray(fallbackRows) && fallbackRows.length > 0) {
+            const mapped = fallbackRows.slice(0, perPage).map((row) => {
+              const title = String(row?.title || "").trim();
+              return {
+                id: String(row?.id || ""),
+                malId: null,
+                title: {
+                  romaji: title,
+                  english: title,
+                  native: title,
+                  userPreferred: title
+                },
+                image: row?.image || null,
+                cover: null,
+                description: null,
+                status: null,
+                rating: null,
+                genres: [],
+                totalEpisodes: null,
+                currentEpisodeCount: null,
+                type: row?.type || "tv",
+                releaseDate: null,
+                year: null,
+                startDate: null
+              };
+            });
+            reply.status(200).send({
+              currentPage: page,
+              hasNextPage: false,
+              totalPages: 1,
+              totalResults: mapped.length,
+              results: mapped
+            });
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn(
+          "[Anilist] AnimeSalt fallback search failed:",
+          err?.message || err
+        );
+      }
+      reply.status(200).send({ results: [], message: "No results found" });
     } catch (err) {
       console.error("[Anilist] Search error:", err?.message || err);
       reply.status(200).send({ results: [], message: err?.message || "Search failed" });
@@ -353,6 +436,50 @@ const generateAnilistMeta = (provider = void 0) => {
   const url = proxies.length > 0 ? proxies.length === 1 ? proxies[0] : proxies : [];
   return new import_anilist.default((0, import_provider.configureProvider)(new import_animesama.default()), {
     url
+  });
+};
+const searchMyanimelist = async (query, limit = 5) => {
+  const mal = new import_mal.default();
+  const searchRes = await mal.search(query, 1);
+  const rows = Array.isArray(searchRes?.results) ? searchRes.results : [];
+  const top = rows.slice(0, limit);
+  if (top.length === 0)
+    return [];
+  const enriched = await Promise.all(
+    top.map(async (row) => {
+      let info = null;
+      try {
+        info = await mal.fetchMalInfoById(row.id);
+      } catch {
+        info = null;
+      }
+      return { row, info };
+    })
+  );
+  return enriched.map(({ row, info }) => {
+    const title = info?.title || {};
+    const romaji = title.romaji || String(row.title || "");
+    const english = title.english || title.userPreferred || String(row.title || "");
+    const native = title.native || english;
+    const year = Number.isFinite(info?.startDate?.year) ? info.startDate.year : null;
+    const totalEpisodes = row?.totalEpisodes ?? info?.totalEpisodes ?? null;
+    return {
+      id: String(row.id || ""),
+      malId: row.id ? Number(row.id) : null,
+      title: { romaji, english, native, userPreferred: english || romaji },
+      image: row?.image || info?.image || null,
+      cover: info?.image || null,
+      description: info?.description || row?.description || null,
+      status: info?.status ?? null,
+      rating: row?.rating ?? info?.rating ?? null,
+      genres: Array.isArray(info?.genres) ? info.genres : [],
+      totalEpisodes,
+      currentEpisodeCount: totalEpisodes,
+      type: row?.type || info?.type || "tv",
+      releaseDate: year != null ? String(year) : null,
+      year,
+      startDate: info?.startDate || null
+    };
   });
 };
 var anilist_default = routes;
