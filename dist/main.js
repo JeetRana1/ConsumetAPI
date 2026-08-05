@@ -187,7 +187,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       if (!trimmed)
         return trimmed;
       try {
-        const upstreamReferer = manifestUrl || referer;
+        const upstreamReferer = referer || manifestUrl;
         return buildProxyPath(
           new URL(trimmed, manifestUrl).toString(),
           upstreamReferer,
@@ -218,10 +218,12 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       }
       if (/^(data:|blob:)/i.test(trimmed))
         return line;
-      const isSegment = /^#EXTINF\b/i.test(previousTag);
+      const isSubtitleResource = /(?:\/p\/|\.(?:vtt|srt|ass|js)(?:\?|$))/i.test(trimmed);
+      const isSegment = /^#EXTINF\b/i.test(previousTag) && !isSubtitleResource;
       previousTag = "";
       return resolveAndProxy(trimmed, isSegment);
     }).join("\n");
+    output = output.split("\n").filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line)).join("\n");
     return output;
   };
   const isLikelyHlsManifest = (body, contentType) => {
@@ -246,7 +248,8 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   };
   const fetchHlsResource = async (url, isManifest, incomingRange, referer, cookieHeader) => {
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
-    const proxyCandidates = isAnimeSaltCdn ? [""] : [...(0, import_outboundProxy.getProxyCandidatesSync)(), ""];
+    const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
+    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn ? [""] : [...(0, import_outboundProxy.getProxyCandidatesSync)(), ""];
     let lastError = null;
     const effectiveReferer = (() => {
       const safeReferer = String(referer || "").trim();
@@ -278,7 +281,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             ...isManifest ? {} : { Accept: "video/mp2t,video/mp4,application/octet-stream,*/*" },
             ...isManifest ? {} : { "Accept-Encoding": "identity" }
           },
-          timeout: 15e3,
+          timeout: isIbyteCdn ? 3e4 : 15e3,
           responseType: isManifest ? "text" : "arraybuffer",
           validateStatus: (status) => status < 500,
           ...proxyOptions

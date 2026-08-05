@@ -395,6 +395,10 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
             }
 
             const bucket = seasonsMap.get(seasonNo);
+            // When AnimeSalt already rendered real episode IDs for a season,
+            // keep those provider numbers. Synthetic 1..N IDs can point to
+            // nonexistent pages when the provider uses cumulative numbering.
+            if (bucket.episodes.length > 0) continue;
             const existingIds = new Set(
               (Array.isArray(bucket?.episodes) ? bucket.episodes : [])
                 .map((ep: any) =>

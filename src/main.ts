@@ -205,7 +205,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       if (!trimmed) return trimmed;
 
       try {
-        const upstreamReferer = manifestUrl || referer;
+        // Preserve the provider's page referer for child playlists and segments.
+        // Using the parent manifest URL as Referer causes AnimeKai CDN requests to 403.
+        const upstreamReferer = referer || manifestUrl;
         return buildProxyPath(
           new URL(trimmed, manifestUrl).toString(),
           upstreamReferer,
@@ -239,13 +241,25 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
           return line;
         }
         if (/^(data:|blob:)/i.test(trimmed)) return line;
-        const isSegment = /^#EXTINF\b/i.test(previousTag);
+         // AnimeSalt subtitle URLs can be extensionless or end in .js. They may
+         // follow an EXTINF line in the manifest, but must not receive the
+         // segment marker or the HLS proxy will fetch them as media bytes.
+         const isSubtitleResource = /(?:\/p\/|\.(?:vtt|srt|ass|js)(?:\?|$))/i.test(trimmed);
+         const isSegment = /^#EXTINF\b/i.test(previousTag) && !isSubtitleResource;
         previousTag = '';
         return resolveAndProxy(trimmed, isSegment);
       })
       .join('\n');
 
-    return output;
+     // StreamVerse attaches external subtitle tracks itself. Some AnimeSalt
+     // manifests advertise their subtitle file as an HLS playlist even though
+     // it is a plain subtitle payload, which makes HLS.js abort video startup.
+     output = output
+       .split('\n')
+       .filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line))
+       .join('\n');
+
+     return output;
   };
 
   const isLikelyHlsManifest = (body: string, contentType?: string): boolean => {
@@ -278,7 +292,11 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     cookieHeader: string,
   ) => {
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
-    const proxyCandidates = isAnimeSaltCdn ? [''] : [...getProxyCandidatesSync(), ''];
+    // AnimeKai's Megaplay playlists can use a CDN for segments.
+    // Those requests are reachable directly but commonly hang through the
+    // configured outbound proxies, adding 15 seconds per segment retry.
+    const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
+    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn ? [''] : [...getProxyCandidatesSync(), ''];
     let lastError: unknown = null;
     const effectiveReferer = (() => {
       const safeReferer = String(referer || '').trim();
@@ -309,7 +327,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
               : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
             ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
           },
-          timeout: 15000,
+          timeout: isIbyteCdn ? 30000 : 15000,
           responseType: isManifest ? 'text' : 'arraybuffer',
           validateStatus: (status: number) => status < 500,
           ...(proxyOptions as any),

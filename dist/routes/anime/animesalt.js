@@ -313,6 +313,8 @@ const routes = async (fastify, options) => {
               });
             }
             const bucket = seasonsMap.get(seasonNo);
+            if (bucket.episodes.length > 0)
+              continue;
             const existingIds = new Set(
               (Array.isArray(bucket?.episodes) ? bucket.episodes : []).map(
                 (ep) => String(ep?.id || "").trim().toLowerCase()
