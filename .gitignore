@@ -34,6 +34,7 @@ hls_fix.txt
 
 # Logs
 *.log
+run.ps1
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
