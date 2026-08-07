@@ -21,35 +21,18 @@ __export(anikoto_exports, {
   default: () => anikoto_default
 });
 module.exports = __toCommonJS(anikoto_exports);
-var import_extensions = require("@consumet/extensions");
 const routes = async (fastify, _options) => {
-  const provider = new import_extensions.ANIME.AniKoto();
   fastify.get("/", async (_request, reply) => {
-    reply.send({
-      intro: `Welcome to the anikoto provider: check out ${provider.toString.baseUrl}`,
-      routes: ["/:query", "/info", "/watch/:episodeId"]
-    });
+    reply.status(503).send({ message: "AniKoto is unavailable in the installed extensions package" });
   });
   fastify.get("/:query", async (request, reply) => {
-    try {
-      reply.send(await provider.search(String(request.params.query), Number(request.query?.page) || 1));
-    } catch (error) {
-      reply.status(500).send({ message: error?.message || "AniKoto search failed" });
-    }
+    reply.status(503).send({ message: "AniKoto is unavailable in the installed extensions package" });
   });
   fastify.get("/info", async (request, reply) => {
-    try {
-      reply.send(await provider.fetchAnimeInfo(String(request.query?.id || "")));
-    } catch (error) {
-      reply.status(500).send({ message: error?.message || "AniKoto info failed" });
-    }
+    reply.status(503).send({ message: "AniKoto is unavailable in the installed extensions package" });
   });
   fastify.get("/watch/:episodeId", async (request, reply) => {
-    try {
-      reply.send(await provider.fetchEpisodeSources(String(request.params.episodeId)));
-    } catch (error) {
-      reply.status(500).send({ message: error?.message || "AniKoto source extraction failed" });
-    }
+    reply.status(503).send({ message: "AniKoto is unavailable in the installed extensions package" });
   });
 };
 var anikoto_default = routes;
