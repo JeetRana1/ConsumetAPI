@@ -251,7 +251,15 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       })
       .join('\n');
 
-     // StreamVerse attaches external subtitle tracks itself. Some AnimeSalt
+     // AniKoto/VidTube occasionally injects an ad segment that returns 403
+     // from p1.ipstatp.com. Drop the whole EXTINF/URI pair so HLS.js can
+     // continue with the real media segments.
+     output = output.replace(
+       /#EXTINF:[^\n]*(?:\n#[^\n]*)*\n[^\n]*(?:p1\.ipstatp\.com\/obj\/ad-site-i18n|p\d+-ad-sg\.ibyteimg\.com)[^\n]*/gi,
+       '',
+     );
+
+      // StreamVerse attaches external subtitle tracks itself. Some AnimeSalt
      // manifests advertise their subtitle file as an HLS playlist even though
      // it is a plain subtitle payload, which makes HLS.js abort video startup.
      output = output
@@ -296,11 +304,25 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     // Those requests are reachable directly but commonly hang through the
     // configured outbound proxies, adding 15 seconds per segment retry.
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
-    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn ? [''] : [...getProxyCandidatesSync(), ''];
+    const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\/[^/]+\/\d+\/ox\//i.test(url);
+    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.shiora\.(?:top|site)\//i.test(url);
+    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn ? [''] : [...getProxyCandidatesSync(), ''];
     let lastError: unknown = null;
     const effectiveReferer = (() => {
       const safeReferer = String(referer || '').trim();
       if (!safeReferer) return safeReferer;
+      // AniKoto's shiora CDN rejects the full Megaplay stream path and only
+      // accepts the provider origin as Referer.
+      if (
+        /^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) ||
+        /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url)
+      ) {
+        try {
+          return `${new URL(safeReferer).origin}/`;
+        } catch {
+          return safeReferer;
+        }
+      }
       const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
       if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
         return '';
@@ -375,7 +397,13 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       .filter((part) => part && !/^(referer|segment|cookie)=/i.test(part))
       .join('&');
 
-    const url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ''}`;
+    let url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ''}`;
+    // HubStream's hlsmod path wraps the real CDN host in the URL path. Decode
+    // it before fetching; requesting the wrapper itself returns 404.
+    const hlsmodMatch = url.match(/^https:\/\/hubstream\.(?:art|pw|cc|ink|foo|boo)\/hlsmod\/([^/]+)(\/.*)$/i);
+    if (hlsmodMatch) {
+      url = `https://${hlsmodMatch[1]}${hlsmodMatch[2]}${passthroughQuery ? `?${passthroughQuery}` : ''}`;
+    }
     const incomingRange = String(request.headers.range || '');
     const isManifest = !segmentParam && shouldTreatAsManifestRequest(url, incomingRange);
     const incomingReferer = String(
@@ -383,9 +411,15 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     )
       .trim()
       .replace(/#.*$/, '');
-    const requestReferer = (
+    let requestReferer = (
       refererParam || incomingReferer || 'https://streameeeeee.site/'
     ).replace(/#.*$/, '');
+    if (
+      /^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) ||
+      /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url)
+    ) {
+      try { requestReferer = `${new URL(requestReferer).origin}/`; } catch (_) { }
+    }
 
     // Serve from Playwright-captured HLS manifest cache to avoid expired tokens.
     if (isManifest && !incomingRange) {
@@ -440,6 +474,16 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         const protocol = request.headers['x-forwarded-proto'] || request.protocol || 'https';
         const baseUrl = `${protocol}://${hostHeader}`;
         const content = rewriteHlsManifest(responseText, url, requestReferer, baseUrl);
+
+        // Some Megaplay tokens currently return an ad-only playlist. After
+        // removing those ad entries, fail it so the player can try a fallback
+        // source instead of retrying an empty 200 response forever.
+        const hasMediaUri = content
+          .split('\n')
+          .some((line) => line.trim() && !line.trim().startsWith('#'));
+        if (!hasMediaUri) {
+          return reply.code(502).send({ error: 'Upstream HLS manifest contains no media segments' });
+        }
 
         reply.header('Content-Type', 'application/vnd.apple.mpegurl');
         reply.header('Access-Control-Allow-Origin', '*');

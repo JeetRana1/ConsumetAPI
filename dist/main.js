@@ -223,6 +223,10 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       previousTag = "";
       return resolveAndProxy(trimmed, isSegment);
     }).join("\n");
+    output = output.replace(
+      /#EXTINF:[^\n]*(?:\n#[^\n]*)*\n[^\n]*(?:p1\.ipstatp\.com\/obj\/ad-site-i18n|p\d+-ad-sg\.ibyteimg\.com)[^\n]*/gi,
+      ""
+    );
     output = output.split("\n").filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line)).join("\n");
     return output;
   };
@@ -249,12 +253,21 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   const fetchHlsResource = async (url, isManifest, incomingRange, referer, cookieHeader) => {
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
-    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn ? [""] : [...(0, import_outboundProxy.getProxyCandidatesSync)(), ""];
+    const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\/[^/]+\/\d+\/ox\//i.test(url);
+    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.shiora\.(?:top|site)\//i.test(url);
+    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn ? [""] : [...(0, import_outboundProxy.getProxyCandidatesSync)(), ""];
     let lastError = null;
     const effectiveReferer = (() => {
       const safeReferer = String(referer || "").trim();
       if (!safeReferer)
         return safeReferer;
+      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url)) {
+        try {
+          return `${new URL(safeReferer).origin}/`;
+        } catch {
+          return safeReferer;
+        }
+      }
       const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
       if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
         return "";
@@ -314,13 +327,23 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const cookieParam = String(new URLSearchParams(rawQuery).get("cookie") || "").trim();
     const segmentParam = String(new URLSearchParams(rawQuery).get("segment") || "").trim() === "1";
     const passthroughQuery = rawQuery.split("&").filter((part) => part && !/^(referer|segment|cookie)=/i.test(part)).join("&");
-    const url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ""}`;
+    let url = `https://${wildcardPath}${passthroughQuery ? `?${passthroughQuery}` : ""}`;
+    const hlsmodMatch = url.match(/^https:\/\/hubstream\.(?:art|pw|cc|ink|foo|boo)\/hlsmod\/([^/]+)(\/.*)$/i);
+    if (hlsmodMatch) {
+      url = `https://${hlsmodMatch[1]}${hlsmodMatch[2]}${passthroughQuery ? `?${passthroughQuery}` : ""}`;
+    }
     const incomingRange = String(request.headers.range || "");
     const isManifest = !segmentParam && shouldTreatAsManifestRequest(url, incomingRange);
     const incomingReferer = String(
       request.headers.referer || request.headers.referrer || ""
     ).trim().replace(/#.*$/, "");
-    const requestReferer = (refererParam || incomingReferer || "https://streameeeeee.site/").replace(/#.*$/, "");
+    let requestReferer = (refererParam || incomingReferer || "https://streameeeeee.site/").replace(/#.*$/, "");
+    if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url)) {
+      try {
+        requestReferer = `${new URL(requestReferer).origin}/`;
+      } catch (_) {
+      }
+    }
     if (isManifest && !incomingRange) {
       try {
         const { getCachedHlsManifest } = await import("./utils/browserRuntimeExtractor");
@@ -357,6 +380,10 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         const protocol = request.headers["x-forwarded-proto"] || request.protocol || "https";
         const baseUrl = `${protocol}://${hostHeader}`;
         const content = rewriteHlsManifest(responseText, url, requestReferer, baseUrl);
+        const hasMediaUri = content.split("\n").some((line) => line.trim() && !line.trim().startsWith("#"));
+        if (!hasMediaUri) {
+          return reply.code(502).send({ error: "Upstream HLS manifest contains no media segments" });
+        }
         reply.header("Content-Type", "application/vnd.apple.mpegurl");
         reply.header("Access-Control-Allow-Origin", "*");
         reply.header(

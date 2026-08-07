@@ -435,7 +435,10 @@ const routes = async (fastify, options) => {
       const looksLikeMediaSegment = /\.(ts|m4s|m4v|mp4|aac|mp3)(\?|$)/i.test(pathLower) || queryLower.includes(".m4s") || queryLower.includes(".ts");
       const isSwiftstreamOppaiMedia = /(^|\.)swiftstream\.top$/i.test(target.hostname) && /\/proxy\/oppai\//i.test(target.pathname);
       const upstreamRange = incomingRange || (isSwiftstreamOppaiMedia ? "bytes=0-" : "");
-      const refererForRequest = referer || `${target.protocol}//${target.host}/`;
+      let refererForRequest = referer || `${target.protocol}//${target.host}/`;
+      if (/(?:(?:shiora|mikora)\.(?:top|site|club|net)|lostproject\.club)$/i.test(target.hostname) && /anikoto\.cz/i.test(refererForRequest)) {
+        refererForRequest = "https://megaplay.buzz/";
+      }
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? "arraybuffer" : "stream",
         timeout: looksLikeM3u8 ? 2e4 : looksLikeMediaSegment || isSwiftstreamOppaiMedia ? 25e3 : 3e4,
@@ -892,6 +895,7 @@ const routes = async (fastify, options) => {
     const refererCandidates = (() => {
       const values = [
         refererForRequest,
+        `${target.protocol}//${target.host}/`,
         isAnimeSaltSubtitleHost ? "https://animesalt.ac/" : "",
         isAnimeSaltSubtitleHost ? `${target.protocol}//${target.host}/` : ""
       ].filter(Boolean);

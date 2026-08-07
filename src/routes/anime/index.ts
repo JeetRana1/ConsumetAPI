@@ -2,11 +2,11 @@ import { FastifyRequest, FastifyReply, FastifyInstance, RegisterOptions } from '
 import { PROVIDERS_LIST } from '@consumet/extensions';
 
 import animesalt from './animesalt';
-import animekai from './animekai';
+import anikoto from './anikoto';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(animesalt, { prefix: '/animesalt' });
-  await fastify.register(animekai, { prefix: '/animekai' });
+  await fastify.register(anikoto, { prefix: '/anikoto' });
 
   fastify.get('/', async (request: any, reply: any) => {
     reply.status(200).send('Welcome to Consumet Anime 🗾');

@@ -413,7 +413,15 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         /\/proxy\/oppai\//i.test(target.pathname);
       const upstreamRange = incomingRange || (isSwiftstreamOppaiMedia ? 'bytes=0-' : '');
 
-      const refererForRequest = referer || `${target.protocol}//${target.host}/`;
+       let refererForRequest = referer || `${target.protocol}//${target.host}/`;
+       // AniKoto subtitle/CDN hosts reject the AniKoto site referer and accept
+       // the Megaplay origin used by the extracted source.
+       if (
+         /(?:(?:shiora|mikora)\.(?:top|site|club|net)|lostproject\.club)$/i.test(target.hostname) &&
+         /anikoto\.cz/i.test(refererForRequest)
+       ) {
+         refererForRequest = 'https://megaplay.buzz/';
+       }
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
         timeout: looksLikeM3u8
@@ -979,6 +987,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
     const refererCandidates = (() => {
       const values = [
         refererForRequest,
+        `${target.protocol}//${target.host}/`,
         isAnimeSaltSubtitleHost ? 'https://animesalt.ac/' : '',
         isAnimeSaltSubtitleHost ? `${target.protocol}//${target.host}/` : '',
       ].filter(Boolean);
