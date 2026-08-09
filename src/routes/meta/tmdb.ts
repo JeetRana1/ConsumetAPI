@@ -2213,31 +2213,35 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           const candidates = extractHdstreamMovieCandidateIds(infoPayload).slice(0, 3);
 
           if (candidates.length) {
-            let fastest: any = null;
-            for (const candidateId of candidates) {
-              const payload = await withSoftTimeout(
-                HdStream4uProvider.fetchSources(
-                  candidateId,
-                  'hdstream4u',
-                  false,
-                  { mediaId: String(id) },
-                ),
-                30000,
-              );
-              const sources = Array.isArray(payload?.sources) ? payload.sources : [];
-              if (sources.length) {
-                fastest = payload;
-                break;
-              }
-            }
+            // Race all candidate extractions in parallel and take the first
+            // one that yields playable sources. Previously this looped
+            // sequentially with a 30s timeout per candidate (up to ~90s when
+            // the first candidates were stale); parallel racing makes the
+            // happy path return in a couple of seconds.
+            const raced = await Promise.any(
+              candidates.map(async (candidateId: string) => {
+                const payload = await withSoftTimeout(
+                  HdStream4uProvider.fetchSources(
+                    candidateId,
+                    'hdstream4u',
+                    false,
+                    { mediaId: String(id) },
+                  ),
+                  30000,
+                );
+                const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+                if (!sources.length) throw new Error('no sources');
+                return payload;
+              }),
+            ).catch(() => null);
 
-            if (fastest) {
+            if (raced) {
               if (cacheKey && redis) {
                 (redis as any)
-                  .setex(cacheKey, REDIS_TTL, JSON.stringify(fastest))
+                  .setex(cacheKey, REDIS_TTL, JSON.stringify(raced))
                   .catch(() => {});
               }
-              return reply.status(200).send(fastest);
+              return reply.status(200).send(raced);
             }
           }
         }

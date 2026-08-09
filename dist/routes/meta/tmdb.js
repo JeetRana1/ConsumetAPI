@@ -1801,29 +1801,29 @@ const routes = async (fastify, options) => {
           const infoPayload = safeJsonParse(infoRes.body || "{}");
           const candidates = extractHdstreamMovieCandidateIds(infoPayload).slice(0, 3);
           if (candidates.length) {
-            let fastest = null;
-            for (const candidateId of candidates) {
-              const payload = await withSoftTimeout(
-                import_hdstream4uProvider.HdStream4uProvider.fetchSources(
-                  candidateId,
-                  "hdstream4u",
-                  false,
-                  { mediaId: String(id) }
-                ),
-                3e4
-              );
-              const sources = Array.isArray(payload?.sources) ? payload.sources : [];
-              if (sources.length) {
-                fastest = payload;
-                break;
-              }
-            }
-            if (fastest) {
+            const raced = await Promise.any(
+              candidates.map(async (candidateId) => {
+                const payload = await withSoftTimeout(
+                  import_hdstream4uProvider.HdStream4uProvider.fetchSources(
+                    candidateId,
+                    "hdstream4u",
+                    false,
+                    { mediaId: String(id) }
+                  ),
+                  3e4
+                );
+                const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+                if (!sources.length)
+                  throw new Error("no sources");
+                return payload;
+              })
+            ).catch(() => null);
+            if (raced) {
               if (cacheKey && import_main.redis) {
-                import_main.redis.setex(cacheKey, import_main.REDIS_TTL, JSON.stringify(fastest)).catch(() => {
+                import_main.redis.setex(cacheKey, import_main.REDIS_TTL, JSON.stringify(raced)).catch(() => {
                 });
               }
-              return reply.status(200).send(fastest);
+              return reply.status(200).send(raced);
             }
           }
         }

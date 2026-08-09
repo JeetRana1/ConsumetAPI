@@ -214,15 +214,16 @@ const setCachedSubtitleText = (url, value) => {
 };
 const parseUrlsFromText = (text) => {
   const found = /* @__PURE__ */ new Set();
+  const input = String(text || "").replace(/\\\//g, "/");
   let match;
   DIRECT_MEDIA_REGEX.lastIndex = 0;
-  while ((match = DIRECT_MEDIA_REGEX.exec(text)) !== null) {
+  while ((match = DIRECT_MEDIA_REGEX.exec(input)) !== null) {
     const url = normalizeUrl(match[1]);
     if (url && isDirectMediaUrl(url))
       found.add(url);
   }
   HLS_PROXY_REGEX.lastIndex = 0;
-  while ((match = HLS_PROXY_REGEX.exec(text)) !== null) {
+  while ((match = HLS_PROXY_REGEX.exec(input)) !== null) {
     const url = normalizeUrl(match[1]);
     if (url && isDirectMediaUrl(url))
       found.add(url);
@@ -413,6 +414,8 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12e3
   const wantsSubtitles = /[?&]sub\.info=/i.test(normalizedEmbed);
   const preferredMirror = String(options.preferredMirror || "").trim();
   let activeMirrorLabel = "";
+  const MAX_HUBSTREAM_ATTEMPTS = isHubstreamEmbed ? 3 : 1;
+  const attemptTimeout = Math.max(4500, Math.floor(timeout / MAX_HUBSTREAM_ATTEMPTS));
   const addDiscovered = (url, label) => {
     const normalized = normalizeUrl(url);
     if (!normalized || !isDirectMediaUrl(normalized))
@@ -456,45 +459,42 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12e3
     for (const url of extractSubtitleInfoUrls(String(value || "")))
       subtitleInfoUrls.add(url);
   };
-  try {
-    const playwrightProxy = getPlaywrightProxy();
-    browser = await chromium.launch({
-      headless: true,
-      ...playwrightProxy ? { proxy: playwrightProxy } : {},
-      args: ["--no-sandbox", "--disable-dev-shm-usage"]
-    });
-    const context = await browser.newContext({
-      extraHTTPHeaders: referer ? { Referer: referer } : void 0,
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    });
-    const page = await context.newPage();
-    await page.route("**/*", (route) => {
-      const type = route.request().resourceType?.() || "";
-      const url = route.request().url() || "";
-      if (["image", "font", "stylesheet"].includes(type) || url.includes("google-analytics") || url.includes("googletagmanager") || url.includes("doubleclick")) {
-        route.abort().catch(() => {
-        });
-      } else {
-        route.continue().catch(() => {
-        });
-      }
-    });
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => false });
-      Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
-      Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
-      Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
-      try {
-        Object.defineProperty(navigator, "userAgentData", {
-          get: () => ({
-            brands: [
-              { brand: "Chromium", version: "131" },
-              { brand: "Google Chrome", version: "131" },
-              { brand: "Not/A)Brand", version: "99" }
-            ],
-            mobile: false,
-            platform: "Windows",
-            getHighEntropyValues: async () => ({
+  for (let attempt = 0; attempt < MAX_HUBSTREAM_ATTEMPTS; attempt++) {
+    try {
+      const playwrightProxy = getPlaywrightProxy();
+      browser = await chromium.launch({
+        headless: true,
+        ...playwrightProxy ? { proxy: playwrightProxy } : {},
+        args: [
+          "--no-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-blink-features=AutomationControlled"
+        ]
+      });
+      const context = await browser.newContext({
+        extraHTTPHeaders: referer ? { Referer: referer } : void 0,
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+      });
+      const page = await context.newPage();
+      await page.route("**/*", (route) => {
+        const type = route.request().resourceType?.() || "";
+        const url = route.request().url() || "";
+        if (["image", "font", "stylesheet"].includes(type) || url.includes("google-analytics") || url.includes("googletagmanager") || url.includes("doubleclick")) {
+          route.abort().catch(() => {
+          });
+        } else {
+          route.continue().catch(() => {
+          });
+        }
+      });
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, "webdriver", { get: () => false });
+        Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+        Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
+        try {
+          Object.defineProperty(navigator, "userAgentData", {
+            get: () => ({
               brands: [
                 { brand: "Chromium", version: "131" },
                 { brand: "Google Chrome", version: "131" },
@@ -502,380 +502,397 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12e3
               ],
               mobile: false,
               platform: "Windows",
-              architecture: "x86",
-              bitness: "64",
-              model: "",
-              platformVersion: "10.0.0",
-              uaFullVersion: "131.0.0.0"
+              getHighEntropyValues: async () => ({
+                brands: [
+                  { brand: "Chromium", version: "131" },
+                  { brand: "Google Chrome", version: "131" },
+                  { brand: "Not/A)Brand", version: "99" }
+                ],
+                mobile: false,
+                platform: "Windows",
+                architecture: "x86",
+                bitness: "64",
+                model: "",
+                platformVersion: "10.0.0",
+                uaFullVersion: "131.0.0.0"
+              })
             })
-          })
+          });
+        } catch {
+        }
+        window.chrome = { runtime: {} };
+        const OriginalTextDecoder = window.TextDecoder;
+        const originalDecode = OriginalTextDecoder.prototype.decode;
+        window.__playbackPayloads = [];
+        OriginalTextDecoder.prototype.decode = function(...args) {
+          const out = originalDecode.apply(this, args);
+          try {
+            if (typeof out === "string" && (out.includes(".m3u8") || out.includes("master.m3u8") || out.includes("hlsVideo") || out.includes("cfNative") || out.includes("swarmId") || out.includes("torrentTrackers") || out.includes("subtitle") || out.includes("tracks"))) {
+              const store = window.__playbackPayloads;
+              if (Array.isArray(store) && store.length < 40)
+                store.push(out);
+            }
+          } catch {
+          }
+          return out;
+        };
+      });
+      if (PLAYWRIGHT_DEBUG) {
+        page.on("console", (message) => {
+          const text = String(message.text?.() || "");
+          if (text)
+            console.log(
+              `[Playwright console:${message.type?.() || "log"}] ${normalizedEmbed} ${text.slice(0, 500)}`
+            );
         });
-      } catch {
+        page.on("requestfailed", (request) => {
+          const failure = request.failure?.();
+          console.log(
+            `[Playwright request failed] ${request.url()} ${failure?.errorText || ""}`.trim()
+          );
+        });
+        page.on("response", (response) => {
+          const status = Number(response.status?.() || 0);
+          if (status >= 400)
+            console.log(`[Playwright response ${status}] ${response.url()}`);
+        });
       }
-      window.chrome = { runtime: {} };
-      const OriginalTextDecoder = window.TextDecoder;
-      const originalDecode = OriginalTextDecoder.prototype.decode;
-      window.__playbackPayloads = [];
-      OriginalTextDecoder.prototype.decode = function(...args) {
-        const out = originalDecode.apply(this, args);
+      page.on("request", (request) => {
+        const url = request.url();
+        addDiscovered(url);
+        addSubtitleUrl(url);
+        collectSubtitleInfoUrls(url);
+      });
+      page.on("response", async (response) => {
         try {
-          if (typeof out === "string" && (out.includes("master.m3u8") || out.includes("subtitle") || out.includes("tracks"))) {
-            const store = window.__playbackPayloads;
-            if (Array.isArray(store) && store.length < 20)
-              store.push(out);
+          const u = normalizeUrl(response.url());
+          addDiscovered(u);
+          addSubtitleUrl(u);
+          collectSubtitleInfoUrls(u);
+          const headers = response.headers() || {};
+          const contentType = String(headers["content-type"] || "").toLowerCase();
+          const shouldReadBody = contentType.includes("json") || contentType.includes("javascript") || contentType.includes("text") || /\.(m3u8|vtt|srt|ass)(?:$|\?)/i.test(String(u || ""));
+          if (!shouldReadBody)
+            return;
+          const body = await response.text().catch(() => "");
+          for (const parsed of parseUrlsFromText(String(body || "")))
+            addDiscovered(parsed);
+          addSubtitles(parseSubtitlesFromText(String(body || "")));
+          try {
+            addSubtitles(parseSubtitlesFromValue(JSON.parse(String(body || "")), u || normalizedEmbed));
+          } catch {
+          }
+          if (u && /\.(vtt|srt|ass)(\?|$)/i.test(u) && String(body || "").trim()) {
+            setCachedSubtitleText(u, String(body || ""));
+          }
+          if (u && /\.m3u8(?:$|\?)/i.test(u) && String(body || "").trim().startsWith("#EXTM3U")) {
+            hlsManifestCache.set(u, {
+              body: String(body || ""),
+              contentType,
+              expiresAt: Date.now() + HLS_MANIFEST_CACHE_MS
+            });
           }
         } catch {
         }
-        return out;
-      };
-    });
-    if (PLAYWRIGHT_DEBUG) {
-      page.on("console", (message) => {
-        const text = String(message.text?.() || "");
-        if (text)
-          console.log(
-            `[Playwright console:${message.type?.() || "log"}] ${normalizedEmbed} ${text.slice(0, 500)}`
-          );
       });
-      page.on("requestfailed", (request) => {
-        const failure = request.failure?.();
-        console.log(
-          `[Playwright request failed] ${request.url()} ${failure?.errorText || ""}`.trim()
-        );
-      });
-      page.on("response", (response) => {
-        const status = Number(response.status?.() || 0);
-        if (status >= 400)
-          console.log(`[Playwright response ${status}] ${response.url()}`);
-      });
-    }
-    page.on("request", (request) => {
-      const url = request.url();
-      addDiscovered(url);
-      addSubtitleUrl(url);
-      collectSubtitleInfoUrls(url);
-    });
-    page.on("response", async (response) => {
-      try {
-        const u = normalizeUrl(response.url());
-        addDiscovered(u);
-        addSubtitleUrl(u);
-        collectSubtitleInfoUrls(u);
-        const headers = response.headers() || {};
-        const contentType = String(headers["content-type"] || "").toLowerCase();
-        const shouldReadBody = contentType.includes("json") || contentType.includes("javascript") || contentType.includes("text") || /\.(m3u8|vtt|srt|ass)(?:$|\?)/i.test(String(u || ""));
-        if (!shouldReadBody)
-          return;
-        const body = await response.text().catch(() => "");
-        for (const parsed of parseUrlsFromText(String(body || "")))
-          addDiscovered(parsed);
-        addSubtitles(parseSubtitlesFromText(String(body || "")));
-        try {
-          addSubtitles(parseSubtitlesFromValue(JSON.parse(String(body || "")), u || normalizedEmbed));
-        } catch {
-        }
-        if (u && /\.(vtt|srt|ass)(\?|$)/i.test(u) && String(body || "").trim()) {
-          setCachedSubtitleText(u, String(body || ""));
-        }
-        if (u && /\.m3u8(?:$|\?)/i.test(u) && String(body || "").trim().startsWith("#EXTM3U")) {
-          hlsManifestCache.set(u, {
-            body: String(body || ""),
-            contentType,
-            expiresAt: Date.now() + HLS_MANIFEST_CACHE_MS
-          });
-        }
-      } catch {
-      }
-    });
-    await page.goto(normalizedEmbed, { waitUntil: "domcontentloaded", timeout });
-    const triggerPlayerActivity = async () => page.evaluate(() => {
-      const trigger = (el) => {
-        if (!el)
-          return;
-        try {
-          el.scrollIntoView({ block: "center", inline: "center" });
-        } catch {
-        }
-        try {
-          const clickHandler = el.onclick;
-          if (typeof clickHandler === "function") {
-            clickHandler.call(
-              el,
+      await page.goto(normalizedEmbed, { waitUntil: "domcontentloaded", timeout: attemptTimeout });
+      const triggerPlayerActivity = async () => page.evaluate(() => {
+        const trigger = (el) => {
+          if (!el)
+            return;
+          try {
+            el.scrollIntoView({ block: "center", inline: "center" });
+          } catch {
+          }
+          try {
+            const clickHandler = el.onclick;
+            if (typeof clickHandler === "function") {
+              clickHandler.call(
+                el,
+                new MouseEvent("click", {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window
+                })
+              );
+            }
+          } catch {
+          }
+          try {
+            el.dispatchEvent(
               new MouseEvent("click", {
                 bubbles: true,
                 cancelable: true,
                 view: window
               })
             );
+          } catch {
+          }
+          try {
+            el.click();
+          } catch {
+          }
+        };
+        trigger(document.querySelector("#player-button-container"));
+        trigger(document.querySelector("#player-button"));
+        trigger(document.querySelector("media-player"));
+        trigger(document.querySelector("[data-media-player]"));
+        const tpeadLinkEl = document.querySelector("#captchalink") || document.querySelector("#norobotlink") || document.querySelector("#ideoooolink");
+        const tpeadVideo = document.querySelector("video");
+        let tpeadLink = String(
+          tpeadLinkEl?.textContent || tpeadLinkEl?.innerHTML || ""
+        ).trim();
+        if (tpeadVideo && tpeadLink) {
+          if (tpeadLink.startsWith("//"))
+            tpeadLink = `https:${tpeadLink}`;
+          else if (tpeadLink.startsWith("/"))
+            tpeadLink = new URL(tpeadLink, location.href).toString();
+          if (!/[?&]stream=1(?:&|$)/i.test(tpeadLink)) {
+            tpeadLink += `${tpeadLink.includes("?") ? "&" : "?"}stream=1`;
+          }
+          try {
+            tpeadVideo.src = tpeadLink;
+            tpeadVideo.load();
+          } catch {
+          }
+        }
+        const clickables = Array.from(
+          document.querySelectorAll(
+            '#adv, .adblock, .rek, #player-button-container, #player-button, media-player, [data-media-player], button, [role="button"], .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'
+          )
+        );
+        for (const el of clickables) {
+          trigger(el);
+        }
+        const video = document.querySelector("video");
+        if (video) {
+          video.muted = true;
+          video.play().catch(() => void 0);
+        }
+      }).catch(() => void 0);
+      if (!isVidkingEmbed)
+        await triggerPlayerActivity();
+      if (isHubstreamEmbed)
+        await page.waitForTimeout(800).catch(() => void 0);
+      if (isHubstreamEmbed)
+        await triggerPlayerActivity();
+      if (isTpeadEmbed)
+        await page.waitForTimeout(600).catch(() => void 0);
+      if (isTpeadEmbed)
+        await triggerPlayerActivity();
+      if (isVidkingEmbed || isVideasyEmbed) {
+        const defaultMirrors = isVideasyEmbed ? ["Yoru", "Cypher", "Sage", "Breach", "Vyse", "Killjoy", "Fade", "Omen", "Raze"] : ["Hydrogen", "Lithium", "Helium", "Oxygen"];
+        const mirrors = preferredMirror ? [
+          ...defaultMirrors.filter(
+            (mirror) => mirror.toLowerCase() === preferredMirror.toLowerCase()
+          ),
+          ...defaultMirrors.filter(
+            (mirror) => mirror.toLowerCase() !== preferredMirror.toLowerCase()
+          )
+        ] : defaultMirrors;
+        for (const mirror of mirrors) {
+          activeMirrorLabel = mirror;
+          await page.evaluate((target) => {
+            const norm = (value) => value.replace(/\s+/g, " ").trim().toLowerCase();
+            const wanted = norm(target);
+            const candidates = Array.from(
+              document.querySelectorAll(
+                'button, [role="button"], [aria-label], [title], .server, .source, .server-item, .source-item, a, li, div'
+              )
+            );
+            const ranked = candidates.map((el) => {
+              const text2 = norm(
+                el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title") || ""
+              );
+              const rect = el.getBoundingClientRect();
+              return { el, text: text2, area: Math.max(1, rect.width * rect.height) };
+            }).filter(({ text: text2, area }) => {
+              if (!text2 || area <= 1)
+                return false;
+              if (text2 === wanted)
+                return true;
+              return text2.includes(wanted) && text2.length <= wanted.length + 24;
+            }).sort((a, b) => {
+              const exactDelta = Number(b.text === wanted) - Number(a.text === wanted);
+              if (exactDelta)
+                return exactDelta;
+              return a.text.length - b.text.length || a.area - b.area;
+            });
+            const hit = ranked[0]?.el;
+            if (!hit)
+              return false;
+            const text = norm(
+              hit.innerText || hit.textContent || hit.getAttribute("aria-label") || hit.getAttribute("title") || ""
+            );
+            if (!text.includes(wanted))
+              return false;
+            hit.scrollIntoView({ block: "center", inline: "center" });
+            hit.click();
+            return true;
+          }, mirror).catch(() => false);
+          await triggerPlayerActivity();
+          await page.waitForTimeout(isVideasyEmbed ? 2400 : 1600).catch(() => void 0);
+          if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
+            break;
+        }
+        activeMirrorLabel = "";
+      }
+      const startedAt = Date.now();
+      const finalWaitMs = isVideasyEmbed ? Math.min(7e3, Math.max(3500, attemptTimeout - 2e3)) : Math.min(4500, Math.max(1800, attemptTimeout - 2e3));
+      while (Date.now() - startedAt < finalWaitMs) {
+        if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
+          break;
+        if (isVideasyEmbed && Date.now() - startedAt > 1200)
+          await triggerPlayerActivity();
+        if (isHubstreamEmbed && Date.now() - startedAt > 900)
+          await triggerPlayerActivity();
+        await page.waitForTimeout(250);
+      }
+      try {
+        const cookies = await context.cookies().catch(() => []);
+        const sourceHosts = /* @__PURE__ */ new Set();
+        for (const candidate of [normalizedEmbed, ...discovered.keys()]) {
+          try {
+            sourceHosts.add(new URL(candidate).hostname.toLowerCase());
+          } catch {
+          }
+        }
+        const matchingCookies = cookies.filter((cookie) => {
+          const domain = String(cookie?.domain || "").replace(/^\./, "").toLowerCase();
+          if (!domain)
+            return false;
+          for (const host of sourceHosts) {
+            if (host === domain || host.endsWith(`.${domain}`) || domain.endsWith(`.${host}`))
+              return true;
+          }
+          return false;
+        });
+        cookieHeader = matchingCookies.map((cookie) => `${cookie.name}=${cookie.value}`).filter(Boolean).join("; ");
+      } catch {
+      }
+      const domTracks = await page.evaluate(
+        () => Array.from(document.querySelectorAll("track")).map((track) => ({
+          url: track.src || track.getAttribute("src") || "",
+          lang: track.getAttribute("label") || track.getAttribute("srclang") || "Unknown",
+          kind: track.getAttribute("kind") || void 0,
+          default: track.hasAttribute("default")
+        }))
+      ).catch(() => []);
+      addSubtitles(
+        domTracks.map((track) => ({
+          ...track,
+          url: absoluteUrl(track.url, normalizedEmbed) || ""
+        })).filter((track) => {
+          const trackUrl = String(track.url || "").replace(/#.*$/, "");
+          return /\.(vtt|srt|ass)(\?|$)/i.test(trackUrl) && !/\/thumbnail(?:s)?\.vtt/i.test(trackUrl);
+        })
+      );
+      const decodedPayloads = await page.evaluate(() => window.__playbackPayloads || []).catch(() => []);
+      for (const payload of decodedPayloads) {
+        for (const parsed of parseUrlsFromText(String(payload || "")))
+          addDiscovered(parsed);
+        try {
+          addSubtitles(parseSubtitlesFromValue(JSON.parse(String(payload || "")), normalizedEmbed));
+        } catch {
+          addSubtitles(parseSubtitlesFromText(String(payload || "")));
+        }
+      }
+      for (const subtitleInfoUrl of [...subtitleInfoUrls]) {
+        if (subtitles.size > 0)
+          break;
+        try {
+          const response = await context.request.get(subtitleInfoUrl, {
+            headers: {
+              Referer: normalizedEmbed,
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            },
+            timeout: Math.min(6e3, Math.max(2500, attemptTimeout - (Date.now() - startedAt)))
+          });
+          if (!response.ok())
+            continue;
+          const body = await response.text();
+          addSubtitles(parseSubtitlesFromText(body));
+          if (/\.(vtt|srt|ass)(\?|$)/i.test(subtitleInfoUrl) && body.trim()) {
+            setCachedSubtitleText(subtitleInfoUrl, body);
           }
         } catch {
         }
-        try {
-          el.dispatchEvent(
-            new MouseEvent("click", {
-              bubbles: true,
-              cancelable: true,
-              view: window
-            })
-          );
-        } catch {
-        }
-        try {
-          el.click();
-        } catch {
-        }
-      };
-      trigger(document.querySelector("#player-button-container"));
-      trigger(document.querySelector("#player-button"));
-      trigger(document.querySelector("media-player"));
-      trigger(document.querySelector("[data-media-player]"));
-      const tpeadLinkEl = document.querySelector("#captchalink") || document.querySelector("#norobotlink") || document.querySelector("#ideoooolink");
-      const tpeadVideo = document.querySelector("video");
-      let tpeadLink = String(
-        tpeadLinkEl?.textContent || tpeadLinkEl?.innerHTML || ""
-      ).trim();
-      if (tpeadVideo && tpeadLink) {
-        if (tpeadLink.startsWith("//"))
-          tpeadLink = `https:${tpeadLink}`;
-        else if (tpeadLink.startsWith("/"))
-          tpeadLink = new URL(tpeadLink, location.href).toString();
-        if (!/[?&]stream=1(?:&|$)/i.test(tpeadLink)) {
-          tpeadLink += `${tpeadLink.includes("?") ? "&" : "?"}stream=1`;
-        }
-        try {
-          tpeadVideo.src = tpeadLink;
-          tpeadVideo.load();
-        } catch {
-        }
       }
-      const clickables = Array.from(
-        document.querySelectorAll(
-          '#adv, .adblock, .rek, #player-button-container, #player-button, media-player, [data-media-player], button, [role="button"], .jw-icon-playback, .jw-display-icon-container, .play, .vjs-big-play-button, .vjs-play-control, video'
-        )
-      );
-      for (const el of clickables) {
-        trigger(el);
-      }
-      const video = document.querySelector("video");
-      if (video) {
-        video.muted = true;
-        video.play().catch(() => void 0);
-      }
-    }).catch(() => void 0);
-    if (!isVidkingEmbed)
-      await triggerPlayerActivity();
-    if (isHubstreamEmbed)
-      await page.waitForTimeout(800).catch(() => void 0);
-    if (isHubstreamEmbed)
-      await triggerPlayerActivity();
-    if (isTpeadEmbed)
-      await page.waitForTimeout(600).catch(() => void 0);
-    if (isTpeadEmbed)
-      await triggerPlayerActivity();
-    if (isVidkingEmbed || isVideasyEmbed) {
-      const defaultMirrors = isVideasyEmbed ? ["Yoru", "Cypher", "Sage", "Breach", "Vyse", "Killjoy", "Fade", "Omen", "Raze"] : ["Hydrogen", "Lithium", "Helium", "Oxygen"];
-      const mirrors = preferredMirror ? [
-        ...defaultMirrors.filter(
-          (mirror) => mirror.toLowerCase() === preferredMirror.toLowerCase()
-        ),
-        ...defaultMirrors.filter(
-          (mirror) => mirror.toLowerCase() !== preferredMirror.toLowerCase()
-        )
-      ] : defaultMirrors;
-      for (const mirror of mirrors) {
-        activeMirrorLabel = mirror;
-        await page.evaluate((target) => {
-          const norm = (value) => value.replace(/\s+/g, " ").trim().toLowerCase();
-          const wanted = norm(target);
-          const candidates = Array.from(
-            document.querySelectorAll(
-              'button, [role="button"], [aria-label], [title], .server, .source, .server-item, .source-item, a, li, div'
-            )
-          );
-          const ranked = candidates.map((el) => {
-            const text2 = norm(
-              el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title") || ""
-            );
-            const rect = el.getBoundingClientRect();
-            return { el, text: text2, area: Math.max(1, rect.width * rect.height) };
-          }).filter(({ text: text2, area }) => {
-            if (!text2 || area <= 1)
-              return false;
-            if (text2 === wanted)
-              return true;
-            return text2.includes(wanted) && text2.length <= wanted.length + 24;
-          }).sort((a, b) => {
-            const exactDelta = Number(b.text === wanted) - Number(a.text === wanted);
-            if (exactDelta)
-              return exactDelta;
-            return a.text.length - b.text.length || a.area - b.area;
-          });
-          const hit = ranked[0]?.el;
-          if (!hit)
-            return false;
-          const text = norm(
-            hit.innerText || hit.textContent || hit.getAttribute("aria-label") || hit.getAttribute("title") || ""
-          );
-          if (!text.includes(wanted))
-            return false;
-          hit.scrollIntoView({ block: "center", inline: "center" });
-          hit.click();
-          return true;
-        }, mirror).catch(() => false);
-        await triggerPlayerActivity();
-        await page.waitForTimeout(isVideasyEmbed ? 2400 : 1600).catch(() => void 0);
-        if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
+      for (const subtitleInfoUrl of [...subtitleInfoUrls]) {
+        if (subtitles.size > 0)
           break;
-      }
-      activeMirrorLabel = "";
-    }
-    const startedAt = Date.now();
-    const finalWaitMs = isVideasyEmbed ? Math.min(7e3, Math.max(3500, timeout - 2e3)) : Math.min(4500, Math.max(1800, timeout - 2e3));
-    while (Date.now() - startedAt < finalWaitMs) {
-      if (!isVideasyEmbed && discovered.size > 0 && (!wantsSubtitles || subtitles.size > 0))
-        break;
-      if (isVideasyEmbed && Date.now() - startedAt > 1200)
-        await triggerPlayerActivity();
-      if (isHubstreamEmbed && Date.now() - startedAt > 900)
-        await triggerPlayerActivity();
-      await page.waitForTimeout(250);
-    }
-    try {
-      const cookies = await context.cookies().catch(() => []);
-      const sourceHosts = /* @__PURE__ */ new Set();
-      for (const candidate of [normalizedEmbed, ...discovered.keys()]) {
+        let subtitlePage;
         try {
-          sourceHosts.add(new URL(candidate).hostname.toLowerCase());
+          subtitlePage = await context.newPage();
+          await subtitlePage.goto(subtitleInfoUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: Math.min(9e3, Math.max(4e3, attemptTimeout - (Date.now() - startedAt)))
+          });
+          await subtitlePage.waitForTimeout(1500).catch(() => void 0);
+          const body = await subtitlePage.evaluate(
+            () => document.body?.innerText || document.documentElement?.textContent || ""
+          );
+          addSubtitles(parseSubtitlesFromText(String(body || "")));
+          if (/\.(vtt|srt|ass)(\?|$)/i.test(subtitleInfoUrl) && String(body || "").trim()) {
+            setCachedSubtitleText(subtitleInfoUrl, String(body || ""));
+          }
+        } catch {
+        } finally {
+          if (subtitlePage)
+            await subtitlePage.close().catch(() => void 0);
+        }
+      }
+      const hubstreamM3uUrls = [...discovered.keys()].filter(
+        (u) => /hubstream\.(?:art|pw|cc|ink|foo|boo)/i.test(u) && /\.m3u8(?:\?|$)/i.test(u)
+      );
+      for (const m3u8Url of hubstreamM3uUrls) {
+        if (hlsManifestCache.has(m3u8Url))
+          continue;
+        try {
+          const body = await page.evaluate(
+            async (url) => {
+              try {
+                const r = await fetch(url, {
+                  credentials: "include",
+                  headers: { Referer: document.location.href }
+                });
+                if (!r.ok)
+                  return null;
+                return await r.text();
+              } catch {
+                return null;
+              }
+            },
+            m3u8Url
+          ).catch(() => null);
+          if (body && String(body).trim().startsWith("#EXTM3U")) {
+            hlsManifestCache.set(m3u8Url, {
+              body: String(body),
+              contentType: "application/vnd.apple.mpegurl",
+              expiresAt: Date.now() + HLS_MANIFEST_CACHE_MS
+            });
+          }
         } catch {
         }
       }
-      const matchingCookies = cookies.filter((cookie) => {
-        const domain = String(cookie?.domain || "").replace(/^\./, "").toLowerCase();
-        if (!domain)
-          return false;
-        for (const host of sourceHosts) {
-          if (host === domain || host.endsWith(`.${domain}`) || domain.endsWith(`.${host}`))
-            return true;
+      await context.close();
+    } catch (err) {
+      console.error(`[Playwright extractor failed] ${normalizedEmbed}`, err);
+    } finally {
+      if (browser) {
+        try {
+          await browser.close();
+        } catch {
         }
-        return false;
-      });
-      cookieHeader = matchingCookies.map((cookie) => `${cookie.name}=${cookie.value}`).filter(Boolean).join("; ");
-    } catch {
-    }
-    const domTracks = await page.evaluate(
-      () => Array.from(document.querySelectorAll("track")).map((track) => ({
-        url: track.src || track.getAttribute("src") || "",
-        lang: track.getAttribute("label") || track.getAttribute("srclang") || "Unknown",
-        kind: track.getAttribute("kind") || void 0,
-        default: track.hasAttribute("default")
-      }))
-    ).catch(() => []);
-    addSubtitles(
-      domTracks.map((track) => ({
-        ...track,
-        url: absoluteUrl(track.url, normalizedEmbed) || ""
-      })).filter((track) => {
-        const trackUrl = String(track.url || "").replace(/#.*$/, "");
-        return /\.(vtt|srt|ass)(\?|$)/i.test(trackUrl) && !/\/thumbnail(?:s)?\.vtt/i.test(trackUrl);
-      })
-    );
-    const decodedPayloads = await page.evaluate(() => window.__playbackPayloads || []).catch(() => []);
-    for (const payload of decodedPayloads) {
-      for (const parsed of parseUrlsFromText(String(payload || "")))
-        addDiscovered(parsed);
-      try {
-        addSubtitles(parseSubtitlesFromValue(JSON.parse(String(payload || "")), normalizedEmbed));
-      } catch {
-        addSubtitles(parseSubtitlesFromText(String(payload || "")));
+        browser = void 0;
       }
     }
-    for (const subtitleInfoUrl of [...subtitleInfoUrls]) {
-      if (subtitles.size > 0)
-        break;
-      try {
-        const response = await context.request.get(subtitleInfoUrl, {
-          headers: {
-            Referer: normalizedEmbed,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-          },
-          timeout: Math.min(6e3, Math.max(2500, timeout - (Date.now() - startedAt)))
-        });
-        if (!response.ok())
-          continue;
-        const body = await response.text();
-        addSubtitles(parseSubtitlesFromText(body));
-        if (/\.(vtt|srt|ass)(\?|$)/i.test(subtitleInfoUrl) && body.trim()) {
-          setCachedSubtitleText(subtitleInfoUrl, body);
-        }
-      } catch {
-      }
-    }
-    for (const subtitleInfoUrl of [...subtitleInfoUrls]) {
-      if (subtitles.size > 0)
-        break;
-      let subtitlePage;
-      try {
-        subtitlePage = await context.newPage();
-        await subtitlePage.goto(subtitleInfoUrl, {
-          waitUntil: "domcontentloaded",
-          timeout: Math.min(9e3, Math.max(4e3, timeout - (Date.now() - startedAt)))
-        });
-        await subtitlePage.waitForTimeout(1500).catch(() => void 0);
-        const body = await subtitlePage.evaluate(
-          () => document.body?.innerText || document.documentElement?.textContent || ""
-        );
-        addSubtitles(parseSubtitlesFromText(String(body || "")));
-        if (/\.(vtt|srt|ass)(\?|$)/i.test(subtitleInfoUrl) && String(body || "").trim()) {
-          setCachedSubtitleText(subtitleInfoUrl, String(body || ""));
-        }
-      } catch {
-      } finally {
-        if (subtitlePage)
-          await subtitlePage.close().catch(() => void 0);
-      }
-    }
-    const hubstreamM3uUrls = [...discovered.keys()].filter(
-      (u) => /hubstream\.(?:art|pw|cc|ink|foo|boo)/i.test(u) && /\.m3u8(?:\?|$)/i.test(u)
-    );
-    for (const m3u8Url of hubstreamM3uUrls) {
-      if (hlsManifestCache.has(m3u8Url))
-        continue;
-      try {
-        const body = await page.evaluate(
-          async (url) => {
-            try {
-              const r = await fetch(url, {
-                credentials: "include",
-                headers: { Referer: document.location.href }
-              });
-              if (!r.ok)
-                return null;
-              return await r.text();
-            } catch {
-              return null;
-            }
-          },
-          m3u8Url
-        ).catch(() => null);
-        if (body && String(body).trim().startsWith("#EXTM3U")) {
-          hlsManifestCache.set(m3u8Url, {
-            body: String(body),
-            contentType: "application/vnd.apple.mpegurl",
-            expiresAt: Date.now() + HLS_MANIFEST_CACHE_MS
-          });
-        }
-      } catch {
-      }
-    }
-    await context.close();
-  } catch (err) {
-    console.error(`[Playwright extractor failed] ${normalizedEmbed}`, err);
-  } finally {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {
-      }
+    if (discovered.size > 0 || !isHubstreamEmbed)
+      break;
+    if (attempt + 1 < MAX_HUBSTREAM_ATTEMPTS) {
+      console.log(
+        `[Playwright] hubstream retry ${attempt + 1}/${MAX_HUBSTREAM_ATTEMPTS} for ${normalizedEmbed}`
+      );
     }
   }
   const sourceEntries = dropDuplicateHlsVariants([...discovered.keys()]).filter((u) => isDirectMediaUrl(u)).sort((a, b) => {

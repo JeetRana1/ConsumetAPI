@@ -185,15 +185,19 @@ const setCachedSubtitleText = (url: string, value: string) => {
 
 const parseUrlsFromText = (text: string): string[] => {
   const found = new Set<string>();
+  // Decrypted payloads (e.g. hubstream.art) are JSON text with backslash-escaped
+  // slashes ("https:\/\/host\/..."). Unescape before regex matching so URL
+  // patterns can see the slashes.
+  const input = String(text || '').replace(/\\\//g, '/');
   let match: RegExpExecArray | null;
   DIRECT_MEDIA_REGEX.lastIndex = 0;
-  while ((match = DIRECT_MEDIA_REGEX.exec(text)) !== null) {
+  while ((match = DIRECT_MEDIA_REGEX.exec(input)) !== null) {
     const url = normalizeUrl(match[1]);
     if (url && isDirectMediaUrl(url)) found.add(url);
   }
 
   HLS_PROXY_REGEX.lastIndex = 0;
-  while ((match = HLS_PROXY_REGEX.exec(text)) !== null) {
+  while ((match = HLS_PROXY_REGEX.exec(input)) !== null) {
     const url = normalizeUrl(match[1]);
     if (url && isDirectMediaUrl(url)) found.add(url);
   }
@@ -417,6 +421,11 @@ export const extractPlaybackWithPlaywright = async (
   const preferredMirror = String(options.preferredMirror || '').trim();
   let activeMirrorLabel = '';
 
+  // hubstream.art rotates between config variants (ads-only vs real payload) and
+  // sometimes delays serving the real payload, so retry with fresh browsers.
+  const MAX_HUBSTREAM_ATTEMPTS = isHubstreamEmbed ? 3 : 1;
+  const attemptTimeout = Math.max(4500, Math.floor(timeout / MAX_HUBSTREAM_ATTEMPTS));
+
   const addDiscovered = (url?: string, label?: string) => {
     const normalized = normalizeUrl(url);
     if (!normalized || !isDirectMediaUrl(normalized)) return;
@@ -458,12 +467,17 @@ export const extractPlaybackWithPlaywright = async (
       subtitleInfoUrls.add(url);
   };
 
+  for (let attempt = 0; attempt < MAX_HUBSTREAM_ATTEMPTS; attempt++) {
   try {
     const playwrightProxy = getPlaywrightProxy();
     browser = await chromium.launch({
       headless: true,
       ...(playwrightProxy ? { proxy: playwrightProxy } : {}),
-      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+      ],
     });
     const context = await browser.newContext({
       extraHTTPHeaders: referer ? { Referer: referer } : undefined,
@@ -524,10 +538,17 @@ export const extractPlaybackWithPlaywright = async (
         try {
           if (
             typeof out === 'string' &&
-            (out.includes('master.m3u8') || out.includes('subtitle') || out.includes('tracks'))
+            (out.includes('.m3u8') ||
+              out.includes('master.m3u8') ||
+              out.includes('hlsVideo') ||
+              out.includes('cfNative') ||
+              out.includes('swarmId') ||
+              out.includes('torrentTrackers') ||
+              out.includes('subtitle') ||
+              out.includes('tracks'))
           ) {
             const store = (window as any).__playbackPayloads;
-            if (Array.isArray(store) && store.length < 20) store.push(out);
+            if (Array.isArray(store) && store.length < 40) store.push(out);
           }
         } catch {
           // ignore hook failures
@@ -604,7 +625,7 @@ export const extractPlaybackWithPlaywright = async (
       }
     });
 
-    await page.goto(normalizedEmbed, { waitUntil: 'domcontentloaded', timeout });
+    await page.goto(normalizedEmbed, { waitUntil: 'domcontentloaded', timeout: attemptTimeout });
 
     // Trigger player/network activity in common embed pages.
     const triggerPlayerActivity = async () =>
@@ -777,8 +798,8 @@ export const extractPlaybackWithPlaywright = async (
 
     const startedAt = Date.now();
     const finalWaitMs = isVideasyEmbed
-      ? Math.min(7000, Math.max(3500, timeout - 2000))
-      : Math.min(4500, Math.max(1800, timeout - 2000));
+      ? Math.min(7000, Math.max(3500, attemptTimeout - 2000))
+      : Math.min(4500, Math.max(1800, attemptTimeout - 2000));
     while (Date.now() - startedAt < finalWaitMs) {
       if (
         !isVideasyEmbed &&
@@ -866,7 +887,7 @@ export const extractPlaybackWithPlaywright = async (
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
           },
-          timeout: Math.min(6000, Math.max(2500, timeout - (Date.now() - startedAt))),
+          timeout: Math.min(6000, Math.max(2500, attemptTimeout - (Date.now() - startedAt))),
         });
         if (!response.ok()) continue;
         const body = await response.text();
@@ -886,7 +907,7 @@ export const extractPlaybackWithPlaywright = async (
         subtitlePage = await context.newPage();
         await subtitlePage.goto(subtitleInfoUrl, {
           waitUntil: 'domcontentloaded',
-          timeout: Math.min(9000, Math.max(4000, timeout - (Date.now() - startedAt))),
+          timeout: Math.min(9000, Math.max(4000, attemptTimeout - (Date.now() - startedAt))),
         });
         await subtitlePage.waitForTimeout(1500).catch(() => undefined);
         const body = await subtitlePage.evaluate(
@@ -952,6 +973,15 @@ export const extractPlaybackWithPlaywright = async (
       } catch {
         // ignore
       }
+      browser = undefined;
+    }
+  }
+
+    if (discovered.size > 0 || !isHubstreamEmbed) break;
+    if (attempt + 1 < MAX_HUBSTREAM_ATTEMPTS) {
+      console.log(
+        `[Playwright] hubstream retry ${attempt + 1}/${MAX_HUBSTREAM_ATTEMPTS} for ${normalizedEmbed}`,
+      );
     }
   }
 

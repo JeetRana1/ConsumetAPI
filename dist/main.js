@@ -60,6 +60,71 @@ import_axios.default.defaults.headers.common["User-Agent"] = "Mozilla/5.0 (Windo
 import_axios.default.defaults.headers.common["Accept"] = "application/json, text/plain, */*";
 const hlsHttpAgent = new import_http.default.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64 });
 const hlsHttpsAgent = new import_https.default.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64, family: 4 });
+const hlsHttpsFreshAgent = new import_https.default.Agent({ family: 4, keepAlive: false });
+const hlsHttpFreshAgent = new import_http.default.Agent({ keepAlive: false });
+const HLS_SEGMENT_CACHE_TTL_MS = 10 * 60 * 1e3;
+const HLS_SEGMENT_CACHE_MAX_ENTRIES = 1600;
+const HLS_SEGMENT_CACHE_MAX_BYTES = 240 * 1024 * 1024;
+const hlsSegmentCache = /* @__PURE__ */ new Map();
+let hlsSegmentCacheBytes = 0;
+function hlsSegmentCacheGet(key) {
+  const entry = hlsSegmentCache.get(key);
+  if (!entry)
+    return void 0;
+  if (Date.now() - entry.cachedAt > HLS_SEGMENT_CACHE_TTL_MS) {
+    hlsSegmentCache.delete(key);
+    hlsSegmentCacheBytes -= entry.buf.length;
+    return void 0;
+  }
+  return entry;
+}
+function hlsSegmentCacheSet(key, entry) {
+  const existing = hlsSegmentCache.get(key);
+  if (existing)
+    hlsSegmentCacheBytes -= existing.buf.length;
+  hlsSegmentCache.set(key, entry);
+  hlsSegmentCacheBytes += entry.buf.length;
+  while (hlsSegmentCache.size > HLS_SEGMENT_CACHE_MAX_ENTRIES || hlsSegmentCacheBytes > HLS_SEGMENT_CACHE_MAX_BYTES) {
+    const oldestKey = hlsSegmentCache.keys().next().value;
+    if (!oldestKey)
+      break;
+    const oldest = hlsSegmentCache.get(oldestKey);
+    if (oldest)
+      hlsSegmentCacheBytes -= oldest.buf.length;
+    hlsSegmentCache.delete(oldestKey);
+  }
+}
+const UPSTREAM_MAX_CONCURRENCY = 8;
+const upstreamQueue = [];
+let upstreamActive = 0;
+function drainUpstreamQueue() {
+  while (upstreamActive < UPSTREAM_MAX_CONCURRENCY && upstreamQueue.length > 0) {
+    const next = upstreamQueue.shift();
+    if (next)
+      next();
+  }
+}
+async function withUpstreamConcurrency(fn) {
+  if (upstreamActive < UPSTREAM_MAX_CONCURRENCY) {
+    upstreamActive += 1;
+    try {
+      return await fn();
+    } finally {
+      upstreamActive -= 1;
+      drainUpstreamQueue();
+    }
+  }
+  return new Promise((resolve, reject) => {
+    upstreamQueue.push(() => {
+      upstreamActive += 1;
+      fn().then(resolve, reject).finally(() => {
+        upstreamActive -= 1;
+        drainUpstreamQueue();
+      });
+    });
+  });
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const redis = null;
 const REDIS_TTL = 3600;
 const fastify = (0, import_fastify.default)({
@@ -181,6 +246,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       return raw;
     }
   };
+  const isHubstreamSignedCdn = (u) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(u.hostname) && /^\/v4\//.test(u.pathname);
   const rewriteHlsManifest = (manifest, manifestUrl, referer, baseUrl) => {
     const resolveAndProxy = (value, isSegment = false) => {
       const trimmed = String(value || "").trim();
@@ -188,8 +254,17 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         return trimmed;
       try {
         const upstreamReferer = referer || manifestUrl;
+        const resolved = new URL(trimmed, manifestUrl);
+        if (isHubstreamSignedCdn(new URL(manifestUrl))) {
+          const parent = new URL(manifestUrl);
+          for (const [key, value2] of parent.searchParams) {
+            if (!resolved.searchParams.has(key)) {
+              resolved.searchParams.set(key, value2);
+            }
+          }
+        }
         return buildProxyPath(
-          new URL(trimmed, manifestUrl).toString(),
+          resolved.toString(),
           upstreamReferer,
           isSegment,
           baseUrl
@@ -223,10 +298,12 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       previousTag = "";
       return resolveAndProxy(trimmed, isSegment);
     }).join("\n");
-    output = output.replace(
-      /#EXTINF:[^\n]*(?:\n#[^\n]*)*\n[^\n]*(?:p1\.ipstatp\.com\/obj\/ad-site-i18n|p\d+-ad-sg\.ibyteimg\.com)[^\n]*/gi,
-      ""
-    );
+    if (!/(?:shiora|mikora|norami|akirax)\./i.test(manifestUrl)) {
+      output = output.replace(
+        /#EXTINF:[^\n]*(?:\n#[^\n]*)*\n[^\n]*(?:p1\.ipstatp\.com\/obj\/ad-site-i18n|p\d+-ad-sg\.ibyteimg\.com)[^\n]*/gi,
+        ""
+      );
+    }
     output = output.split("\n").filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line)).join("\n");
     return output;
   };
@@ -253,20 +330,16 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
   const fetchHlsResource = async (url, isManifest, incomingRange, referer, cookieHeader) => {
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
-    const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\/[^/]+\/\d+\/ox\//i.test(url);
-    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.shiora\.(?:top|site)\//i.test(url);
+    const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
+    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url);
     const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn ? [""] : [...(0, import_outboundProxy.getProxyCandidatesSync)(), ""];
     let lastError = null;
     const effectiveReferer = (() => {
       const safeReferer = String(referer || "").trim();
       if (!safeReferer)
         return safeReferer;
-      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url)) {
-        try {
-          return `${new URL(safeReferer).origin}/`;
-        } catch {
-          return safeReferer;
-        }
+      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
+        return "https://megaplay.buzz/";
       }
       const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
       if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
@@ -275,45 +348,70 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       return safeReferer;
     })();
     for (const proxyUrl of proxyCandidates) {
-      try {
-        const proxyOptions = proxyUrl ? (0, import_outboundProxy.toAxiosProxyOptions)(proxyUrl) : {};
-        const upstreamOrigin = (() => {
-          try {
-            return new URL(effectiveReferer).origin;
-          } catch {
-            return "";
+      const maxAttempts = 5;
+      let attempt = 0;
+      let lastCandidateError = null;
+      while (attempt < maxAttempts) {
+        attempt += 1;
+        const backoffMs = Math.min(3e3, 300 * Math.pow(2, attempt - 1));
+        try {
+          const response = await withUpstreamConcurrency(async () => {
+            const proxyOptions = proxyUrl ? (0, import_outboundProxy.toAxiosProxyOptions)(proxyUrl) : {};
+            const omitOrigin = /^https?:\/\/(?:vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)|megap\.(?:mikora\.top|norami\.top|akirax\.buzz))\//i.test(url);
+            const upstreamOrigin = (() => {
+              if (omitOrigin)
+                return "";
+              try {
+                return new URL(effectiveReferer).origin;
+              } catch {
+                return "";
+              }
+            })();
+            return await import_axios.default.get(url, {
+              headers: {
+                Referer: effectiveReferer || "https://streameeeeee.site/",
+                ...upstreamOrigin ? { Origin: upstreamOrigin } : {},
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                ...cookieHeader ? { Cookie: cookieHeader } : {},
+                ...incomingRange ? { Range: incomingRange } : {},
+                ...isManifest ? {} : { Accept: "video/mp2t,video/mp4,application/octet-stream,*/*" },
+                ...isManifest ? {} : { "Accept-Encoding": "identity" }
+              },
+              timeout: isIbyteCdn ? 3e4 : isManifest ? 15e3 : 1e4,
+              responseType: isManifest ? "text" : "arraybuffer",
+              validateStatus: (status) => status < 500,
+              ...proxyOptions,
+              // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
+              // keep-alive TLS sockets that fail with `write EPROTO` on reuse.
+              ...isHubstreamCdn && !proxyUrl ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent } : {}
+            });
+          });
+          const responseContentType = String(response.headers["content-type"] || "");
+          if (response.status >= 400) {
+            lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
+            if (response.status >= 500 && attempt < maxAttempts) {
+              await sleep(backoffMs);
+              continue;
+            }
+            break;
           }
-        })();
-        const response = await import_axios.default.get(url, {
-          headers: {
-            Referer: effectiveReferer || "https://streameeeeee.site/",
-            ...upstreamOrigin ? { Origin: upstreamOrigin } : {},
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            ...cookieHeader ? { Cookie: cookieHeader } : {},
-            ...incomingRange ? { Range: incomingRange } : {},
-            ...isManifest ? {} : { Accept: "video/mp2t,video/mp4,application/octet-stream,*/*" },
-            ...isManifest ? {} : { "Accept-Encoding": "identity" }
-          },
-          timeout: isIbyteCdn ? 3e4 : 15e3,
-          responseType: isManifest ? "text" : "arraybuffer",
-          validateStatus: (status) => status < 500,
-          ...proxyOptions
-        });
-        const responseContentType = String(response.headers["content-type"] || "");
-        if (response.status >= 400) {
-          const upstreamError = new Error(`Upstream HLS response (${response.status})`);
-          upstreamError.statusCode = response.status;
-          lastError = upstreamError;
-          continue;
+          if (isManifest && !isLikelyHlsManifest(String(response.data || ""), responseContentType)) {
+            lastCandidateError = new Error(`Invalid HLS manifest response (${response.status})`);
+            break;
+          }
+          return response;
+        } catch (error) {
+          lastCandidateError = error;
+          const statusCode = Number(error?.response?.status || 0);
+          const isTransient = statusCode >= 500 && statusCode < 600 || statusCode === 0;
+          if (isTransient && attempt < maxAttempts) {
+            await sleep(backoffMs);
+            continue;
+          }
+          break;
         }
-        if (isManifest && !isLikelyHlsManifest(String(response.data || ""), responseContentType)) {
-          lastError = new Error(`Invalid HLS manifest response (${response.status})`);
-          continue;
-        }
-        return response;
-      } catch (error) {
-        lastError = error;
       }
+      lastError = lastCandidateError;
     }
     throw lastError instanceof Error ? lastError : new Error("HLS proxy failed");
   };
@@ -338,11 +436,8 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       request.headers.referer || request.headers.referrer || ""
     ).trim().replace(/#.*$/, "");
     let requestReferer = (refererParam || incomingReferer || "https://streameeeeee.site/").replace(/#.*$/, "");
-    if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url)) {
-      try {
-        requestReferer = `${new URL(requestReferer).origin}/`;
-      } catch (_) {
-      }
+    if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
+      requestReferer = "https://megaplay.buzz/";
     }
     if (isManifest && !incomingRange) {
       try {
@@ -356,6 +451,18 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
           return reply.send(content);
         }
       } catch {
+      }
+    }
+    if (!isManifest && !incomingRange) {
+      const cachedSegment = hlsSegmentCacheGet(url);
+      if (cachedSegment) {
+        reply.header("Access-Control-Allow-Origin", "*");
+        reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Range");
+        reply.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+        reply.header("Content-Type", cachedSegment.contentType || "application/octet-stream");
+        reply.header("Content-Length", cachedSegment.buf.length);
+        reply.header("Cache-Control", "public, max-age=600");
+        return reply.send(cachedSegment.buf);
       }
     }
     try {
@@ -381,7 +488,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         const baseUrl = `${protocol}://${hostHeader}`;
         const content = rewriteHlsManifest(responseText, url, requestReferer, baseUrl);
         const hasMediaUri = content.split("\n").some((line) => line.trim() && !line.trim().startsWith("#"));
-        if (!hasMediaUri) {
+        if (!hasMediaUri && !/(?:shiora|mikora|norami|akirax)\./i.test(url)) {
           return reply.code(502).send({ error: "Upstream HLS manifest contains no media segments" });
         }
         reply.header("Content-Type", "application/vnd.apple.mpegurl");
@@ -409,6 +516,51 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
               }
             } catch {
             }
+          }
+        }
+        if (responseBuffer) {
+          const contentType = responseContentType || "application/octet-stream";
+          const corsHeaders = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Range",
+            "Access-Control-Allow-Methods": "GET, OPTIONS"
+          };
+          if (!incomingRange) {
+            hlsSegmentCacheSet(url, {
+              buf: responseBuffer,
+              contentType,
+              cachedAt: Date.now()
+            });
+            reply.header("Access-Control-Allow-Origin", "*");
+            reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Range");
+            reply.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+            reply.header("Content-Type", contentType);
+            reply.header("Content-Length", responseBuffer.length);
+            reply.header("Cache-Control", "public, max-age=600");
+            return reply.send(responseBuffer);
+          }
+          const rangeMatch = /^bytes=(\d*)-(\d*)$/i.exec(incomingRange.trim());
+          const total = responseBuffer.length;
+          if (rangeMatch) {
+            let start = rangeMatch[1] ? Number(rangeMatch[1]) : 0;
+            const endRaw = rangeMatch[2] ? Number(rangeMatch[2]) : total - 1;
+            if (!rangeMatch[1] && rangeMatch[2])
+              start = Math.max(0, total - Number(rangeMatch[2]));
+            const end = Math.min(endRaw, total - 1);
+            if (start <= end && start < total) {
+              const slice = responseBuffer.subarray(start, end + 1);
+              reply.header("Access-Control-Allow-Origin", "*");
+              reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Range");
+              reply.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+              reply.header("Content-Type", contentType);
+              reply.header("Content-Range", `bytes ${start}-${end}/${total}`);
+              reply.header("Content-Length", slice.length);
+              reply.header("Accept-Ranges", "bytes");
+              reply.code(206);
+              return reply.send(slice);
+            }
+            reply.code(416);
+            return reply.send({ error: "Range not satisfiable" });
           }
         }
         try {

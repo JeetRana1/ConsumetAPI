@@ -409,7 +409,7 @@ function registerWatchTogether(fastify) {
         room.state.currentTime = 0;
         room.state.paused = true;
         room.state.updatedAt = Date.now();
-        broadcast(state.roomCode, "host:navigated-home", { code: state.roomCode }, socket);
+        broadcast(state.roomCode || "", "host:navigated-home", { code: state.roomCode || "" }, socket);
         broadcastPublicRooms();
         return;
       }

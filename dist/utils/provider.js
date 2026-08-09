@@ -240,7 +240,7 @@ const extractWithFallback = async (provider, streamUrl, requestedServer) => {
   const url = new URL(streamUrl);
   const host = String(url.hostname || "").toLowerCase();
   const isVideoStr = host.includes("videostr.");
-  const primary = isVideoStr ? [import_extractors.VideoStr, import_extractors.MegaCloud, import_extractors.VidCloud, import_extractors.RapidCloud] : requestedServer === import_models.StreamingServers.MegaCloud ? [import_extractors.MegaCloud, import_extractors.VidCloud, import_extractors.RapidCloud, import_extractors.VideoStr] : [import_extractors.VidCloud, import_extractors.RapidCloud, import_extractors.MegaCloud, import_extractors.VideoStr];
+  const primary = isVideoStr ? [import_extractors.VideoStr, import_extractors.MegaCloud, import_extractors.VidCloud] : requestedServer === import_models.StreamingServers.MegaCloud ? [import_extractors.MegaCloud, import_extractors.VidCloud, import_extractors.VideoStr] : [import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.VideoStr];
   for (const Extractor of primary) {
     try {
       const extracted = await new Extractor(

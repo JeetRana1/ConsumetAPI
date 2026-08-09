@@ -8,6 +8,24 @@ import * as cheerio from 'cheerio';
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   await fastify.register(new Providers().getProviders);
 
+  // Keep AniList requests server-side so the player is not blocked by CORS.
+  fastify.post('/anilist', async (request, reply) => {
+    try {
+      const body = (request.body || {}) as { query?: string; variables?: Record<string, unknown> };
+      const response = await axios.post('https://graphql.anilist.co', {
+        query: body.query,
+        variables: body.variables || {},
+      }, {
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        timeout: 7000,
+        validateStatus: () => true,
+      });
+      return reply.code(response.status).send(response.data);
+    } catch (error: any) {
+      return reply.code(502).send({ error: 'AniList request failed', message: error?.message || 'Upstream unavailable' });
+    }
+  });
+
   const normalizeTitleForMatch = (v: any): string =>
     String(v || '')
       .normalize('NFKD')

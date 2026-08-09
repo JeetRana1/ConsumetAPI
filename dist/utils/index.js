@@ -37,6 +37,22 @@ var import_providers = __toESM(require("./providers"));
 var cheerio = __toESM(require("cheerio"));
 const routes = async (fastify, options) => {
   await fastify.register(new import_providers.default().getProviders);
+  fastify.post("/anilist", async (request, reply) => {
+    try {
+      const body = request.body || {};
+      const response = await import_axios.default.post("https://graphql.anilist.co", {
+        query: body.query,
+        variables: body.variables || {}
+      }, {
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        timeout: 7e3,
+        validateStatus: () => true
+      });
+      return reply.code(response.status).send(response.data);
+    } catch (error) {
+      return reply.code(502).send({ error: "AniList request failed", message: error?.message || "Upstream unavailable" });
+    }
+  });
   const normalizeTitleForMatch = (v) => String(v || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\(([^)]*)\)/g, " ").replace(/\[[^\]]*\]/g, " ").replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
   const toArrayPayload = (payload) => {
     if (Array.isArray(payload))

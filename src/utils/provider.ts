@@ -1,7 +1,6 @@
 import { StreamingServers } from '@consumet/extensions/dist/models';
 import {
   MegaCloud,
-  RapidCloud,
   VidCloud,
   VideoStr,
 } from '@consumet/extensions/dist/extractors';
@@ -302,10 +301,10 @@ const extractWithFallback = async (
   const isVideoStr = host.includes('videostr.');
 
   const primary = isVideoStr
-    ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
+    ? [VideoStr, MegaCloud, VidCloud]
     : requestedServer === StreamingServers.MegaCloud
-      ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
-      : [VidCloud, RapidCloud, MegaCloud, VideoStr];
+      ? [MegaCloud, VidCloud, VideoStr]
+      : [VidCloud, MegaCloud, VideoStr];
 
   for (const Extractor of primary) {
     try {

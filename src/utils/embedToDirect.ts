@@ -2,8 +2,6 @@ import { StreamingServers } from '@consumet/extensions/dist/models';
 import {
   MegaCloud,
   MixDrop,
-  Mp4Upload,
-  RapidCloud,
   StreamTape,
   VidCloud,
   VideoStr,
@@ -130,39 +128,33 @@ const tryExtractor = async (
     const isStreamTape = host.includes('streamtape');
     const isVizCloud = host.includes('vizcloud');
     const extractors = isMixDrop
-      ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
+      ? [MixDrop, StreamTape, VidCloud, MegaCloud]
       : isMp4Upload
-        ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
+        ? [MixDrop, StreamTape, VidCloud, MegaCloud]
         : isStreamTape
-          ? [StreamTape, MixDrop, Mp4Upload, VidCloud, MegaCloud, RapidCloud]
+          ? [StreamTape, MixDrop, VidCloud, MegaCloud]
           : isVizCloud
-            ? [VidCloud, MegaCloud, RapidCloud, VideoStr]
+            ? [VidCloud, MegaCloud, VideoStr]
             : isVideoStr
-              ? [VideoStr, MegaCloud, VidCloud, RapidCloud]
+              ? [VideoStr, MegaCloud, VidCloud]
               : server === StreamingServers.MegaCloud
-                ? [MegaCloud, VidCloud, RapidCloud, VideoStr]
+                ? [MegaCloud, VidCloud, VideoStr]
                 : server === StreamingServers.VizCloud
-                  ? [VidCloud, MegaCloud, RapidCloud, VideoStr]
+                  ? [VidCloud, MegaCloud, VideoStr]
                   : server === StreamingServers.MixDrop
-                    ? [MixDrop, Mp4Upload, StreamTape, VidCloud, MegaCloud, RapidCloud]
-                    : server === StreamingServers.Mp4Upload
-                      ? [Mp4Upload, MixDrop, StreamTape, VidCloud, MegaCloud, RapidCloud]
-                      : server === StreamingServers.StreamTape
+                    ? [MixDrop, StreamTape, VidCloud, MegaCloud]
+                    : server === StreamingServers.StreamTape
                         ? [
                             StreamTape,
                             MixDrop,
-                            Mp4Upload,
                             VidCloud,
                             MegaCloud,
-                            RapidCloud,
                           ]
                         : [
                             VidCloud,
-                            RapidCloud,
                             MegaCloud,
                             VideoStr,
                             MixDrop,
-                            Mp4Upload,
                             StreamTape,
                           ];
 

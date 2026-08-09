@@ -105,20 +105,16 @@ const tryExtractor = async (provider, embedUrl, requestedServer) => {
     const isMp4Upload = host.includes("mp4upload");
     const isStreamTape = host.includes("streamtape");
     const isVizCloud = host.includes("vizcloud");
-    const extractors = isMixDrop ? [import_extractors.MixDrop, import_extractors.Mp4Upload, import_extractors.StreamTape, import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.RapidCloud] : isMp4Upload ? [import_extractors.Mp4Upload, import_extractors.MixDrop, import_extractors.StreamTape, import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.RapidCloud] : isStreamTape ? [import_extractors.StreamTape, import_extractors.MixDrop, import_extractors.Mp4Upload, import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.RapidCloud] : isVizCloud ? [import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.RapidCloud, import_extractors.VideoStr] : isVideoStr ? [import_extractors.VideoStr, import_extractors.MegaCloud, import_extractors.VidCloud, import_extractors.RapidCloud] : server === import_models.StreamingServers.MegaCloud ? [import_extractors.MegaCloud, import_extractors.VidCloud, import_extractors.RapidCloud, import_extractors.VideoStr] : server === import_models.StreamingServers.VizCloud ? [import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.RapidCloud, import_extractors.VideoStr] : server === import_models.StreamingServers.MixDrop ? [import_extractors.MixDrop, import_extractors.Mp4Upload, import_extractors.StreamTape, import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.RapidCloud] : server === import_models.StreamingServers.Mp4Upload ? [import_extractors.Mp4Upload, import_extractors.MixDrop, import_extractors.StreamTape, import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.RapidCloud] : server === import_models.StreamingServers.StreamTape ? [
+    const extractors = isMixDrop ? [import_extractors.MixDrop, import_extractors.StreamTape, import_extractors.VidCloud, import_extractors.MegaCloud] : isMp4Upload ? [import_extractors.MixDrop, import_extractors.StreamTape, import_extractors.VidCloud, import_extractors.MegaCloud] : isStreamTape ? [import_extractors.StreamTape, import_extractors.MixDrop, import_extractors.VidCloud, import_extractors.MegaCloud] : isVizCloud ? [import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.VideoStr] : isVideoStr ? [import_extractors.VideoStr, import_extractors.MegaCloud, import_extractors.VidCloud] : server === import_models.StreamingServers.MegaCloud ? [import_extractors.MegaCloud, import_extractors.VidCloud, import_extractors.VideoStr] : server === import_models.StreamingServers.VizCloud ? [import_extractors.VidCloud, import_extractors.MegaCloud, import_extractors.VideoStr] : server === import_models.StreamingServers.MixDrop ? [import_extractors.MixDrop, import_extractors.StreamTape, import_extractors.VidCloud, import_extractors.MegaCloud] : server === import_models.StreamingServers.StreamTape ? [
       import_extractors.StreamTape,
       import_extractors.MixDrop,
-      import_extractors.Mp4Upload,
       import_extractors.VidCloud,
-      import_extractors.MegaCloud,
-      import_extractors.RapidCloud
+      import_extractors.MegaCloud
     ] : [
       import_extractors.VidCloud,
-      import_extractors.RapidCloud,
       import_extractors.MegaCloud,
       import_extractors.VideoStr,
       import_extractors.MixDrop,
-      import_extractors.Mp4Upload,
       import_extractors.StreamTape
     ];
     for (const Extractor of extractors) {
