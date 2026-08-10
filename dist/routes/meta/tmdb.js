@@ -398,16 +398,6 @@ const resolveHdstream4uTvEpisodeId = async (request, id, type, season, episode) 
   };
   if (match)
     return normalizeEpisodeId(match);
-  const bonusEntries = entries.filter(
-    (entry) => String(entry?.category || "").toLowerCase() === "bonus" && Number(entry?.bonusSeasonNumber || entry?.seasonNumber || requestedSeason) === requestedSeason
-  );
-  if (bonusEntries.length) {
-    const numberedCount = entries.filter((entry) => String(entry?.category || "").toLowerCase() !== "bonus").length;
-    const bonusIndex = requestedEpisode - numberedCount - 1;
-    const bonusEntry = bonusEntries[Math.max(0, bonusIndex)];
-    if (bonusEntry)
-      return normalizeEpisodeId(bonusEntry);
-  }
   const episodeOnlyMatches = numberedEntries.filter(
     (entry) => Number(entry?.episodeNumber || entry?.episode || entry?.number || 0) === requestedEpisode
   );
@@ -2043,7 +2033,7 @@ const routes = async (fastify, options) => {
         const titleCandidates = getTitleCandidatesFromMedia(mediaInfo);
         if (titleCandidates.length) {
           try {
-            const hdstreamEpisodeId = type === "tv" && episodeId ? episodeId : await resolveHdstream4uEpisodeId(request, mediaInfo);
+            const hdstreamEpisodeId = type === "tv" ? episodeId : episodeId || await resolveHdstream4uEpisodeId(request, mediaInfo);
             if (hdstreamEpisodeId) {
               const delegated = await request.server.inject({
                 method: "GET",

@@ -480,20 +480,11 @@ const resolveHdstream4uTvEpisodeId = async (
 
   if (match) return normalizeEpisodeId(match);
 
-  // Some TV pages place Bonus episodes outside the numbered season while the
-  // frontend exposes them at their TMDB episode position. Map that position
-  // back to the provider's direct Bonus watch URL when no numbered match exists.
-  const bonusEntries = entries.filter(
-    (entry: any) =>
-      String(entry?.category || '').toLowerCase() === 'bonus' &&
-      Number(entry?.bonusSeasonNumber || entry?.seasonNumber || requestedSeason) === requestedSeason,
-  );
-  if (bonusEntries.length) {
-    const numberedCount = entries.filter((entry: any) => String(entry?.category || '').toLowerCase() !== 'bonus').length;
-    const bonusIndex = requestedEpisode - numberedCount - 1;
-    const bonusEntry = bonusEntries[Math.max(0, bonusIndex)];
-    if (bonusEntry) return normalizeEpisodeId(bonusEntry);
-  }
+  // Bonus episodes are intentionally NOT resolved here. The frontend surfaces
+  // them in a dedicated Bonus tab and plays them through the provider's direct
+  // watch endpoint (episodeId=...hubstream.art/#...). Mapping a numbered
+  // episode the provider does not have onto a Bonus episode made bonus content
+  // leak into the normal season tab, so that fallback is disabled.
 
   // HDStream4u season pages sometimes expose only the requested season's episodes
   // but still label every row as season 1. When that happens, fall back to episode
@@ -2554,9 +2545,9 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         if (titleCandidates.length) {
           try {
             const hdstreamEpisodeId =
-              type === 'tv' && episodeId
+              type === 'tv'
                 ? episodeId
-                : await resolveHdstream4uEpisodeId(request, mediaInfo);
+                : episodeId || (await resolveHdstream4uEpisodeId(request, mediaInfo));
             if (hdstreamEpisodeId) {
               const delegated = await request.server.inject({
                 method: 'GET',
