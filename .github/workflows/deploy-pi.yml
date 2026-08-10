@@ -66,6 +66,7 @@ jobs:
 
       - name: Restart PM2 process
         run: |
+          pm2 delete consumet --silent || true
           if pm2 describe consumet-api > /dev/null 2>&1; then
             pm2 restart consumet-api --silent
           else
