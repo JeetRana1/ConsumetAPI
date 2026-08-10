@@ -34,7 +34,7 @@ module.exports = __toCommonJS(hdstream4uProvider_exports);
 var cheerio = __toESM(require("cheerio"));
 var import_axios = __toESM(require("axios"));
 var import_browserRuntimeExtractor = require("../../utils/browserRuntimeExtractor");
-const BASE_URL = "https://new2.hdhub4u.cl";
+const BASE_URL = "https://new1.hdhub4u.af";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const TMDB_KEY = String(process.env.TMDB_KEY || "").trim();
 const STREAM_HOSTS = [
@@ -162,7 +162,11 @@ const absoluteUrl = (url, base = BASE_URL) => {
   if (!raw)
     return "";
   try {
-    return new URL(raw, base).toString();
+    const parsed = new URL(raw, base);
+    if (/^(?:new\d+\.)?hdhub4u\.cl$/i.test(parsed.hostname)) {
+      parsed.hostname = new URL(BASE_URL).hostname;
+    }
+    return parsed.toString();
   } catch {
     return raw;
   }
@@ -182,12 +186,13 @@ const mediaIdFromUrl = (url) => {
 const mediaUrlFromId = (mediaId) => {
   const raw = String(mediaId || "").trim();
   if (/^https?:\/\//i.test(raw))
-    return raw;
+    return absoluteUrl(raw);
   return absoluteUrl(`/${raw.replace(/^\/+/, "")}`);
 };
-const fetchText = async (url, referer = BASE_URL) => {
+const fetchText = async (url, referer = BASE_URL, timeout = requestConfig.timeout) => {
   const response = await import_axios.default.get(url, {
     ...requestConfig,
+    timeout,
     responseType: "text",
     headers: {
       ...requestConfig.headers || {},
@@ -1006,35 +1011,6 @@ class HdStream4uProvider {
     if (cached)
       return cached;
     try {
-      const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(query)}`;
-      const html = await fetchText(searchUrl);
-      const $ = cheerio.load(html);
-      const results = [];
-      $("article, .post, .latestPost, .gridlove-post, .entry, .blog-entry, li.thumb").each((_, el) => {
-        const anchor = $(el).find('h2 a, h3 a, .entry-title a, a[rel="bookmark"], figure a, a').first();
-        const href = anchor.attr("href") || "";
-        const title = cleanText(anchor.text() || $(el).find("h2, h3, .entry-title, img").first().attr("alt") || $(el).find("h2, h3, .entry-title").first().text());
-        if (!href || !title)
-          return;
-        const image = $(el).find("img").first().attr("data-src") || $(el).find("img").first().attr("data-lazy-src") || $(el).find("img").first().attr("src") || "";
-        results.push({
-          id: mediaIdFromUrl(href),
-          title,
-          url: absoluteUrl(href),
-          image: absoluteUrl(image, href),
-          type: /(?:season|episode|series|web[\s-]*series)/i.test(title) ? "tv" : "movie"
-        });
-      });
-      const domResults = dedupe(results, (item) => String(item.id || item.url || ""));
-      if (domResults.length > 0) {
-        const payload2 = {
-          currentPage: page,
-          hasNextPage: $('a.next, .pagination .next, a[rel="next"]').length > 0,
-          results: domResults
-        };
-        cache.set(cacheKey, payload2, 10 * 60 * 1e3);
-        return payload2;
-      }
       const apiUrl = new URL("https://search.pingora.fyi/collections/post/documents/search");
       apiUrl.searchParams.set("q", query);
       apiUrl.searchParams.set("query_by", "post_title,category,stars,director,imdb_id");
@@ -1047,6 +1023,7 @@ class HdStream4uProvider {
       apiUrl.searchParams.set("analytics_tag", (/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
       const response = await import_axios.default.get(apiUrl.toString(), {
         ...requestConfig,
+        timeout: 8e3,
         responseType: "json",
         headers: {
           ...requestConfig.headers || {},
@@ -1070,16 +1047,50 @@ class HdStream4uProvider {
         };
       }).filter(Boolean);
       const found = Number(response.data?.found || pingoraResults.length);
-      const payload = {
-        currentPage: page,
-        hasNextPage: page * 15 < found,
-        results: dedupe(pingoraResults, (item) => String(item.id || item.url || ""))
-      };
-      cache.set(cacheKey, payload, 10 * 60 * 1e3);
-      return payload;
-    } catch (error) {
-      return { error: error.message };
+      if (pingoraResults.length > 0) {
+        const payload2 = {
+          currentPage: page,
+          hasNextPage: page * 15 < found,
+          results: dedupe(pingoraResults, (item) => String(item.id || item.url || ""))
+        };
+        cache.set(cacheKey, payload2, 10 * 60 * 1e3);
+        return payload2;
+      }
+    } catch {
     }
+    let domResults = [];
+    let hasNextPage = false;
+    try {
+      const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(query)}`;
+      const html = await fetchText(searchUrl, BASE_URL, 5e3);
+      const $ = cheerio.load(html);
+      const results = [];
+      $("article, .post, .latestPost, .gridlove-post, .entry, .blog-entry, li.thumb").each((_, el) => {
+        const anchor = $(el).find('h2 a, h3 a, .entry-title a, a[rel="bookmark"], figure a, a').first();
+        const href = anchor.attr("href") || "";
+        const title = cleanText(anchor.text() || $(el).find("h2, h3, .entry-title, img").first().attr("alt") || $(el).find("h2, h3, .entry-title").first().text());
+        if (!href || !title)
+          return;
+        const image = $(el).find("img").first().attr("data-src") || $(el).find("img").first().attr("data-lazy-src") || $(el).find("img").first().attr("src") || "";
+        results.push({
+          id: mediaIdFromUrl(href),
+          title,
+          url: absoluteUrl(href),
+          image: absoluteUrl(image, href),
+          type: /(?:season|episode|series|web[\s-]*series)/i.test(title) ? "tv" : "movie"
+        });
+      });
+      domResults = dedupe(results, (item) => String(item.id || item.url || ""));
+      hasNextPage = $('a.next, .pagination .next, a[rel="next"]').length > 0;
+    } catch {
+    }
+    const payload = {
+      currentPage: page,
+      hasNextPage,
+      results: domResults
+    };
+    cache.set(cacheKey, payload, 10 * 60 * 1e3);
+    return payload;
   }
   static async fetchMediaInfo(id, type = "movie") {
     if (!id)
