@@ -502,6 +502,67 @@ const resolveTmdbExternalImdbId = async (id, type) => {
   }
   return "";
 };
+const ANIME_MAPPING_URL = "https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-mini.json";
+let animeIdIndex = null;
+let animeIdIndexLoading = null;
+const loadAnimeIdIndex = async () => {
+  if (animeIdIndex)
+    return animeIdIndex;
+  if (animeIdIndexLoading)
+    return animeIdIndexLoading;
+  animeIdIndexLoading = (async () => {
+    try {
+      const { data } = await import_axios.default.get(ANIME_MAPPING_URL, {
+        timeout: 3e4,
+        responseType: "json"
+      });
+      if (!Array.isArray(data))
+        return null;
+      const index = {};
+      for (const entry of data) {
+        const anilistId = Number(entry?.anilist_id);
+        if (!Number.isInteger(anilistId) || anilistId <= 0)
+          continue;
+        const tm = entry?.themoviedb_id;
+        if (tm && typeof tm === "object") {
+          if (tm.tv != null)
+            index[`tv:${tm.tv}`] = anilistId;
+          const movieIds = Array.isArray(tm.movie) ? tm.movie : tm.movie != null ? [tm.movie] : [];
+          for (const movieId of movieIds) {
+            if (movieId != null)
+              index[`movie:${movieId}`] = anilistId;
+          }
+        }
+        if (entry?.tvdb_id != null)
+          index[`tvdb:${entry.tvdb_id}`] = anilistId;
+      }
+      animeIdIndex = index;
+      return index;
+    } catch (err) {
+      console.warn(`[anime-mapping] failed to load index: ${err?.message || err}`);
+      return null;
+    } finally {
+      animeIdIndexLoading = null;
+    }
+  })();
+  return animeIdIndexLoading;
+};
+const resolveAniListIdByExactMapping = async (id, type) => {
+  const sourceId = String(id || "").trim();
+  if (!sourceId || !/^\d+$/.test(sourceId))
+    return null;
+  const index = await loadAnimeIdIndex();
+  if (!index)
+    return null;
+  const primaryType = type === "tv" ? "tv" : "movie";
+  const secondaryType = primaryType === "tv" ? "movie" : "tv";
+  for (const key of [`${primaryType}:${sourceId}`, `${secondaryType}:${sourceId}`]) {
+    const found = index[key];
+    if (found != null)
+      return String(found);
+  }
+  return null;
+};
 const isAnimeLikeMovie = (media) => {
   const genreNames = toGenreNames(media?.genres);
   const hasAnimationGenre = genreNames.some((genre) => genre.includes("animation"));
@@ -920,6 +981,12 @@ const buildFlixhqTmdbInfo = async (request, id, type) => {
   );
   const expectedType = String(type || "").toLowerCase() === "tv" ? "tv" : "movie";
   const resolveAniListId = async () => {
+    try {
+      const exactAnimeId = await resolveAniListIdByExactMapping(id, expectedType);
+      if (exactAnimeId)
+        return exactAnimeId;
+    } catch {
+    }
     const queries = titleCandidates.slice(0, 2);
     for (const query of queries) {
       try {

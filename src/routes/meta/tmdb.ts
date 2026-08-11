@@ -614,6 +614,82 @@ const resolveTmdbExternalImdbId = async (id: string, type?: string): Promise<str
   return '';
 };
 
+// ---------------------------------------------------------------------------
+// Exact anime ID bridging: TMDB -> AniList via the Fribb anime-lists dataset
+// (the same dataset that powers ani.zip). This avoids fragile title matching.
+// The list ships themoviedb_id + tvdb_id per anilist_id, so we can resolve an
+// exact AniList id straight from a TMDB id + media type. Loaded once in memory.
+// ---------------------------------------------------------------------------
+const ANIME_MAPPING_URL =
+  'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-mini.json';
+
+let animeIdIndex: Record<string, number> | null = null;
+let animeIdIndexLoading: Promise<Record<string, number> | null> | null = null;
+
+const loadAnimeIdIndex = async (): Promise<Record<string, number> | null> => {
+  if (animeIdIndex) return animeIdIndex;
+  if (animeIdIndexLoading) return animeIdIndexLoading;
+
+  animeIdIndexLoading = (async () => {
+    try {
+      const { data } = await axios.get(ANIME_MAPPING_URL, {
+        timeout: 30000,
+        responseType: 'json',
+      });
+      if (!Array.isArray(data)) return null;
+
+      const index: Record<string, number> = {};
+      for (const entry of data) {
+        const anilistId = Number(entry?.anilist_id);
+        if (!Number.isInteger(anilistId) || anilistId <= 0) continue;
+
+        const tm = entry?.themoviedb_id;
+        if (tm && typeof tm === 'object') {
+          if (tm.tv != null) index[`tv:${tm.tv}`] = anilistId;
+          const movieIds = Array.isArray(tm.movie)
+            ? tm.movie
+            : tm.movie != null
+              ? [tm.movie]
+              : [];
+          for (const movieId of movieIds) {
+            if (movieId != null) index[`movie:${movieId}`] = anilistId;
+          }
+        }
+        if (entry?.tvdb_id != null) index[`tvdb:${entry.tvdb_id}`] = anilistId;
+      }
+      animeIdIndex = index;
+      return index;
+    } catch (err: any) {
+      console.warn(`[anime-mapping] failed to load index: ${err?.message || err}`);
+      return null;
+    } finally {
+      animeIdIndexLoading = null;
+    }
+  })();
+
+  return animeIdIndexLoading;
+};
+
+const resolveAniListIdByExactMapping = async (
+  id: string,
+  type?: string,
+): Promise<string | null> => {
+  const sourceId = String(id || '').trim();
+  if (!sourceId || !/^\d+$/.test(sourceId)) return null;
+
+  const index = await loadAnimeIdIndex();
+  if (!index) return null;
+
+  const primaryType = type === 'tv' ? 'tv' : 'movie';
+  const secondaryType = primaryType === 'tv' ? 'movie' : 'tv';
+
+  for (const key of [`${primaryType}:${sourceId}`, `${secondaryType}:${sourceId}`]) {
+    const found = index[key];
+    if (found != null) return String(found);
+  }
+  return null;
+};
+
 const isAnimeLikeMovie = (media: any): boolean => {
   const genreNames = toGenreNames(media?.genres);
   const hasAnimationGenre = genreNames.some((genre) => genre.includes('animation'));
@@ -1145,6 +1221,15 @@ const buildFlixhqTmdbInfo = async (request: any, id: string, type: string) => {
   );
   const expectedType = String(type || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
   const resolveAniListId = async () => {
+    // 1) Prefer an exact, static ID bridge (TMDB id -> AniList id). This is the
+    // robust path that eliminates title-match errors for well-mapped titles.
+    try {
+      const exactAnimeId = await resolveAniListIdByExactMapping(id, expectedType);
+      if (exactAnimeId) return exactAnimeId;
+    } catch {
+      // fall back to title matching below
+    }
+
     const queries = titleCandidates.slice(0, 2);
     for (const query of queries) {
       try {

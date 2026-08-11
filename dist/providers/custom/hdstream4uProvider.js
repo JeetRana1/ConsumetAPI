@@ -1424,10 +1424,48 @@ class HdStream4uProvider {
           const hubLink = watchLinks.find(
             (url) => /hubstream\.(?:art|pw|cc|ink|foo|boo)\/?#/i.test(url)
           );
+          if (hubLink) {
+            const hubPlayback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(hubLink, BASE_URL, 2e4);
+            if (hubPlayback?.sources?.length) {
+              return {
+                headers: {
+                  Referer: hubLink,
+                  ...hubPlayback.cookieHeader ? { Cookie: hubPlayback.cookieHeader } : {},
+                  "User-Agent": USER_AGENT
+                },
+                sources: hubPlayback.sources.map((s) => ({
+                  url: s.url,
+                  quality: s.quality || "auto",
+                  isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
+                  server
+                })),
+                subtitles: hubPlayback.subtitles || []
+              };
+            }
+          }
           if (directLink || hubLink) {
             startUrl = directLink || hubLink || startUrl;
           }
         } catch {
+        }
+      }
+      if (/^https?:\/\/(?:[^.]+\.)*hubstream\.(?:art|pw|cc|ink|foo|boo)\/#/i.test(startUrl)) {
+        const hubPlayback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(startUrl, BASE_URL, 2e4);
+        if (hubPlayback?.sources?.length) {
+          return {
+            headers: {
+              Referer: startUrl,
+              ...hubPlayback.cookieHeader ? { Cookie: hubPlayback.cookieHeader } : {},
+              "User-Agent": USER_AGENT
+            },
+            sources: hubPlayback.sources.map((s) => ({
+              url: s.url,
+              quality: s.quality || "auto",
+              isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
+              server
+            })),
+            subtitles: hubPlayback.subtitles || []
+          };
         }
       }
       const fileCodeMatch = /^https?:\/\/(?:[^.]+\.)?(?:hdstream4u\.com|morencius\.com)\/(?:file|embed)\/([A-Za-z0-9_-]+)/i.exec(startUrl);
@@ -1436,7 +1474,10 @@ class HdStream4uProvider {
         const embedUrl = `https://morencius.com/embed/${fileCode}`;
         const playbackPromise = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(embedUrl, BASE_URL, 4e4).then((value) => value?.sources?.length ? { kind: "embed", value } : Promise.reject(new Error("No embed sources")));
         const filePromise = this.extractHdstream4uFileWithManifestPrefetch(`https://hdstream4u.com/file/${fileCode}`, server).then((value) => value?.sources?.length ? { kind: "file", value } : Promise.reject(new Error("No file sources")));
-        const firstSource = await Promise.any([playbackPromise, filePromise]).catch(() => null);
+        const firstSource = await Promise.race([
+          Promise.any([playbackPromise, filePromise]).catch(() => null),
+          new Promise((resolve) => setTimeout(() => resolve(), 45e3))
+        ]);
         const playback = firstSource?.kind === "embed" ? firstSource.value : null;
         const hdResult = firstSource?.kind === "file" ? firstSource.value : null;
         if (playback?.sources?.length) {
