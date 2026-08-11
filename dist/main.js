@@ -39,6 +39,7 @@ var import_cors = __toESM(require("@fastify/cors"));
 var import_axios = __toESM(require("axios"));
 var import_http = __toESM(require("http"));
 var import_https = __toESM(require("https"));
+var import_crypto = __toESM(require("crypto"));
 var import_outboundProxy = require("./utils/outboundProxy");
 var import_books = __toESM(require("./routes/books"));
 var import_anime = __toESM(require("./routes/anime"));
@@ -131,6 +132,17 @@ const fastify = (0, import_fastify.default)({
   maxParamLength: 1e3,
   logger: true
 });
+const MEDIA_PROXY_TOKEN_TTL_SECONDS = 600;
+const createMediaProxyToken = () => {
+  const secret = String(process.env.MEDIA_PROXY_TOKEN_SECRET || "").trim();
+  if (!secret)
+    return null;
+  const payload = Buffer.from(JSON.stringify({
+    exp: Math.floor(Date.now() / 1e3) + MEDIA_PROXY_TOKEN_TTL_SECONDS
+  })).toString("base64url");
+  const signature = import_crypto.default.createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+};
 const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 (async () => {
   const PORT = Number(process.env.PORT) || 3e3;
@@ -140,6 +152,12 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
+  });
+  fastify.get("/media-proxy/token", async (_request, reply) => {
+    const token = createMediaProxyToken();
+    if (!token)
+      return reply.code(503).send({ error: "Media proxy token service is not configured" });
+    return reply.send({ token, expiresIn: MEDIA_PROXY_TOKEN_TTL_SECONDS });
   });
   fastify.addHook("preSerialization", async (_request, _reply, payload) => {
     return (0, import_streamable.normalizeStreamLinks)(payload);

@@ -5,6 +5,7 @@ import FastifyCors from '@fastify/cors';
 import axios from 'axios';
 import http from 'http';
 import https from 'https';
+import crypto from 'crypto';
 import { getProxyCandidatesSync, toAxiosProxyOptions } from './utils/outboundProxy';
 
 // --- Global Axios Optimization ---
@@ -130,6 +131,18 @@ const fastify = Fastify({
   maxParamLength: 1000,
   logger: true,
 });
+
+const MEDIA_PROXY_TOKEN_TTL_SECONDS = 600;
+const createMediaProxyToken = (): string | null => {
+  const secret = String(process.env.MEDIA_PROXY_TOKEN_SECRET || '').trim();
+  if (!secret) return null;
+  const payload = Buffer.from(JSON.stringify({
+    exp: Math.floor(Date.now() / 1000) + MEDIA_PROXY_TOKEN_TTL_SECONDS,
+  })).toString('base64url');
+  const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+};
+
 export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 (async () => {
   const PORT = Number(process.env.PORT) || 3000;
@@ -139,6 +152,12 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  });
+
+  fastify.get('/media-proxy/token', async (_request, reply) => {
+    const token = createMediaProxyToken();
+    if (!token) return reply.code(503).send({ error: 'Media proxy token service is not configured' });
+    return reply.send({ token, expiresIn: MEDIA_PROXY_TOKEN_TTL_SECONDS });
   });
 
   fastify.addHook('preSerialization', async (_request, _reply, payload) => {
