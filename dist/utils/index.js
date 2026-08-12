@@ -450,11 +450,12 @@ const routes = async (fastify, options) => {
       const looksLikeM3u8 = pathLower.endsWith(".m3u8") || pathLower.includes("playlist") || queryLower.includes(".m3u8");
       const looksLikeMediaSegment = /\.(ts|m4s|m4v|mp4|aac|mp3)(\?|$)/i.test(pathLower) || queryLower.includes(".m4s") || queryLower.includes(".ts");
       const isSwiftstreamOppaiMedia = /(^|\.)swiftstream\.top$/i.test(target.hostname) && /\/proxy\/oppai\//i.test(target.pathname);
+      const isArchiveMedia = /(^|\.)archive\.org$/i.test(target.hostname) || /(^|\.)ia\d+\.us\.archive\.org$/i.test(target.hostname);
       const boundedRange = incomingRange.replace(/^bytes=(\d+)-\s*$/i, (_match, start) => {
         const first = Number(start);
         return Number.isSafeInteger(first) && first >= 0 ? `bytes=${first}-${first + 4 * 1024 * 1024 - 1}` : incomingRange;
       });
-      const upstreamRange = boundedRange || (isSwiftstreamOppaiMedia ? "bytes=0-" : "");
+      const upstreamRange = isArchiveMedia ? incomingRange : boundedRange || (isSwiftstreamOppaiMedia ? "bytes=0-" : "");
       let refererForRequest = referer || `${target.protocol}//${target.host}/`;
       if (/(?:(?:shiora|mikora)\.(?:top|site|club|net)|lostproject\.club)$/i.test(target.hostname) && /anikoto\.cz/i.test(refererForRequest)) {
         refererForRequest = "https://megaplay.buzz/";
@@ -607,6 +608,7 @@ const routes = async (fastify, options) => {
         });
       }
       const contentType = String(upstream.headers["content-type"] || "").toLowerCase();
+      const mediaContentType = /\.mkv(?:$|[?#])/i.test(target.pathname) ? "video/x-matroska" : contentType;
       const isM3u8 = looksLikeM3u8 || contentType.includes("mpegurl") || contentType.includes("application/x-mpegurl") || contentType.includes("application/vnd.apple.mpegurl");
       let raw = "";
       if (isM3u8) {
@@ -805,14 +807,14 @@ const routes = async (fastify, options) => {
       reply.header("Access-Control-Allow-Headers", "Range,Content-Type");
       reply.header("Access-Control-Expose-Headers", "Content-Length,Content-Range");
       if (!isM3u8 && upstream.data && typeof upstream.data.pipe === "function") {
-        return reply.header("Content-Type", contentType || "application/octet-stream").header("Connection", "keep-alive").header(
+        return reply.header("Content-Type", mediaContentType || "application/octet-stream").header("Connection", "keep-alive").header(
           "Cache-Control",
           String(
             upstream.headers?.["cache-control"] || "public, max-age=60, no-transform"
           )
         ).send(upstream.data);
       }
-      return reply.header("Content-Type", contentType || "application/octet-stream").send(Buffer.from(upstream.data));
+      return reply.header("Content-Type", mediaContentType || "application/octet-stream").send(Buffer.from(upstream.data));
     } catch (err) {
       return reply.status(502).send({ message: err?.message || "proxy failed" });
     }
