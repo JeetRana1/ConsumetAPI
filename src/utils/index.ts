@@ -429,7 +429,6 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const isSwiftstreamOppaiMedia =
         /(^|\.)swiftstream\.top$/i.test(target.hostname) &&
         /\/proxy\/oppai\//i.test(target.pathname);
-      const isArchiveMedia = /(^|\.)archive\.org$/i.test(target.hostname) || /(^|\.)ia\d+\.us\.archive\.org$/i.test(target.hostname);
       // Browsers commonly request `bytes=N-` for large direct files. Forwarding
       // that open-ended range makes some origins return the entire remaining
       // MKV, which stalls startup and causes overlapping retries. Bound it to a
@@ -440,9 +439,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           ? `bytes=${first}-${first + (4 * 1024 * 1024) - 1}`
           : incomingRange;
       });
-      const upstreamRange = isArchiveMedia
-        ? incomingRange
-        : (boundedRange || (isSwiftstreamOppaiMedia ? 'bytes=0-' : ''));
+      const upstreamRange = boundedRange || (isSwiftstreamOppaiMedia ? 'bytes=0-' : '');
 
        let refererForRequest = referer || `${target.protocol}//${target.host}/`;
        // AniKoto subtitle/CDN hosts reject the AniKoto site referer and accept

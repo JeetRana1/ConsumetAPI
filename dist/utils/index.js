@@ -450,12 +450,11 @@ const routes = async (fastify, options) => {
       const looksLikeM3u8 = pathLower.endsWith(".m3u8") || pathLower.includes("playlist") || queryLower.includes(".m3u8");
       const looksLikeMediaSegment = /\.(ts|m4s|m4v|mp4|aac|mp3)(\?|$)/i.test(pathLower) || queryLower.includes(".m4s") || queryLower.includes(".ts");
       const isSwiftstreamOppaiMedia = /(^|\.)swiftstream\.top$/i.test(target.hostname) && /\/proxy\/oppai\//i.test(target.pathname);
-      const isArchiveMedia = /(^|\.)archive\.org$/i.test(target.hostname) || /(^|\.)ia\d+\.us\.archive\.org$/i.test(target.hostname);
       const boundedRange = incomingRange.replace(/^bytes=(\d+)-\s*$/i, (_match, start) => {
         const first = Number(start);
         return Number.isSafeInteger(first) && first >= 0 ? `bytes=${first}-${first + 4 * 1024 * 1024 - 1}` : incomingRange;
       });
-      const upstreamRange = isArchiveMedia ? incomingRange : boundedRange || (isSwiftstreamOppaiMedia ? "bytes=0-" : "");
+      const upstreamRange = boundedRange || (isSwiftstreamOppaiMedia ? "bytes=0-" : "");
       let refererForRequest = referer || `${target.protocol}//${target.host}/`;
       if (/(?:(?:shiora|mikora)\.(?:top|site|club|net)|lostproject\.club)$/i.test(target.hostname) && /anikoto\.cz/i.test(refererForRequest)) {
         refererForRequest = "https://megaplay.buzz/";
