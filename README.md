@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="https://discord.gg/ZKy2ahNtQX">
-    <img src="https://img.shields.io/discord/934267446980935690?label=Discord&logo=discord&logoColor=white&color=5865F2" alt="FluxiumLab Discord">
+    <img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="FluxiumLab Discord">
   </a>
 </p>
 
@@ -136,10 +136,6 @@ Do not expose an instance publicly without reviewing authentication, rate limiti
 ## 💬 Support
 
 For questions, setup help, or provider issues, contact the FluxiumLab maintainers by [email](mailto:jeetrana790@gmail.com) or [join the Discord server](https://discord.gg/ZKy2ahNtQX).
-
-<a href="https://discord.gg/ZKy2ahNtQX">
-  <img src="https://img.shields.io/discord/934267446980935690?label=Join%20the%20FluxiumLab%20Discord&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Join the FluxiumLab Discord server">
-</a>
 
 ## 🤝 Contributing
 
