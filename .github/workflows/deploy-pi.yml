@@ -66,13 +66,16 @@ jobs:
 
       - name: Restart PM2 process
         run: |
+          # Remove the legacy process and any duplicate app entries before
+          # ensuring the single canonical ecosystem process is running.
           pm2 delete consumet --silent || true
+          pm2 delete consumet-api-preview --silent || true
           if pm2 describe consumet-api > /dev/null 2>&1; then
-            pm2 restart consumet-api --silent
+            pm2 restart consumet-api --update-env --silent
           else
-            pm2 start ecosystem.config.js --silent
-            pm2 save --silent
+            pm2 start ecosystem.config.js --only consumet-api --update-env --silent
           fi
+          pm2 save --silent
           echo "PM2 process restarted successfully"
 
       - name: Check PM2 status
