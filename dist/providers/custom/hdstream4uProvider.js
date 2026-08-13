@@ -1414,6 +1414,8 @@ class HdStream4uProvider {
       if (!startUrl) {
         return { error: "episodeId is required" };
       }
+      let hubLink = "";
+      let hubPlaybackPromise = null;
       if (/https?:\/\/(?:new\d+\.)?hdhub4u\.[^/]+\//i.test(startUrl)) {
         try {
           const pageHtml = await fetchText(startUrl);
@@ -1421,27 +1423,13 @@ class HdStream4uProvider {
           const directLink = watchLinks.find(
             (url) => /(?:hdstream4u|morencius)\.com\/(?:file|embed)\/[A-Za-z0-9_-]+/i.test(url)
           );
-          const hubLink = watchLinks.find(
+          hubLink = watchLinks.find(
             (url) => /hubstream\.(?:art|pw|cc|ink|foo|boo)\/?#/i.test(url)
-          );
+          ) || "";
           if (hubLink) {
-            const hubPlayback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(hubLink, BASE_URL, 2e4);
-            if (hubPlayback?.sources?.length) {
-              return {
-                headers: {
-                  Referer: hubLink,
-                  ...hubPlayback.cookieHeader ? { Cookie: hubPlayback.cookieHeader } : {},
-                  "User-Agent": USER_AGENT
-                },
-                sources: hubPlayback.sources.map((s) => ({
-                  url: s.url,
-                  quality: s.quality || "auto",
-                  isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
-                  server
-                })),
-                subtitles: hubPlayback.subtitles || []
-              };
-            }
+            hubPlaybackPromise = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(hubLink, BASE_URL, 2e4).then(
+              (value) => value?.sources?.length ? { ok: true, hubLink, value } : { ok: false, hubLink, value: null }
+            ).catch(() => ({ ok: false, hubLink, value: null }));
           }
           if (directLink || hubLink) {
             startUrl = directLink || hubLink || startUrl;
@@ -1474,10 +1462,30 @@ class HdStream4uProvider {
         const embedUrl = `https://morencius.com/embed/${fileCode}`;
         const playbackPromise = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(embedUrl, BASE_URL, 4e4).then((value) => value?.sources?.length ? { kind: "embed", value } : Promise.reject(new Error("No embed sources")));
         const filePromise = this.extractHdstream4uFileWithManifestPrefetch(`https://hdstream4u.com/file/${fileCode}`, server).then((value) => value?.sources?.length ? { kind: "file", value } : Promise.reject(new Error("No file sources")));
+        const hubRace = hubPlaybackPromise ? hubPlaybackPromise.then(
+          (h) => h?.ok && h.value?.sources?.length ? { kind: "hub", value: h.value, hubLink: h.hubLink } : Promise.reject(new Error("No hub sources"))
+        ).catch(() => null) : null;
         const firstSource = await Promise.race([
-          Promise.any([playbackPromise, filePromise]).catch(() => null),
+          Promise.any([playbackPromise, filePromise, hubRace].filter(Boolean)).catch(() => null),
           new Promise((resolve) => setTimeout(() => resolve(), 45e3))
         ]);
+        const hubResult = firstSource?.kind === "hub" ? firstSource.value : null;
+        if (hubResult?.sources?.length) {
+          return {
+            headers: {
+              Referer: firstSource.hubLink,
+              ...hubResult.cookieHeader ? { Cookie: hubResult.cookieHeader } : {},
+              "User-Agent": USER_AGENT
+            },
+            sources: hubResult.sources.map((s) => ({
+              url: s.url,
+              quality: s.quality || "auto",
+              isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
+              server
+            })),
+            subtitles: hubResult.subtitles || []
+          };
+        }
         const playback = firstSource?.kind === "embed" ? firstSource.value : null;
         const hdResult = firstSource?.kind === "file" ? firstSource.value : null;
         if (playback?.sources?.length) {
@@ -1551,6 +1559,25 @@ class HdStream4uProvider {
             }
           }
           return hdResult;
+        }
+      }
+      if (hubPlaybackPromise) {
+        const hub = await hubPlaybackPromise;
+        if (hub?.ok && hub.value?.sources?.length) {
+          return {
+            headers: {
+              Referer: hub.hubLink,
+              ...hub.value.cookieHeader ? { Cookie: hub.value.cookieHeader } : {},
+              "User-Agent": USER_AGENT
+            },
+            sources: hub.value.sources.map((s) => ({
+              url: s.url,
+              quality: s.quality || "auto",
+              isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
+              server
+            })),
+            subtitles: hub.value.subtitles || []
+          };
         }
       }
       if (!/^https?:\/\//i.test(rawEpisodeId) && /^[a-z0-9_-]{8,}$/i.test(rawEpisodeId)) {
