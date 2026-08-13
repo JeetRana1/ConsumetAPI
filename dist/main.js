@@ -126,45 +126,56 @@ async function withUpstreamConcurrency(fn) {
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const HUBSTREAM_NODE_RE = /^(?:([a-z0-9-]+)\.)?auroradigitalworks\.shop$/i;
-const hubstreamNodePool = ["s9r1", "sd8g", "sipt"];
+const HUBSTREAM_CDN_HOST_RE = /^([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})$/i;
+const HUBSTREAM_CDN_PATH_RE = /\/v4\/pl\/([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})(\/.*)$/i;
+const hubstreamNodePrefixes = ["s9r1", "sd8g", "sipt", "sdqm"];
+const hubstreamCdnDomains = ["auroradigitalworks.shop", "fusionhorizonworks.site"];
 const addHubstreamNode = (hostname) => {
-  const match = String(hostname || "").toLowerCase().match(HUBSTREAM_NODE_RE);
+  const match = String(hostname || "").toLowerCase().match(HUBSTREAM_CDN_HOST_RE);
   const prefix = match?.[1];
-  if (!prefix)
+  const domain = match?.[2];
+  if (!prefix || !domain)
     return;
-  if (!hubstreamNodePool.includes(prefix))
-    hubstreamNodePool.push(prefix);
+  if (!hubstreamNodePrefixes.includes(prefix))
+    hubstreamNodePrefixes.push(prefix);
+  if (!hubstreamCdnDomains.includes(domain))
+    hubstreamCdnDomains.push(domain);
 };
 const hubstreamNodeVariants = (url) => {
   const variants = [url];
   try {
     const parsed = new URL(url);
-    const hostMatch = parsed.hostname.match(HUBSTREAM_NODE_RE);
-    if (hostMatch?.[1]) {
+    let originalPrefix = "";
+    let originalDomain = "";
+    let hostForm = false;
+    const hostMatch = parsed.hostname.match(HUBSTREAM_CDN_HOST_RE);
+    if (hostMatch && /^\/v4\//i.test(parsed.pathname)) {
+      originalPrefix = hostMatch[1];
+      originalDomain = hostMatch[2];
+      hostForm = true;
       addHubstreamNode(parsed.hostname);
-      for (const prefix of hubstreamNodePool) {
-        const candidate = parsed.href.replace(
-          parsed.host,
-          `${prefix}.auroradigitalworks.shop`
-        );
-        if (!variants.includes(candidate))
-          variants.push(candidate);
+    } else {
+      const pathMatch = parsed.pathname.match(HUBSTREAM_CDN_PATH_RE);
+      if (pathMatch) {
+        originalPrefix = pathMatch[1];
+        originalDomain = pathMatch[2];
+        addHubstreamNode(`${originalPrefix}.${originalDomain}`);
       }
-      return variants;
     }
-    const pathMatch = parsed.pathname.match(
-      /\/v4\/pl\/([a-z0-9-]+\.auroradigitalworks\.shop)(\/.*)$/i
-    );
-    if (pathMatch) {
-      addHubstreamNode(pathMatch[1]);
-      for (const prefix of hubstreamNodePool) {
-        const candidate = url.replace(
-          pathMatch[1],
-          `${prefix}.auroradigitalworks.shop`
-        );
+    if (!originalPrefix || !originalDomain)
+      return variants;
+    const domains = [originalDomain, ...hubstreamCdnDomains.filter((d) => d !== originalDomain)];
+    const prefixes = [originalPrefix, ...hubstreamNodePrefixes.filter((p) => p !== originalPrefix)];
+    for (const domain of domains) {
+      for (const prefix of prefixes) {
+        if (domain === originalDomain && prefix === originalPrefix)
+          continue;
+        const host = `${prefix}.${domain}`;
+        const candidate = hostForm ? parsed.href.replace(parsed.host, host) : url.replace(`${originalPrefix}.${originalDomain}`, host);
         if (!variants.includes(candidate))
           variants.push(candidate);
+        if (variants.length >= 9)
+          return variants;
       }
     }
   } catch {

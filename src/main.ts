@@ -110,53 +110,71 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 // --- HubStream CDN node rotation -------------------------------------------
 // HubStream signs its fragment/playlist URLs once and serves them from a pool
-// of `*.auroradigitalworks.shop` nodes. Nodes are unreliable (per-segment 502s,
-// nginx bursts) and a node that starts failing usually fails every resource on
-// it for a while. The k/kx signature tokens are CDN-global, so the same signed
-// URL can be retried verbatim on any other node in the pool.
-const HUBSTREAM_NODE_RE = /^(?:([a-z0-9-]+)\.)?auroradigitalworks\.shop$/i;
-const hubstreamNodePool: string[] = ['s9r1', 'sd8g', 'sipt'];
+// of `{node}.{cdnDomain}` hosts. Both the node prefix and the CDN domain rotate
+// over time (e.g. sd8g.auroradigitalworks.shop, sdqm.fusionhorizonworks.site).
+// Nodes are unreliable (per-segment 502s, nginx bursts) and a node that starts
+// failing usually fails every resource on it for a while. The k/kx signature
+// tokens are global to the whole CDN, so the same signed URL can be retried
+// verbatim on any other (node, domain) pair.
+const HUBSTREAM_CDN_HOST_RE = /^([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})$/i;
+const HUBSTREAM_CDN_PATH_RE = /\/v4\/pl\/([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})(\/.*)$/i;
+const hubstreamNodePrefixes: string[] = ['s9r1', 'sd8g', 'sipt', 'sdqm'];
+const hubstreamCdnDomains: string[] = ['auroradigitalworks.shop', 'fusionhorizonworks.site'];
 
 const addHubstreamNode = (hostname: string): void => {
-  const match = String(hostname || '').toLowerCase().match(HUBSTREAM_NODE_RE);
+  const match = String(hostname || '').toLowerCase().match(HUBSTREAM_CDN_HOST_RE);
   const prefix = match?.[1];
-  if (!prefix) return;
-  if (!hubstreamNodePool.includes(prefix)) hubstreamNodePool.push(prefix);
+  const domain = match?.[2];
+  if (!prefix || !domain) return;
+  if (!hubstreamNodePrefixes.includes(prefix)) hubstreamNodePrefixes.push(prefix);
+  if (!hubstreamCdnDomains.includes(domain)) hubstreamCdnDomains.push(domain);
 };
 
 /**
  * Return equivalent URLs for the given hubstream resource across the known
- * node pool. The first entry is always the original URL. Hostname-form
- * (`{node}.auroradigitalworks.shop/v4/...`) and path-form
- * (`hubstream.art/v4/pl/{node}.auroradigitalworks.shop/...`) are both handled.
+ * (node, domain) pool. The first entry is always the original URL. Hostname-form
+ * (`{node}.{domain}/v4/...`) and path-form
+ * (`hubstream.art/v4/pl/{node}.{domain}/...`) are both handled. Rotated
+ * candidates prefer the original domain first, then the original prefix.
  */
 const hubstreamNodeVariants = (url: string): string[] => {
   const variants = [url];
   try {
     const parsed = new URL(url);
-    const hostMatch = parsed.hostname.match(HUBSTREAM_NODE_RE);
-    if (hostMatch?.[1]) {
+    let originalPrefix = '';
+    let originalDomain = '';
+    let hostForm = false;
+
+    const hostMatch = parsed.hostname.match(HUBSTREAM_CDN_HOST_RE);
+    if (hostMatch && /^\/v4\//i.test(parsed.pathname)) {
+      originalPrefix = hostMatch[1];
+      originalDomain = hostMatch[2];
+      hostForm = true;
       addHubstreamNode(parsed.hostname);
-      for (const prefix of hubstreamNodePool) {
-        const candidate = parsed.href.replace(
-          parsed.host,
-          `${prefix}.auroradigitalworks.shop`,
-        );
-        if (!variants.includes(candidate)) variants.push(candidate);
+    } else {
+      const pathMatch = parsed.pathname.match(HUBSTREAM_CDN_PATH_RE);
+      if (pathMatch) {
+        originalPrefix = pathMatch[1];
+        originalDomain = pathMatch[2];
+        addHubstreamNode(`${originalPrefix}.${originalDomain}`);
       }
-      return variants;
     }
-    const pathMatch = parsed.pathname.match(
-      /\/v4\/pl\/([a-z0-9-]+\.auroradigitalworks\.shop)(\/.*)$/i,
-    );
-    if (pathMatch) {
-      addHubstreamNode(pathMatch[1]);
-      for (const prefix of hubstreamNodePool) {
-        const candidate = url.replace(
-          pathMatch[1],
-          `${prefix}.auroradigitalworks.shop`,
-        );
+
+    if (!originalPrefix || !originalDomain) return variants;
+
+    const domains = [originalDomain, ...hubstreamCdnDomains.filter((d) => d !== originalDomain)];
+    const prefixes = [originalPrefix, ...hubstreamNodePrefixes.filter((p) => p !== originalPrefix)];
+
+    for (const domain of domains) {
+      for (const prefix of prefixes) {
+        if (domain === originalDomain && prefix === originalPrefix) continue;
+        const host = `${prefix}.${domain}`;
+        const candidate = hostForm
+          ? parsed.href.replace(parsed.host, host)
+          : url.replace(`${originalPrefix}.${originalDomain}`, host);
         if (!variants.includes(candidate)) variants.push(candidate);
+        // Cap the pool so a dead stream can't burn unbounded time.
+        if (variants.length >= 9) return variants;
       }
     }
   } catch {
