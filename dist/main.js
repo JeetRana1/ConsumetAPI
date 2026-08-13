@@ -126,6 +126,51 @@ async function withUpstreamConcurrency(fn) {
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const HUBSTREAM_NODE_RE = /^(?:([a-z0-9-]+)\.)?auroradigitalworks\.shop$/i;
+const hubstreamNodePool = ["s9r1", "sd8g", "sipt"];
+const addHubstreamNode = (hostname) => {
+  const match = String(hostname || "").toLowerCase().match(HUBSTREAM_NODE_RE);
+  const prefix = match?.[1];
+  if (!prefix)
+    return;
+  if (!hubstreamNodePool.includes(prefix))
+    hubstreamNodePool.push(prefix);
+};
+const hubstreamNodeVariants = (url) => {
+  const variants = [url];
+  try {
+    const parsed = new URL(url);
+    const hostMatch = parsed.hostname.match(HUBSTREAM_NODE_RE);
+    if (hostMatch?.[1]) {
+      addHubstreamNode(parsed.hostname);
+      for (const prefix of hubstreamNodePool) {
+        const candidate = parsed.href.replace(
+          parsed.host,
+          `${prefix}.auroradigitalworks.shop`
+        );
+        if (!variants.includes(candidate))
+          variants.push(candidate);
+      }
+      return variants;
+    }
+    const pathMatch = parsed.pathname.match(
+      /\/v4\/pl\/([a-z0-9-]+\.auroradigitalworks\.shop)(\/.*)$/i
+    );
+    if (pathMatch) {
+      addHubstreamNode(pathMatch[1]);
+      for (const prefix of hubstreamNodePool) {
+        const candidate = url.replace(
+          pathMatch[1],
+          `${prefix}.auroradigitalworks.shop`
+        );
+        if (!variants.includes(candidate))
+          variants.push(candidate);
+      }
+    }
+  } catch {
+  }
+  return variants;
+};
 const redis = null;
 const REDIS_TTL = 3600;
 const fastify = (0, import_fastify.default)({
@@ -365,71 +410,76 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       }
       return safeReferer;
     })();
-    for (const proxyUrl of proxyCandidates) {
-      const maxAttempts = 5;
-      let attempt = 0;
-      let lastCandidateError = null;
-      while (attempt < maxAttempts) {
-        attempt += 1;
-        const backoffMs = Math.min(3e3, 300 * Math.pow(2, attempt - 1));
-        try {
-          const response = await withUpstreamConcurrency(async () => {
-            const proxyOptions = proxyUrl ? (0, import_outboundProxy.toAxiosProxyOptions)(proxyUrl) : {};
-            const omitOrigin = /^https?:\/\/(?:vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)|megap\.(?:mikora\.top|norami\.top|akirax\.buzz))\//i.test(url);
-            const upstreamOrigin = (() => {
-              if (omitOrigin)
-                return "";
-              try {
-                return new URL(effectiveReferer).origin;
-              } catch {
-                return "";
-              }
-            })();
-            return await import_axios.default.get(url, {
-              headers: {
-                Referer: effectiveReferer || "https://streameeeeee.site/",
-                ...upstreamOrigin ? { Origin: upstreamOrigin } : {},
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                ...cookieHeader ? { Cookie: cookieHeader } : {},
-                ...incomingRange ? { Range: incomingRange } : {},
-                ...isManifest ? {} : { Accept: "video/mp2t,video/mp4,application/octet-stream,*/*" },
-                ...isManifest ? {} : { "Accept-Encoding": "identity" }
-              },
-              timeout: isIbyteCdn ? 3e4 : isManifest ? 15e3 : 1e4,
-              responseType: isManifest ? "text" : "arraybuffer",
-              validateStatus: (status) => status < 500,
-              ...proxyOptions,
-              // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
-              // keep-alive TLS sockets that fail with `write EPROTO` on reuse.
-              ...isHubstreamCdn && !proxyUrl ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent } : {}
+    const nodeVariants = hubstreamNodeVariants(url);
+    for (let nodeIdx = 0; nodeIdx < nodeVariants.length; nodeIdx++) {
+      const variantUrl = nodeVariants[nodeIdx];
+      const isPrimaryNode = nodeIdx === 0;
+      for (const proxyUrl of proxyCandidates) {
+        const maxAttempts = nodeVariants.length > 1 ? isPrimaryNode ? 2 : 1 : 5;
+        let attempt = 0;
+        let lastCandidateError = null;
+        while (attempt < maxAttempts) {
+          attempt += 1;
+          const backoffMs = nodeVariants.length > 1 ? 300 : Math.min(3e3, 300 * Math.pow(2, attempt - 1));
+          try {
+            const response = await withUpstreamConcurrency(async () => {
+              const proxyOptions = proxyUrl ? (0, import_outboundProxy.toAxiosProxyOptions)(proxyUrl) : {};
+              const omitOrigin = /^https?:\/\/(?:vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)|megap\.(?:mikora\.top|norami\.top|akirax\.buzz))\//i.test(url);
+              const upstreamOrigin = (() => {
+                if (omitOrigin)
+                  return "";
+                try {
+                  return new URL(effectiveReferer).origin;
+                } catch {
+                  return "";
+                }
+              })();
+              return await import_axios.default.get(variantUrl, {
+                headers: {
+                  Referer: effectiveReferer || "https://streameeeeee.site/",
+                  ...upstreamOrigin ? { Origin: upstreamOrigin } : {},
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                  ...cookieHeader ? { Cookie: cookieHeader } : {},
+                  ...incomingRange ? { Range: incomingRange } : {},
+                  ...isManifest ? {} : { Accept: "video/mp2t,video/mp4,application/octet-stream,*/*" },
+                  ...isManifest ? {} : { "Accept-Encoding": "identity" }
+                },
+                timeout: isIbyteCdn ? 3e4 : isManifest ? 15e3 : 1e4,
+                responseType: isManifest ? "text" : "arraybuffer",
+                validateStatus: (status) => status < 500,
+                ...proxyOptions,
+                // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
+                // keep-alive TLS sockets that fail with `write EPROTO` on reuse.
+                ...isHubstreamCdn && !proxyUrl ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent } : {}
+              });
             });
-          });
-          const responseContentType = String(response.headers["content-type"] || "");
-          if (response.status >= 400) {
-            lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
-            if (response.status >= 500 && attempt < maxAttempts) {
+            const responseContentType = String(response.headers["content-type"] || "");
+            if (response.status >= 400) {
+              lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
+              if (response.status >= 500 && attempt < maxAttempts) {
+                await sleep(backoffMs);
+                continue;
+              }
+              break;
+            }
+            if (isManifest && !isLikelyHlsManifest(String(response.data || ""), responseContentType)) {
+              lastCandidateError = new Error(`Invalid HLS manifest response (${response.status})`);
+              break;
+            }
+            return response;
+          } catch (error) {
+            lastCandidateError = error;
+            const statusCode = Number(error?.response?.status || 0);
+            const isTransient = statusCode >= 500 && statusCode < 600 || statusCode === 0;
+            if (isTransient && attempt < maxAttempts) {
               await sleep(backoffMs);
               continue;
             }
             break;
           }
-          if (isManifest && !isLikelyHlsManifest(String(response.data || ""), responseContentType)) {
-            lastCandidateError = new Error(`Invalid HLS manifest response (${response.status})`);
-            break;
-          }
-          return response;
-        } catch (error) {
-          lastCandidateError = error;
-          const statusCode = Number(error?.response?.status || 0);
-          const isTransient = statusCode >= 500 && statusCode < 600 || statusCode === 0;
-          if (isTransient && attempt < maxAttempts) {
-            await sleep(backoffMs);
-            continue;
-          }
-          break;
         }
+        lastError = lastCandidateError;
       }
-      lastError = lastCandidateError;
     }
     throw lastError instanceof Error ? lastError : new Error("HLS proxy failed");
   };

@@ -108,6 +108,63 @@ async function withUpstreamConcurrency<T>(fn: () => Promise<T>): Promise<T> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// --- HubStream CDN node rotation -------------------------------------------
+// HubStream signs its fragment/playlist URLs once and serves them from a pool
+// of `*.auroradigitalworks.shop` nodes. Nodes are unreliable (per-segment 502s,
+// nginx bursts) and a node that starts failing usually fails every resource on
+// it for a while. The k/kx signature tokens are CDN-global, so the same signed
+// URL can be retried verbatim on any other node in the pool.
+const HUBSTREAM_NODE_RE = /^(?:([a-z0-9-]+)\.)?auroradigitalworks\.shop$/i;
+const hubstreamNodePool: string[] = ['s9r1', 'sd8g', 'sipt'];
+
+const addHubstreamNode = (hostname: string): void => {
+  const match = String(hostname || '').toLowerCase().match(HUBSTREAM_NODE_RE);
+  const prefix = match?.[1];
+  if (!prefix) return;
+  if (!hubstreamNodePool.includes(prefix)) hubstreamNodePool.push(prefix);
+};
+
+/**
+ * Return equivalent URLs for the given hubstream resource across the known
+ * node pool. The first entry is always the original URL. Hostname-form
+ * (`{node}.auroradigitalworks.shop/v4/...`) and path-form
+ * (`hubstream.art/v4/pl/{node}.auroradigitalworks.shop/...`) are both handled.
+ */
+const hubstreamNodeVariants = (url: string): string[] => {
+  const variants = [url];
+  try {
+    const parsed = new URL(url);
+    const hostMatch = parsed.hostname.match(HUBSTREAM_NODE_RE);
+    if (hostMatch?.[1]) {
+      addHubstreamNode(parsed.hostname);
+      for (const prefix of hubstreamNodePool) {
+        const candidate = parsed.href.replace(
+          parsed.host,
+          `${prefix}.auroradigitalworks.shop`,
+        );
+        if (!variants.includes(candidate)) variants.push(candidate);
+      }
+      return variants;
+    }
+    const pathMatch = parsed.pathname.match(
+      /\/v4\/pl\/([a-z0-9-]+\.auroradigitalworks\.shop)(\/.*)$/i,
+    );
+    if (pathMatch) {
+      addHubstreamNode(pathMatch[1]);
+      for (const prefix of hubstreamNodePool) {
+        const candidate = url.replace(
+          pathMatch[1],
+          `${prefix}.auroradigitalworks.shop`,
+        );
+        if (!variants.includes(candidate)) variants.push(candidate);
+      }
+    }
+  } catch {
+    // Not a valid URL — return the original unchanged.
+  }
+  return variants;
+};
+
 import books from './routes/books';
 import anime from './routes/anime';
 import manga from './routes/manga';
@@ -455,85 +512,102 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       return safeReferer;
     })();
 
-    for (const proxyUrl of proxyCandidates) {
-      const maxAttempts = 5;
-      let attempt = 0;
-      let lastCandidateError: unknown = null;
+    // HubStream signs its URLs per-stream, not per-node, so a node that starts
+    // 502ing can be swapped for another node in the same pool. The original node
+    // keeps the full retry budget; rotated nodes use a smaller one.
+    const nodeVariants = hubstreamNodeVariants(url);
 
-      while (attempt < maxAttempts) {
-        attempt += 1;
-        // HubStream's direct-IP nodes fail in bursts (nginx 502 / TLS resets).
-        // A longer exponential backoff escapes those windows instead of retrying
-        // straight into the same failure.
-        const backoffMs = Math.min(3000, 300 * Math.pow(2, attempt - 1));
-        try {
-          const response = await withUpstreamConcurrency(async () => {
-            const proxyOptions = proxyUrl ? toAxiosProxyOptions(proxyUrl) : {};
-            const omitOrigin = /^https?:\/\/(?:vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)|megap\.(?:mikora\.top|norami\.top|akirax\.buzz))\//i.test(url);
-            const upstreamOrigin = (() => {
-              if (omitOrigin) return '';
-              try { return new URL(effectiveReferer).origin; } catch { return ''; }
-            })();
-            return await axios.get(url, {
-              headers: {
-                Referer: effectiveReferer || 'https://streameeeeee.site/',
-                ...(upstreamOrigin ? { Origin: upstreamOrigin } : {}),
-                'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-                ...(incomingRange ? { Range: incomingRange } : {}),
-                ...(isManifest
-                  ? {}
-                  : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
-                ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
-              },
-              timeout: isIbyteCdn ? 30000 : isManifest ? 15000 : 10000,
-              responseType: isManifest ? 'text' : 'arraybuffer',
-              validateStatus: (status: number) => status < 500,
-              ...(proxyOptions as any),
-              // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
-              // keep-alive TLS sockets that fail with `write EPROTO` on reuse.
-              ...(isHubstreamCdn && !proxyUrl
-                ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent }
-                : {}),
+    for (let nodeIdx = 0; nodeIdx < nodeVariants.length; nodeIdx++) {
+      const variantUrl = nodeVariants[nodeIdx];
+      const isPrimaryNode = nodeIdx === 0;
+
+      for (const proxyUrl of proxyCandidates) {
+        // When node rotation is available, burn the least time on a dead node:
+        // two quick tries on the original, one on each rotated node. Keep the
+        // full 5-attempt budget for non-rotated URLs (unchanged behavior).
+        const maxAttempts = nodeVariants.length > 1
+          ? (isPrimaryNode ? 2 : 1)
+          : 5;
+        let attempt = 0;
+        let lastCandidateError: unknown = null;
+
+        while (attempt < maxAttempts) {
+          attempt += 1;
+          // HubStream's direct-IP nodes fail in bursts (nginx 502 / TLS resets).
+          // A longer exponential backoff escapes those windows instead of retrying
+          // straight into the same failure.
+          const backoffMs = nodeVariants.length > 1
+            ? 300
+            : Math.min(3000, 300 * Math.pow(2, attempt - 1));
+          try {
+            const response = await withUpstreamConcurrency(async () => {
+              const proxyOptions = proxyUrl ? toAxiosProxyOptions(proxyUrl) : {};
+              const omitOrigin = /^https?:\/\/(?:vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)|megap\.(?:mikora\.top|norami\.top|akirax\.buzz))\//i.test(url);
+              const upstreamOrigin = (() => {
+                if (omitOrigin) return '';
+                try { return new URL(effectiveReferer).origin; } catch { return ''; }
+              })();
+              return await axios.get(variantUrl, {
+                headers: {
+                  Referer: effectiveReferer || 'https://streameeeeee.site/',
+                  ...(upstreamOrigin ? { Origin: upstreamOrigin } : {}),
+                  'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                  ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+                  ...(incomingRange ? { Range: incomingRange } : {}),
+                  ...(isManifest
+                    ? {}
+                    : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
+                  ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
+                },
+                timeout: isIbyteCdn ? 30000 : isManifest ? 15000 : 10000,
+                responseType: isManifest ? 'text' : 'arraybuffer',
+                validateStatus: (status: number) => status < 500,
+                ...(proxyOptions as any),
+                // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
+                // keep-alive TLS sockets that fail with `write EPROTO` on reuse.
+                ...(isHubstreamCdn && !proxyUrl
+                  ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent }
+                  : {}),
+              });
             });
-          });
 
-          const responseContentType = String(response.headers['content-type'] || '');
+            const responseContentType = String(response.headers['content-type'] || '');
 
-          if (response.status >= 400) {
-            lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
-            // Transient 5xx (CDN throttling) benefits from a quick retry.
-            if (response.status >= 500 && attempt < maxAttempts) {
+            if (response.status >= 400) {
+              lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
+              // Transient 5xx (CDN throttling) benefits from a quick retry.
+              if (response.status >= 500 && attempt < maxAttempts) {
+                await sleep(backoffMs);
+                continue;
+              }
+              break;
+            }
+
+            if (
+              isManifest &&
+              !isLikelyHlsManifest(String(response.data || ''), responseContentType)
+            ) {
+              lastCandidateError = new Error(`Invalid HLS manifest response (${response.status})`);
+              break;
+            }
+
+            return response;
+          } catch (error) {
+            lastCandidateError = error;
+            const statusCode = Number((error as any)?.response?.status || 0);
+            const isTransient =
+              (statusCode >= 500 && statusCode < 600) || statusCode === 0;
+            if (isTransient && attempt < maxAttempts) {
               await sleep(backoffMs);
               continue;
             }
             break;
           }
-
-          if (
-            isManifest &&
-            !isLikelyHlsManifest(String(response.data || ''), responseContentType)
-          ) {
-            lastCandidateError = new Error(`Invalid HLS manifest response (${response.status})`);
-            break;
-          }
-
-          return response;
-        } catch (error) {
-          lastCandidateError = error;
-          const statusCode = Number((error as any)?.response?.status || 0);
-          const isTransient =
-            (statusCode >= 500 && statusCode < 600) || statusCode === 0;
-          if (isTransient && attempt < maxAttempts) {
-            await sleep(backoffMs);
-            continue;
-          }
-          break;
         }
-      }
 
-      lastError = lastCandidateError;
+        lastError = lastCandidateError;
+      }
     }
 
     throw lastError instanceof Error ? lastError : new Error('HLS proxy failed');
