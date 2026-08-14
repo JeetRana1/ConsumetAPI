@@ -414,8 +414,8 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12e3
   const wantsSubtitles = /[?&]sub\.info=/i.test(normalizedEmbed);
   const preferredMirror = String(options.preferredMirror || "").trim();
   let activeMirrorLabel = "";
-  const MAX_HUBSTREAM_ATTEMPTS = isHubstreamEmbed ? 3 : 1;
-  const attemptTimeout = Math.max(4500, Math.floor(timeout / MAX_HUBSTREAM_ATTEMPTS));
+  const MAX_HUBSTREAM_ATTEMPTS = isHubstreamEmbed ? 1 : 1;
+  const attemptTimeout = isHubstreamEmbed ? Math.min(4e3, Math.max(2500, Math.floor(timeout / 5))) : Math.max(4500, Math.floor(timeout / MAX_HUBSTREAM_ATTEMPTS));
   const addDiscovered = (url, label) => {
     const normalized = normalizeUrl(url);
     if (!normalized || !isDirectMediaUrl(normalized))

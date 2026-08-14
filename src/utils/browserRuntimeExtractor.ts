@@ -422,9 +422,15 @@ export const extractPlaybackWithPlaywright = async (
   let activeMirrorLabel = '';
 
   // hubstream.art rotates between config variants (ads-only vs real payload) and
-  // sometimes delays serving the real payload, so retry with fresh browsers.
-  const MAX_HUBSTREAM_ATTEMPTS = isHubstreamEmbed ? 3 : 1;
-  const attemptTimeout = Math.max(4500, Math.floor(timeout / MAX_HUBSTREAM_ATTEMPTS));
+  // sometimes delays serving the real payload. From datacenter IPs it is often
+  // blocked/slow (Cloudflare bot detection), so a full multi-attempt budget can
+  // burn ~20s before the parallel hdstream4u/morencius path wins. Keep a single,
+  // short attempt so a blocked hubstream fails fast and the reliable hdstream4u
+  // path returns sources quickly.
+  const MAX_HUBSTREAM_ATTEMPTS = isHubstreamEmbed ? 1 : 1;
+  const attemptTimeout = isHubstreamEmbed
+    ? Math.min(4000, Math.max(2500, Math.floor(timeout / 5)))
+    : Math.max(4500, Math.floor(timeout / MAX_HUBSTREAM_ATTEMPTS));
 
   const addDiscovered = (url?: string, label?: string) => {
     const normalized = normalizeUrl(url);
