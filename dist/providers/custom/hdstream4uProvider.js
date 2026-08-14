@@ -1437,36 +1437,44 @@ class HdStream4uProvider {
         } catch {
         }
       }
+      let hubstreamOnlyFallback = null;
       if (/^https?:\/\/(?:[^.]+\.)*hubstream\.(?:art|pw|cc|ink|foo|boo)\/#/i.test(startUrl)) {
-        const hubPlayback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(startUrl, BASE_URL, 2e4);
-        if (hubPlayback?.sources?.length) {
-          return {
-            headers: {
-              Referer: startUrl,
-              ...hubPlayback.cookieHeader ? { Cookie: hubPlayback.cookieHeader } : {},
-              "User-Agent": USER_AGENT
-            },
-            sources: hubPlayback.sources.map((s) => ({
-              url: s.url,
-              quality: s.quality || "auto",
-              isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
-              server
-            })),
-            subtitles: hubPlayback.subtitles || []
-          };
+        const hubHash = /#([A-Za-z0-9_-]+)\/?$/i.exec(startUrl)?.[1] || "";
+        if (!hubHash) {
+          const hubPlayback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(startUrl, BASE_URL, 2e4);
+          if (hubPlayback?.sources?.length) {
+            return {
+              headers: {
+                Referer: startUrl,
+                ...hubPlayback.cookieHeader ? { Cookie: hubPlayback.cookieHeader } : {},
+                "User-Agent": USER_AGENT
+              },
+              sources: hubPlayback.sources.map((s) => ({
+                url: s.url,
+                quality: s.quality || "auto",
+                isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
+                server
+              })),
+              subtitles: hubPlayback.subtitles || []
+            };
+          }
+        } else {
+          hubstreamOnlyFallback = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(startUrl, BASE_URL, 2e4).then(
+            (value) => value?.sources?.length ? { ok: true, hubLink: startUrl, value } : { ok: false, hubLink: startUrl, value: null }
+          ).catch(() => ({ ok: false, hubLink: startUrl, value: null }));
         }
       }
       const fileCodeMatch = /^https?:\/\/(?:[^.]+\.)?(?:hdstream4u\.com|morencius\.com)\/(?:file|embed)\/([A-Za-z0-9_-]+)/i.exec(startUrl);
-      const fileCode = fileCodeMatch?.[1] || (/^[a-z0-9_-]{8,}$/i.test(rawEpisodeId) ? rawEpisodeId : "");
+      let fileCode = fileCodeMatch?.[1] || (/^[a-z0-9_-]{8,}$/i.test(rawEpisodeId) ? rawEpisodeId : "");
+      if (!fileCode && hubstreamOnlyFallback) {
+        fileCode = /#([A-Za-z0-9_-]+)\/?$/i.exec(startUrl)?.[1] || "";
+      }
       if (fileCode) {
         const embedUrl = `https://morencius.com/embed/${fileCode}`;
         const playbackPromise = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(embedUrl, BASE_URL, 4e4).then((value) => value?.sources?.length ? { kind: "embed", value } : Promise.reject(new Error("No embed sources")));
         const filePromise = this.extractHdstream4uFileWithManifestPrefetch(`https://hdstream4u.com/file/${fileCode}`, server).then((value) => value?.sources?.length ? { kind: "file", value } : Promise.reject(new Error("No file sources")));
-        const hubRace = hubPlaybackPromise ? hubPlaybackPromise.then(
-          (h) => h?.ok && h.value?.sources?.length ? { kind: "hub", value: h.value, hubLink: h.hubLink } : Promise.reject(new Error("No hub sources"))
-        ).catch(() => null) : null;
         const firstSource = await Promise.race([
-          Promise.any([playbackPromise, filePromise, hubRace].filter(Boolean)).catch(() => null),
+          Promise.any([filePromise, playbackPromise]).catch(() => null),
           new Promise((resolve) => setTimeout(() => resolve(), 45e3))
         ]);
         const hubResult = firstSource?.kind === "hub" ? firstSource.value : null;
@@ -1561,8 +1569,9 @@ class HdStream4uProvider {
           return hdResult;
         }
       }
-      if (hubPlaybackPromise) {
-        const hub = await hubPlaybackPromise;
+      const hubFallbackPromise = hubPlaybackPromise || hubstreamOnlyFallback;
+      if (hubFallbackPromise) {
+        const hub = await hubFallbackPromise;
         if (hub?.ok && hub.value?.sources?.length) {
           return {
             headers: {
