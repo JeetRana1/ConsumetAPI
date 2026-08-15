@@ -33,6 +33,7 @@ __export(hdstream4uProvider_exports, {
 module.exports = __toCommonJS(hdstream4uProvider_exports);
 var cheerio = __toESM(require("cheerio"));
 var import_axios = __toESM(require("axios"));
+var import_vm = __toESM(require("vm"));
 var import_browserRuntimeExtractor = require("../../utils/browserRuntimeExtractor");
 const BASE_URL = "https://new1.hdhub4u.af";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -201,6 +202,83 @@ const fetchText = async (url, referer = BASE_URL, timeout = requestConfig.timeou
   });
   return String(response.data || "");
 };
+const PACKER_MARKER = "eval(function(p,a,c,k,e,d)";
+const extractPackedScripts = (text) => {
+  const scripts = [];
+  let start = text.indexOf(PACKER_MARKER);
+  while (start !== -1) {
+    const bodyEnd = text.indexOf("}", start);
+    if (bodyEnd === -1)
+      break;
+    const openParen = text.indexOf("(", bodyEnd);
+    if (openParen === -1)
+      break;
+    let i = openParen + 1;
+    let depth = 1;
+    let inStr = false;
+    let quote = "";
+    while (i < text.length && depth > 0) {
+      const ch = text[i];
+      if (inStr) {
+        if (ch === "\\") {
+          i += 2;
+          continue;
+        }
+        if (ch === quote)
+          inStr = false;
+      } else {
+        if (ch === "'" || ch === '"') {
+          inStr = true;
+          quote = ch;
+        } else if (ch === "(")
+          depth++;
+        else if (ch === ")")
+          depth--;
+      }
+      i++;
+    }
+    scripts.push(text.slice(start, i));
+    start = text.indexOf(PACKER_MARKER, i);
+  }
+  return scripts;
+};
+const decodePackerViaVm = (script) => {
+  const m = script.match(/function\(p,a,c,k,e,d\)\{(.*)\}\((.*)\)\)?;?$/s);
+  if (!m)
+    return null;
+  const expression = `(function(p,a,c,k,e,d){
+${m[1]}
+})(${m[2]})`;
+  try {
+    const result = import_vm.default.runInNewContext(expression, {}, { timeout: 5e3 });
+    return typeof result === "string" ? result : null;
+  } catch {
+    return null;
+  }
+};
+const decodeEmbedLinks = (html) => {
+  for (const script of extractPackedScripts(html)) {
+    const decoded = decodePackerViaVm(script);
+    if (!decoded || !decoded.includes("var links"))
+      continue;
+    const hls4 = (decoded.match(/["']hls4["']\s*:\s*["']([^"']+)["']/) || [])[1] || "";
+    const hls2 = (decoded.match(/["']hls2["']\s*:\s*["']([^"']+)["']/) || [])[1] || "";
+    const subtitles = [];
+    const trackRe = /\{([^{}]*?)\}/g;
+    let tm;
+    while ((tm = trackRe.exec(decoded)) !== null) {
+      const block = tm[1];
+      const fileM = block.match(/(?:["']?file["']?|["']url["'])\s*:\s*["']([^"']+\.(?:vtt|srt|ass))["']/i);
+      const labelM = block.match(/label\s*:\s*["']([^"']+)["']/i);
+      if (fileM && labelM && !/thumbnail|slides/i.test(fileM[1])) {
+        subtitles.push({ url: fileM[1], label: labelM[1] });
+      }
+    }
+    if (hls4 || hls2)
+      return { hls4, hls2, subtitles };
+  }
+  return null;
+};
 const isHubstreamSignedUrl = (url) => {
   try {
     const parsed = new URL(url);
@@ -259,6 +337,31 @@ const verifySourcePlayable = async (url, referer, timeoutMs = 4e3) => {
     return data.length > 0;
   } catch {
     return false;
+  }
+};
+const verifySourcePlayableState = async (url, referer, timeoutMs = 4e3) => {
+  if (!url)
+    return "dead";
+  try {
+    const response = await import_axios.default.get(url, {
+      timeout: timeoutMs,
+      maxRedirects: 5,
+      validateStatus: (status) => status >= 200 && status < 500,
+      headers: {
+        "User-Agent": USER_AGENT,
+        Referer: referer
+      }
+    });
+    if (response.status >= 400)
+      return "dead";
+    const data = String(response.data || "");
+    if (/\.m3u8(?:[?#]|$)/i.test(url)) {
+      return data.trim().startsWith("#EXTM3U") ? "ok" : "dead";
+    }
+    return data.length > 0 ? "ok" : "dead";
+  } catch (error) {
+    const statusCode = Number(error?.response?.status || 0);
+    return statusCode >= 400 ? "dead" : "unknown";
   }
 };
 const extractYear = (title) => String(title || "").match(/\b(19|20)\d{2}\b/)?.[0];
@@ -730,7 +833,7 @@ const resolveToPlayer = async (startUrl, referer) => {
   }
   return { playerUrl: currentUrl, referer: currentReferer, origin: safeOrigin(currentReferer) };
 };
-const resolveGateWithPlaywright = async (startUrl, referer, timeoutMs = 4e4) => {
+const resolveGateWithPlaywright = async (startUrl, referer, timeoutMs = 15e3) => {
   let chromium;
   try {
     ({ chromium } = await import("playwright"));
@@ -1383,6 +1486,60 @@ class HdStream4uProvider {
         await browser.close().catch(() => void 0);
     }
   }
+  // Fast path: decode the morencius embed page's p.a.c.k.e.r script directly in
+  // Node (no Playwright). Returns the morencius stream (hls4) plus the acek-cdn
+  // fallback (hls2) and any vtt subtitle tracks.
+  static async extractMorenciusEmbedFast(fileCode, server) {
+    if (!fileCode || !/^[A-Za-z0-9_-]+$/.test(fileCode))
+      return null;
+    try {
+      const html = await fetchText(
+        `https://morencius.com/embed/${fileCode}`,
+        "https://hdstream4u.com/",
+        8e3
+      );
+      const links = decodeEmbedLinks(html);
+      if (!links || !links.hls4 && !links.hls2)
+        return null;
+      const sources = [];
+      const pushUrl = (url) => {
+        const absolute = url.startsWith("/") ? `https://morencius.com${url}` : url;
+        if (isRawVideoUrl(absolute)) {
+          sources.push({
+            url: absolute,
+            quality: qualityFromUrl(absolute),
+            isM3U8: /\.m3u8(?:[?#]|$)/i.test(absolute),
+            server
+          });
+        }
+      };
+      if (links.hls4)
+        pushUrl(links.hls4);
+      if (links.hls2)
+        pushUrl(links.hls2);
+      if (!sources.length)
+        return null;
+      const subtitles = links.subtitles.map((t) => ({
+        url: t.url.startsWith("/") ? `https://morencius.com${t.url}` : t.url,
+        lang: cleanTrackLabel(t.label)
+      })).filter((t) => /\.(vtt|srt|ass)/i.test(t.url)).filter((t, i, arr) => arr.findIndex((x) => x.url === t.url) === i);
+      return {
+        headers: {
+          Referer: "https://morencius.com/",
+          "User-Agent": USER_AGENT
+        },
+        sources: dedupe(sources, (s) => s.url).map((s) => ({
+          url: s.url,
+          quality: s.quality || "auto",
+          isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
+          server
+        })),
+        subtitles
+      };
+    } catch {
+      return null;
+    }
+  }
   static async fetchSources(episodeId, server = "hdstream4u", _strictServer = false, options = {}) {
     const cacheKey = `fetchSources:${String(episodeId || "").trim()}|${server}|${String(
       options?.mediaId || ""
@@ -1470,8 +1627,34 @@ class HdStream4uProvider {
         fileCode = /#([A-Za-z0-9_-]+)\/?$/i.exec(startUrl)?.[1] || "";
       }
       if (fileCode) {
+        const fastEmbed = await this.extractMorenciusEmbedFast(fileCode, server);
+        if (fastEmbed?.sources?.length) {
+          const states = await Promise.all(
+            fastEmbed.sources.map(
+              (s) => verifySourcePlayableState(String(s?.url || ""), "https://morencius.com/", 2500)
+            )
+          );
+          const aliveSources = fastEmbed.sources.filter(
+            (_s, i) => states[i] !== "dead"
+          );
+          if (aliveSources.length) {
+            return {
+              headers: {
+                Referer: "https://morencius.com/",
+                "User-Agent": USER_AGENT
+              },
+              sources: aliveSources.map((s) => ({
+                url: s.url,
+                quality: s.quality || "auto",
+                isM3U8: s.isM3U8 || /\.m3u8/i.test(s.url),
+                server
+              })),
+              subtitles: fastEmbed.subtitles || []
+            };
+          }
+        }
         const embedUrl = `https://morencius.com/embed/${fileCode}`;
-        const playbackPromise = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(embedUrl, BASE_URL, 4e4).then((value) => value?.sources?.length ? { kind: "embed", value } : Promise.reject(new Error("No embed sources")));
+        const playbackPromise = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(embedUrl, BASE_URL, 15e3).then((value) => value?.sources?.length ? { kind: "embed", value } : Promise.reject(new Error("No embed sources")));
         const filePromise = this.extractHdstream4uFileWithManifestPrefetch(`https://hdstream4u.com/file/${fileCode}`, server).then((value) => value?.sources?.length ? { kind: "file", value } : Promise.reject(new Error("No file sources")));
         const firstSource = await Promise.race([
           Promise.any([filePromise, playbackPromise]).catch(() => null),
@@ -1591,7 +1774,7 @@ class HdStream4uProvider {
       }
       if (!/^https?:\/\//i.test(rawEpisodeId) && /^[a-z0-9_-]{8,}$/i.test(rawEpisodeId)) {
         const embedUrl = `https://hdstream4u.com/embed/${rawEpisodeId}`;
-        const playback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(embedUrl, BASE_URL, 4e4);
+        const playback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(embedUrl, BASE_URL, 15e3);
         if (playback?.sources?.length) {
           return {
             headers: { Referer: "https://hdstream4u.com/", "User-Agent": USER_AGENT },
@@ -1694,7 +1877,7 @@ class HdStream4uProvider {
         const hubPlayback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(
           resolved.playerUrl,
           resolved.referer,
-          4e4
+          15e3
         );
         if (hubPlayback.sources.length) {
           return {
@@ -1725,7 +1908,7 @@ class HdStream4uProvider {
           const playbackSubtitles = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(
             resolved.playerUrl,
             resolved.referer,
-            4e4
+            15e3
           );
           if (playbackSubtitles.subtitles.length) {
             parsed.subtitles = dedupe(
@@ -1743,7 +1926,7 @@ class HdStream4uProvider {
         }
       }
       if (!parsed.sources.length) {
-        const gatePlayback = await resolveGateWithPlaywright(resolved.playerUrl, resolved.referer, 4e4);
+        const gatePlayback = await resolveGateWithPlaywright(resolved.playerUrl, resolved.referer, 15e3);
         if (gatePlayback.sources?.length) {
           return {
             headers: {
@@ -1777,7 +1960,7 @@ class HdStream4uProvider {
             const finalPlayback2 = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(
               gatePlayback.playerUrl,
               resolved.playerUrl,
-              4e4
+              15e3
             );
             if (finalPlayback2.sources.length) {
               return {
@@ -1799,7 +1982,7 @@ class HdStream4uProvider {
           const finalGatePlayback = await resolveGateWithPlaywright(
             gatePlayback.playerUrl,
             resolved.playerUrl,
-            4e4
+            15e3
           );
           if (finalGatePlayback.sources?.length) {
             return {
@@ -1815,7 +1998,7 @@ class HdStream4uProvider {
           const finalPlayback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(
             gatePlayback.playerUrl,
             resolved.playerUrl,
-            4e4
+            15e3
           );
           if (finalPlayback.sources.length) {
             return {
@@ -1837,7 +2020,7 @@ class HdStream4uProvider {
         const playback = await (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(
           resolved.playerUrl,
           resolved.referer,
-          4e4
+          15e3
         );
         if (playback.sources.length) {
           return {
