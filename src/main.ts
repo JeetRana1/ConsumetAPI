@@ -464,12 +464,23 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       // StreamVerse attaches external subtitle tracks itself. Some AnimeSalt
      // manifests advertise their subtitle file as an HLS playlist even though
      // it is a plain subtitle payload, which makes HLS.js abort video startup.
-     output = output
-       .split('\n')
-       .filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line))
-       .join('\n');
+      output = output
+        .split('\n')
+        .filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line))
+        .join('\n');
 
-     return output;
+      // Morencius advertises audio playlists that frequently fail through the
+      // proxy before video has initialized. Keep these sources video-only so
+      // HLS.js does not tear down MediaSource on an unavailable audio rendition.
+      if (/morencius\.com/i.test(manifestUrl)) {
+        output = output
+          .split('\n')
+          .filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=AUDIO/i.test(line))
+          .map((line) => line.replace(/,AUDIO="[^"]*"/gi, ''))
+          .join('\n');
+      }
+
+      return output;
   };
 
   const isLikelyHlsManifest = (body: string, contentType?: string): boolean => {
@@ -507,7 +518,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     // configured outbound proxies, adding 15 seconds per segment retry.
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
     const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
-    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url);
+    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url)
+      || /^https?:\/\/cdn\.watching\.onl\//i.test(url)
+      || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url);
     const isAcekCdn = /^https?:\/\/[^/]*\.acek-cdn\.com\//i.test(url);
     const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn
       ? ['']
@@ -522,7 +535,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       // accepts the provider origin as Referer.
       if (
         /^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) ||
+        /^https?:\/\/cdn\.watching\.onl\//i.test(url) ||
         /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) ||
+        /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) ||
         /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) ||
         /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)
       ) {
@@ -671,7 +686,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     ).replace(/#.*$/, '');
     if (
       /^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) ||
+      /^https?:\/\/cdn\.watching\.onl\//i.test(url) ||
       /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) ||
+      /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) ||
       /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) ||
       /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)
     ) {

@@ -40,7 +40,7 @@ const GATE_HOSTS = [
   'gamerxyt.com',
 ];
 
-const RAW_FILE_HOSTS = ['r2.dev', 'googleusercontent.com'];
+const RAW_FILE_HOSTS = ['r2.dev', 'googleusercontent.com', 'acek-cdn.com', 'mindbodywellness.space'];
 
 class SimpleCache<T> {
   private map = new Map<string, { value: T; expires: number }>();
@@ -235,12 +235,13 @@ const decodePackerViaVm = (script: string): string | null => {
   }
 };
 
-const decodeEmbedLinks = (html: string): { hls4: string; hls2: string; subtitles: Array<{ url: string; label: string }> } | null => {
+const decodeEmbedLinks = (html: string): { hls2: string; hls3: string; hls4: string; subtitles: Array<{ url: string; label: string }> } | null => {
   for (const script of extractPackedScripts(html)) {
     const decoded = decodePackerViaVm(script);
     if (!decoded || !decoded.includes('var links')) continue;
-    const hls4 = (decoded.match(/["']hls4["']\s*:\s*["']([^"']+)["']/) || [])[1] || '';
     const hls2 = (decoded.match(/["']hls2["']\s*:\s*["']([^"']+)["']/) || [])[1] || '';
+    const hls3 = (decoded.match(/["']hls3["']\s*:\s*["']([^"']+)["']/) || [])[1] || '';
+    const hls4 = (decoded.match(/["']hls4["']\s*:\s*["']([^"']+)["']/) || [])[1] || '';
     const subtitles: Array<{ url: string; label: string }> = [];
     const trackRe = /\{([^{}]*?)\}/g;
     let tm: RegExpExecArray | null;
@@ -252,7 +253,7 @@ const decodeEmbedLinks = (html: string): { hls4: string; hls2: string; subtitles
         subtitles.push({ url: fileM[1], label: labelM[1] });
       }
     }
-    if (hls4 || hls2) return { hls4, hls2, subtitles };
+    if (hls2 || hls3 || hls4) return { hls2, hls3, hls4, subtitles };
   }
   return null;
 };
@@ -1626,8 +1627,9 @@ export class HdStream4uProvider {
   }
 
   // Fast path: decode the morencius embed page's p.a.c.k.e.r script directly in
-  // Node (no Playwright). Returns the morencius stream (hls4) plus the acek-cdn
-  // fallback (hls2) and any vtt subtitle tracks.
+  // Node (no Playwright). Returns the acek-cdn stream (hls2) as primary, the
+  // mindbodywellness mirror (hls3) as backup, and the morencius origin (hls4) as
+  // last resort, plus any vtt subtitle tracks.
   static async extractMorenciusEmbedFast(
     fileCode: string,
     server: string,
@@ -1640,7 +1642,7 @@ export class HdStream4uProvider {
         8000,
       );
       const links = decodeEmbedLinks(html);
-      if (!links || (!links.hls4 && !links.hls2)) return null;
+      if (!links || (!links.hls2 && !links.hls3 && !links.hls4)) return null;
 
       const sources: Array<{ url: string; quality: string; isM3U8: boolean; server: string }> = [];
       const pushUrl = (url: string) => {
@@ -1654,9 +1656,12 @@ export class HdStream4uProvider {
           });
         }
       };
-      // hls4 is the preferred morencius origin stream; hls2 is the CDN fallback.
-      if (links.hls4) pushUrl(links.hls4);
+      // hls2 (acek-cdn) is the reliable CDN with real .ts segments.
+      // hls3 (mindbodywellness.space) is a backup text-manifest mirror.
+      // hls4 (morencius origin) is the legacy stream that may be ad-only.
       if (links.hls2) pushUrl(links.hls2);
+      if (links.hls3) pushUrl(links.hls3);
+      if (links.hls4) pushUrl(links.hls4);
 
       if (!sources.length) return null;
 

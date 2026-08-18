@@ -379,6 +379,9 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       );
     }
     output = output.split("\n").filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line)).join("\n");
+    if (/morencius\.com/i.test(manifestUrl)) {
+      output = output.split("\n").filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=AUDIO/i.test(line)).map((line) => line.replace(/,AUDIO="[^"]*"/gi, "")).join("\n");
+    }
     return output;
   };
   const isLikelyHlsManifest = (body, contentType) => {
@@ -405,7 +408,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
     const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
-    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url);
+    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url);
     const isAcekCdn = /^https?:\/\/[^/]*\.acek-cdn\.com\//i.test(url);
     const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn ? [""] : isAcekCdn ? ["", ...(0, import_outboundProxy.getProxyCandidatesSync)()] : [...(0, import_outboundProxy.getProxyCandidatesSync)(), ""];
     let lastError = null;
@@ -413,7 +416,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       const safeReferer = String(referer || "").trim();
       if (!safeReferer)
         return safeReferer;
-      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
+      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
         return "https://megaplay.buzz/";
       }
       const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
@@ -516,7 +519,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       request.headers.referer || request.headers.referrer || ""
     ).trim().replace(/#.*$/, "");
     let requestReferer = (refererParam || incomingReferer || "https://streameeeeee.site/").replace(/#.*$/, "");
-    if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
+    if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
       requestReferer = "https://megaplay.buzz/";
     }
     if (isManifest && !incomingRange) {

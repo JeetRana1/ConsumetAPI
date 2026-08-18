@@ -68,7 +68,7 @@ const GATE_HOSTS = [
   "greenmountmotors.xyz",
   "gamerxyt.com"
 ];
-const RAW_FILE_HOSTS = ["r2.dev", "googleusercontent.com"];
+const RAW_FILE_HOSTS = ["r2.dev", "googleusercontent.com", "acek-cdn.com", "mindbodywellness.space"];
 class SimpleCache {
   constructor() {
     this.map = /* @__PURE__ */ new Map();
@@ -261,8 +261,9 @@ const decodeEmbedLinks = (html) => {
     const decoded = decodePackerViaVm(script);
     if (!decoded || !decoded.includes("var links"))
       continue;
-    const hls4 = (decoded.match(/["']hls4["']\s*:\s*["']([^"']+)["']/) || [])[1] || "";
     const hls2 = (decoded.match(/["']hls2["']\s*:\s*["']([^"']+)["']/) || [])[1] || "";
+    const hls3 = (decoded.match(/["']hls3["']\s*:\s*["']([^"']+)["']/) || [])[1] || "";
+    const hls4 = (decoded.match(/["']hls4["']\s*:\s*["']([^"']+)["']/) || [])[1] || "";
     const subtitles = [];
     const trackRe = /\{([^{}]*?)\}/g;
     let tm;
@@ -274,8 +275,8 @@ const decodeEmbedLinks = (html) => {
         subtitles.push({ url: fileM[1], label: labelM[1] });
       }
     }
-    if (hls4 || hls2)
-      return { hls4, hls2, subtitles };
+    if (hls2 || hls3 || hls4)
+      return { hls2, hls3, hls4, subtitles };
   }
   return null;
 };
@@ -1487,8 +1488,9 @@ class HdStream4uProvider {
     }
   }
   // Fast path: decode the morencius embed page's p.a.c.k.e.r script directly in
-  // Node (no Playwright). Returns the morencius stream (hls4) plus the acek-cdn
-  // fallback (hls2) and any vtt subtitle tracks.
+  // Node (no Playwright). Returns the acek-cdn stream (hls2) as primary, the
+  // mindbodywellness mirror (hls3) as backup, and the morencius origin (hls4) as
+  // last resort, plus any vtt subtitle tracks.
   static async extractMorenciusEmbedFast(fileCode, server) {
     if (!fileCode || !/^[A-Za-z0-9_-]+$/.test(fileCode))
       return null;
@@ -1499,7 +1501,7 @@ class HdStream4uProvider {
         8e3
       );
       const links = decodeEmbedLinks(html);
-      if (!links || !links.hls4 && !links.hls2)
+      if (!links || !links.hls2 && !links.hls3 && !links.hls4)
         return null;
       const sources = [];
       const pushUrl = (url) => {
@@ -1513,10 +1515,12 @@ class HdStream4uProvider {
           });
         }
       };
-      if (links.hls4)
-        pushUrl(links.hls4);
       if (links.hls2)
         pushUrl(links.hls2);
+      if (links.hls3)
+        pushUrl(links.hls3);
+      if (links.hls4)
+        pushUrl(links.hls4);
       if (!sources.length)
         return null;
       const subtitles = links.subtitles.map((t) => ({
