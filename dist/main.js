@@ -408,7 +408,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
     const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
-    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url);
+    const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url);
     const isAcekCdn = /^https?:\/\/[^/]*\.acek-cdn\.com\//i.test(url);
     const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn ? [""] : isAcekCdn ? ["", ...(0, import_outboundProxy.getProxyCandidatesSync)()] : [...(0, import_outboundProxy.getProxyCandidatesSync)(), ""];
     let lastError = null;
@@ -602,7 +602,14 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
           }
         }
         if (responseBuffer) {
-          const contentType = responseContentType || "application/octet-stream";
+          let contentType = responseContentType || "application/octet-stream";
+          if (/^text\/html/i.test(contentType) && responseBuffer.length > 16) {
+            const magic = responseBuffer.subarray(0, 8);
+            const head = magic.toString("ascii");
+            if (head.startsWith("ID3") || head.startsWith("\0\0\0") || magic[0] === 71 || magic[0] === 26 || magic[0] === 0) {
+              contentType = "video/mp2t";
+            }
+          }
           const corsHeaders = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, Range",

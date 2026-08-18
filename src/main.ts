@@ -520,7 +520,8 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
     const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url)
       || /^https?:\/\/cdn\.watching\.onl\//i.test(url)
-      || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url);
+      || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url)
+      || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url);
     const isAcekCdn = /^https?:\/\/[^/]*\.acek-cdn\.com\//i.test(url);
     const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn
       ? ['']
@@ -809,7 +810,17 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         // re-requested the same segment over the wire a second time to stream it,
         // doubling upstream latency/CDN load and amplifying throttling 500s.
         if (responseBuffer) {
-          const contentType = responseContentType || 'application/octet-stream';
+          let contentType = responseContentType || 'application/octet-stream';
+          // Some anime CDNs (e.g. livedns.my) return text/html for binary video
+          // segments. Sniff the first bytes and override to prevent browser errors.
+          if (/^text\/html/i.test(contentType) && responseBuffer.length > 16) {
+            const magic = responseBuffer.subarray(0, 8);
+            const head = magic.toString('ascii');
+            if (head.startsWith('ID3') || head.startsWith('\x00\x00\x00')
+              || magic[0] === 0x47 || magic[0] === 0x1A || magic[0] === 0x00) {
+              contentType = 'video/mp2t';
+            }
+          }
           const corsHeaders = {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range',
