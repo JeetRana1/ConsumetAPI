@@ -456,7 +456,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       // preserves them, so only apply the legacy cleanup to other manifests.
       if (!/(?:shiora|mikora|norami|akirax)\./i.test(manifestUrl)) {
         output = output.replace(
-          /#EXTINF:[^\n]*(?:\n#[^\n]*)*\n[^\n]*(?:p1\.ipstatp\.com\/obj\/ad-site-i18n|p\d+-ad-sg\.ibyteimg\.com)[^\n]*/gi,
+          /#EXTINF:[^\n]*(?:\n#[^\n]*)*\n[^\n]*(?:p1\.ipstatp\.com\/obj\/ad-site-i18n|p\d+-ad-sg\.ibyteimg\.com|p\d+-ad-site-sign-sg\.tiktokcdn\.com)[^\n]*/gi,
           '',
         );
       }
