@@ -1878,10 +1878,10 @@ export class HdStream4uProvider {
             new Promise<void>((resolve) => setTimeout(() => resolve(), 45000)),
           ]);
         const hubResult = firstSource?.kind === 'hub' ? (firstSource.value as any) : null;
-        if (hubResult?.sources?.length) {
+        if (hubResult?.sources?.length && firstSource) {
           return {
             headers: {
-              Referer: firstSource.hubLink as string,
+              Referer: (firstSource as any)?.hubLink as string,
               ...(hubResult.cookieHeader ? { Cookie: hubResult.cookieHeader } : {}),
               'User-Agent': USER_AGENT,
             },

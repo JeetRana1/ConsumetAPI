@@ -469,16 +469,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         .filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=SUBTITLES/i.test(line))
         .join('\n');
 
-      // Morencius advertises audio playlists that frequently fail through the
-      // proxy before video has initialized. Keep these sources video-only so
-      // HLS.js does not tear down MediaSource on an unavailable audio rendition.
-      if (/morencius\.com/i.test(manifestUrl)) {
-        output = output
-          .split('\n')
-          .filter((line) => !/^#EXT-X-MEDIA:/i.test(line) || !/TYPE=AUDIO/i.test(line))
-          .map((line) => line.replace(/,AUDIO="[^"]*"/gi, ''))
-          .join('\n');
-      }
+      // Morencius audio playlists go through the proxy alongside video.
+      // They are now reliably proxied so keep them available for
+      // multi-language selection (English, Hindi, etc.) on the client.
 
       return output;
   };
@@ -546,7 +539,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       }
       const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
       if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
-        return '';
+        return safeReferer;
       }
       return safeReferer;
     })();
@@ -599,7 +592,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                     : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
                   ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
                 },
-                timeout: isIbyteCdn ? 30000 : isManifest ? 15000 : 10000,
+                timeout: isAcekCdn ? 25000 : isIbyteCdn ? 30000 : isManifest ? 15000 : 10000,
                 responseType: isManifest ? 'text' : 'arraybuffer',
                 validateStatus: (status: number) => status < 500,
                 ...(proxyOptions as any),
