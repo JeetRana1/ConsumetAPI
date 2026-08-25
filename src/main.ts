@@ -183,20 +183,17 @@ const hubstreamNodeVariants = (url: string): string[] => {
   return variants;
 };
 
-import books from './routes/books';
 import anime from './routes/anime';
-import manga from './routes/manga';
-import comics from './routes/comics';
 import lightnovels from './routes/light-novels';
 import movies from './routes/movies';
 import meta from './routes/meta';
-import news from './routes/news';
 import sports from './routes/sports';
 import ghoulstreams from './routes/ghoulstreams';
 import chalk from 'chalk';
 import Utils from './utils';
 import { normalizeStreamLinks } from './utils/streamable';
 import { registerWatchTogether } from './utils/watchTogether';
+import { sendStreamVersePasswordReset } from './utils/streamversePasswordReset';
 
 export const redis = null;
 
@@ -233,6 +230,16 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const token = createMediaProxyToken();
     if (!token) return reply.code(503).send({ error: 'Media proxy token service is not configured' });
     return reply.send({ token, expiresIn: MEDIA_PROXY_TOKEN_TTL_SECONDS });
+  });
+
+  fastify.post('/auth/password-reset', async (request: any, reply) => {
+    try {
+      await sendStreamVersePasswordReset(String(request.body?.email || ''));
+      return reply.send({ ok: true });
+    } catch (error: any) {
+      request.log.error(error, 'custom password reset failed');
+      return reply.code(400).send({ error: error?.message || 'Unable to send password reset email' });
+    }
   });
 
   fastify.addHook('preSerialization', async (_request, _reply, payload) => {
@@ -328,14 +335,10 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       chalk.yellowBright('TMDB api key not found. the TMDB meta route may not work.'),
     );
 
-  await fastify.register(books, { prefix: '/books' });
   await fastify.register(anime, { prefix: '/anime' });
-  await fastify.register(manga, { prefix: '/manga' });
-  await fastify.register(comics, { prefix: '/comics' });
   await fastify.register(lightnovels, { prefix: '/light-novels' });
   await fastify.register(movies, { prefix: '/movies' });
   await fastify.register(meta, { prefix: '/meta' });
-  await fastify.register(news, { prefix: '/news' });
   await fastify.register(sports, { prefix: '/sports' });
   await fastify.register(ghoulstreams);
   await fastify.register(Utils, { prefix: '/utils' });
@@ -491,6 +494,15 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     return /^#EXTM3U\b/m.test(text);
   };
 
+  const decodeNumericHlsManifest = (body: unknown): string => {
+    const text = String(body || '').trim();
+    if (!text || /#EXTM3U\b/m.test(text)) return text;
+    const tokens = text.split(/\s+/);
+    if (tokens.length < 20 || tokens.some((token) => !/^\d{1,3}$/.test(token))) return text;
+    const decoded = tokens.map((token) => String.fromCharCode(Number(token))).join('');
+    return /^#EXTM3U\b/m.test(decoded) ? decoded : text;
+  };
+
   const shouldTreatAsManifestRequest = (url: string, incomingRange: string): boolean => {
     if (/\.m3u8(?:$|\?)/i.test(url)) return true;
     if (incomingRange) return false;
@@ -537,9 +549,14 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       ) {
         return 'https://megaplay.buzz/';
       }
-      const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
+      const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:cx|ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
       if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
         return safeReferer;
+      }
+      // Provider payloads occasionally return the CDN URL as the source
+      // referer. AnimeSalt expects its site origin for CDN requests instead.
+      if (isAnimeSaltCdn && /(?:as-cdn\d+|z\d+)\./i.test(safeReferer)) {
+        return 'https://animesalt.cx/';
       }
       return safeReferer;
     })();
@@ -593,7 +610,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                   ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
                 },
                 timeout: isAcekCdn ? 25000 : isIbyteCdn ? 30000 : isManifest ? 15000 : 10000,
-                responseType: isManifest ? 'text' : 'arraybuffer',
+                 // Stream media segments as soon as upstream sends bytes. Buffering
+                 // the full segment before replying can drain HLS.js on slower hosts.
+                 responseType: isManifest ? 'text' : 'stream',
                 validateStatus: (status: number) => status < 500,
                 ...(proxyOptions as any),
                 // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
@@ -605,6 +624,10 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             });
 
             const responseContentType = String(response.headers['content-type'] || '');
+
+            if (isManifest) {
+              response.data = decodeNumericHlsManifest(response.data);
+            }
 
             if (response.status >= 400) {
               lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
@@ -776,6 +799,35 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         );
         reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
         return reply.send(content);
+      }
+
+      // Do not wait for the complete segment buffer before sending it to the
+      // player. This is especially important for AniKoto CDNs, where segment
+      // download time can exceed the client's initial buffer.
+      const upstreamStream = response.data as any;
+      if (upstreamStream && typeof upstreamStream.pipe === 'function') {
+        const streamHeaders: Record<string, string> = {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Content-Type': responseContentType || 'application/octet-stream',
+        };
+        if (response.headers['content-length']) {
+          streamHeaders['Content-Length'] = String(response.headers['content-length']);
+        }
+        if (response.headers['content-range']) {
+          streamHeaders['Content-Range'] = String(response.headers['content-range']);
+        }
+        if (response.headers['accept-ranges']) {
+          streamHeaders['Accept-Ranges'] = String(response.headers['accept-ranges']);
+        }
+        reply.raw.writeHead(response.status || 200, streamHeaders);
+        upstreamStream.on('error', (err: Error) => {
+          console.error('HLS segment stream error:', err.message);
+          try { reply.raw.destroy(err); } catch { /* response already closed */ }
+        });
+        upstreamStream.pipe(reply.raw);
+        return reply;
       }
 
       // For segments (non-manifest), stream directly using keep-alive agents

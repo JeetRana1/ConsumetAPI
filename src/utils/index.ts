@@ -523,7 +523,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           let originForRequest = requestConfig.headers.Origin || '';
 
           const isAnimesaltCdn =
-            /(^|\.)(as-cdn\d+|z\d+|animesalt|as2|as-api)\.(pro|ac|top|xyz|link|click|net|cc|org)$/i.test(
+            /(^|\.)(as-cdn\d+|z\d+|animesalt|as2|as-api)\.(cx|pro|ac|top|xyz|link|click|net|cc|org)$/i.test(
               target.hostname,
             );
 
@@ -535,19 +535,19 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
           if (isAnimesaltCdn) {
             if (refererForRequest.includes('animesalt.')) {
               refererForRequest = refererForRequest.replace(
-                /animesalt\.(pro|xyz|click)/gi,
-                'animesalt.ac',
+                /animesalt\.(cx|pro|xyz|click)/gi,
+                'animesalt.cx',
               );
             } else if (!refererForRequest) {
-              refererForRequest = 'https://animesalt.ac/';
+              refererForRequest = 'https://animesalt.cx/';
             }
             if (originForRequest.includes('animesalt.')) {
               originForRequest = originForRequest.replace(
-                /animesalt\.(pro|xyz|click)/gi,
-                'animesalt.ac',
+                /animesalt\.(cx|pro|xyz|click)/gi,
+                'animesalt.cx',
               );
             } else if (!originForRequest) {
-              originForRequest = 'https://animesalt.ac';
+              originForRequest = 'https://animesalt.cx';
             }
           }
 
@@ -1019,7 +1019,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       const values = [
         refererForRequest,
         `${target.protocol}//${target.host}/`,
-        isAnimeSaltSubtitleHost ? 'https://animesalt.ac/' : '',
+        isAnimeSaltSubtitleHost ? 'https://animesalt.cx/' : '',
         isAnimeSaltSubtitleHost ? `${target.protocol}//${target.host}/` : '',
       ].filter(Boolean);
       return [...new Set(values)];

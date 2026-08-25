@@ -5,7 +5,7 @@ import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import Anilist from '@consumet/extensions/dist/providers/meta/anilist';
 
-const BASE_URL = 'https://animesalt.ac';
+const BASE_URL = 'https://animesalt.cx';
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
@@ -655,6 +655,20 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 isM3U8: true,
                 quality: 'Default',
                 referer: iframe1,
+                // The CDN binds the signed playlist to the iframe session.
+                // Preserve the cookies collected before calling getVideo so
+                // the browser's proxied manifest and segment requests remain
+                // authorized.
+                cookieHeader: cookies,
+              });
+              // Keep the provider's own player as a browser-side fallback.
+              // Its JavaScript can refresh CDN session state when the signed
+              // playlist is rejected by a server-side proxy.
+              sources.push({
+                url: iframe1,
+                isIframe: true,
+                quality: 'AnimeSalt Embed',
+                referer: BASE_URL,
               });
             } else {
               // Fallback: return the iframe itself
