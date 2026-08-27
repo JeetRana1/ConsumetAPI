@@ -138,17 +138,27 @@ const fetchCurrentAniKotoSources = async (episodeId, server) => {
       if (!embedId)
         continue;
       const embedOrigin = new URL(embedUrl).origin;
-      const sourceResponse = await fetch(
-        `${embedOrigin}/stream/getSources?id=${encodeURIComponent(embedId)}`,
-        {
-          headers: {
-            ...ajaxHeaders(),
-            Origin: embedOrigin,
-            Referer: embedUrl
-          }
+      const sourceUrls = [
+        `${embedOrigin}/stream/getSourcesNew?id=${encodeURIComponent(embedId)}&id=${encodeURIComponent(embedId)}`,
+        `${embedOrigin}/stream/getSources?id=${encodeURIComponent(embedId)}`
+      ];
+      if (/megaplay\.buzz$/i.test(new URL(embedUrl).hostname)) {
+        sourceUrls.push(
+          `https://vidwish.live/stream/getSourcesNew?id=${encodeURIComponent(embedId)}&id=${encodeURIComponent(embedId)}`
+        );
+      }
+      let sourceJson = null;
+      for (const sourceUrl of sourceUrls) {
+        const sourceOrigin = new URL(sourceUrl).origin;
+        const sourceResponse = await fetch(sourceUrl, {
+          headers: { ...ajaxHeaders(), Origin: sourceOrigin, Referer: embedUrl }
+        });
+        const candidate = await parseJson(sourceResponse);
+        if (candidate?.sources?.file || candidate?.sources?.url || candidate?.source || candidate?.url) {
+          sourceJson = candidate;
+          break;
         }
-      );
-      const sourceJson = await parseJson(sourceResponse);
+      }
       const file = String(
         sourceJson?.sources?.file || sourceJson?.sources?.url || sourceJson?.source || sourceJson?.url || ""
       ).trim();
