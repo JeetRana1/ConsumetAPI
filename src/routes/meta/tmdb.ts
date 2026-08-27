@@ -466,15 +466,8 @@ const resolveHdstream4uTvEpisodeId = async (
   );
   const normalizeEpisodeId = (entry: any): string => {
     const raw = String(entry?.episodeId || entry?.url || entry?.id || '').trim();
-    // Hubstream episode IDs need to be resolved back to the matching HDStream4u file URL.
-    if (/^https?:\/\/(?:[^.]+\.)*hubstream\.(?:art|pw|cc|ink|foo|boo)\/?#/i.test(raw)) {
-      for (const candidate of entries) {
-        const candidateUrl = String(candidate?.episodeId || candidate?.url || candidate?.id || '').trim();
-        if (/^https?:\/\/(?:[^.]+\.)?(?:hdstream4u\.com|morencius\.com)\/file\//i.test(candidateUrl)) {
-          return candidateUrl;
-        }
-      }
-    }
+    // Preserve the episode's own HubStream link so TV playback can try the
+    // matching HubStream episode before falling back to HDStream4u.
     return raw;
   };
 

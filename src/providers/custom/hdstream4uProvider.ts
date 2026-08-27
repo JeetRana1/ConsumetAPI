@@ -147,9 +147,6 @@ const absoluteUrl = (url: string, base = BASE_URL): string => {
   if (!raw) return '';
   try {
     const parsed = new URL(raw, base);
-    if (/^(?:new\d+\.)?hdhub4u\.cl$/i.test(parsed.hostname)) {
-      parsed.hostname = new URL(BASE_URL).hostname;
-    }
     return parsed.toString();
   } catch {
     return raw;
@@ -1363,7 +1360,7 @@ export class HdStream4uProvider {
       }));
 
       if (episodes.some((e) => /hubstream\.art\/#[A-Za-z0-9_-]+$/.test(e.url) || /morencius\.com\/file\/[A-Za-z0-9_-]+$/.test(e.url))) {
-        const betterFromPage = watchLinks.filter((l) => /(?:hdstream4u|morencius)\.com\/file\/[A-Za-z0-9_-]+/i.test(l));
+        const betterFromPage: string[] = [];
         if (betterFromPage.length) {
           let hdIdx = 0;
           for (const ep of episodes) {
@@ -1828,7 +1825,7 @@ export class HdStream4uProvider {
 // Try the morencius.com embed page first — it reliably serves working
         // morencius.com/stream/ URLs instead of the broken hubstream URLs from
         // the decoded payload on the file page.
-        if (fileCode) {
+      if (fileCode && !hubstreamOnlyFallback) {
           // Fast path: the embed page's p.a.c.k.e.r payload is decoded in-process
           // (no Playwright). This typically yields the morencius stream in ~1s;
           // the Playwright race below is only a fallback when it fails.
@@ -2003,6 +2000,18 @@ export class HdStream4uProvider {
             subtitles: hub.value.subtitles || [],
           };
         }
+      }
+
+      // A HubStream-only episode has no direct file URL to try initially. If
+      // its matching HubStream page fails, retry the same identifier through
+      // the HDStream4U/Morencius extraction path as the secondary fallback.
+      if (hubstreamOnlyFallback && fileCode) {
+        return HdStream4uProvider.fetchSourcesUncached(
+          `https://hdstream4u.com/file/${fileCode}`,
+          server,
+          _strictServer,
+          options,
+        );
       }
 
       // Fast path for direct hdstream embed identifiers (old hdstream4u.com/embed/ fallback).

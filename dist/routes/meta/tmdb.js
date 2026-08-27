@@ -386,14 +386,6 @@ const resolveHdstream4uTvEpisodeId = async (request, id, type, season, episode) 
   );
   const normalizeEpisodeId = (entry) => {
     const raw = String(entry?.episodeId || entry?.url || entry?.id || "").trim();
-    if (/^https?:\/\/(?:[^.]+\.)*hubstream\.(?:art|pw|cc|ink|foo|boo)\/?#/i.test(raw)) {
-      for (const candidate of entries) {
-        const candidateUrl = String(candidate?.episodeId || candidate?.url || candidate?.id || "").trim();
-        if (/^https?:\/\/(?:[^.]+\.)?(?:hdstream4u\.com|morencius\.com)\/file\//i.test(candidateUrl)) {
-          return candidateUrl;
-        }
-      }
-    }
     return raw;
   };
   if (match)

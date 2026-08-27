@@ -164,9 +164,6 @@ const absoluteUrl = (url, base = BASE_URL) => {
     return "";
   try {
     const parsed = new URL(raw, base);
-    if (/^(?:new\d+\.)?hdhub4u\.cl$/i.test(parsed.hostname)) {
-      parsed.hostname = new URL(BASE_URL).hostname;
-    }
     return parsed.toString();
   } catch {
     return raw;
@@ -1259,7 +1256,7 @@ class HdStream4uProvider {
         fileCode: href.split("/").pop() || ""
       }));
       if (episodes.some((e) => /hubstream\.art\/#[A-Za-z0-9_-]+$/.test(e.url) || /morencius\.com\/file\/[A-Za-z0-9_-]+$/.test(e.url))) {
-        const betterFromPage = watchLinks.filter((l) => /(?:hdstream4u|morencius)\.com\/file\/[A-Za-z0-9_-]+/i.test(l));
+        const betterFromPage = [];
         if (betterFromPage.length) {
           let hdIdx = 0;
           for (const ep of episodes) {
@@ -1630,7 +1627,7 @@ class HdStream4uProvider {
       if (!fileCode && hubstreamOnlyFallback) {
         fileCode = /#([A-Za-z0-9_-]+)\/?$/i.exec(startUrl)?.[1] || "";
       }
-      if (fileCode) {
+      if (fileCode && !hubstreamOnlyFallback) {
         const fastEmbed = await this.extractMorenciusEmbedFast(fileCode, server);
         if (fastEmbed?.sources?.length) {
           const states = await Promise.all(
@@ -1775,6 +1772,14 @@ class HdStream4uProvider {
             subtitles: hub.value.subtitles || []
           };
         }
+      }
+      if (hubstreamOnlyFallback && fileCode) {
+        return HdStream4uProvider.fetchSourcesUncached(
+          `https://hdstream4u.com/file/${fileCode}`,
+          server,
+          _strictServer,
+          options
+        );
       }
       if (!/^https?:\/\//i.test(rawEpisodeId) && /^[a-z0-9_-]{8,}$/i.test(rawEpisodeId)) {
         const embedUrl = `https://hdstream4u.com/embed/${rawEpisodeId}`;
