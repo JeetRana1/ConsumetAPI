@@ -527,8 +527,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       || /^https?:\/\/cdn\.watching\.onl\//i.test(url)
       || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url)
       || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url);
+    const isMorencius = /^https?:\/\/morencius\.com\//i.test(url);
     const isAcekCdn = /^https?:\/\/[^/]*\.acek-cdn\.com\//i.test(url);
-    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn
+    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn || isMorencius
       ? ['']
       : isAcekCdn
         ? ['', ...getProxyCandidatesSync()]
