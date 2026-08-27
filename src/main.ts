@@ -522,6 +522,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     // Those requests are reachable directly but commonly hang through the
     // configured outbound proxies, adding 15 seconds per segment retry.
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
+    const isTikTokCdn = /^https?:\/\/[^/]*\.tiktokcdn\.com\//i.test(url);
     const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
     const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url)
       || /^https?:\/\/cdn\.watching\.onl\//i.test(url)
@@ -529,7 +530,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url);
     const isMorencius = /^https?:\/\/morencius\.com\//i.test(url);
     const isAcekCdn = /^https?:\/\/[^/]*\.acek-cdn\.com\//i.test(url);
-    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isHubstreamCdn || isShioraCdn || isMorencius
+    const proxyCandidates = isAnimeSaltCdn || isIbyteCdn || isTikTokCdn || isHubstreamCdn || isShioraCdn || isMorencius
       ? ['']
       : isAcekCdn
         ? ['', ...getProxyCandidatesSync()]
