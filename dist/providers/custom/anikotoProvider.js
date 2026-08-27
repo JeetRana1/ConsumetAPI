@@ -1,0 +1,181 @@
+"use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var anikotoProvider_exports = {};
+__export(anikotoProvider_exports, {
+  fetchCurrentAniKotoSources: () => fetchCurrentAniKotoSources
+});
+module.exports = __toCommonJS(anikotoProvider_exports);
+var cheerio = __toESM(require("cheerio"));
+const BASE_URL = "https://anikototv.to";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const pageHeaders = () => ({
+  "User-Agent": USER_AGENT,
+  Accept: "text/html, */*; q=0.01",
+  "Accept-Language": "en-US,en;q=0.5",
+  Referer: `${BASE_URL}/`
+});
+const ajaxHeaders = () => ({
+  ...pageHeaders(),
+  "X-Requested-With": "XMLHttpRequest",
+  Accept: "application/json, text/javascript, */*; q=0.01"
+});
+const parseJson = async (response) => {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+const absoluteUrl = (url) => url.startsWith("http") ? url : `https:${url}`;
+const extractEmbedId = (html) => html.match(/id=["']megaplay-player["'][^>]*data-id=["'](\d+)["']/i)?.[1] || html.match(/data-id=["'](\d+)["']/i)?.[1] || html.match(/id=["'](\d+)["']/i)?.[1] || "";
+const hasSources = (result) => Boolean(
+  result?.sub?.sources?.some((source) => String(source?.url || "").trim()) || result?.dub?.sources?.some((source) => String(source?.url || "").trim())
+);
+const fetchCurrentAniKotoSources = async (episodeId, server) => {
+  const match = episodeId.match(/^(.+)\$episode\$(\d+)$/);
+  if (!match)
+    return null;
+  const slug = match[1];
+  const episodeNumber = Number(match[2]);
+  const watchResponse = await fetch(`${BASE_URL}/watch/${encodeURIComponent(slug)}`, {
+    headers: pageHeaders()
+  });
+  if (!watchResponse.ok)
+    return null;
+  const watchHtml = await watchResponse.text();
+  const animeId = cheerio.load(watchHtml)("#watch-main").attr("data-id") || "";
+  if (!animeId)
+    return null;
+  const episodeResponse = await fetch(
+    `${BASE_URL}/ajax/episode/list/${encodeURIComponent(animeId)}`,
+    { headers: ajaxHeaders() }
+  );
+  const episodeJson = await parseJson(episodeResponse);
+  const episodeHtml = String(episodeJson?.result || episodeJson?.html || "");
+  const $episodes = cheerio.load(episodeHtml);
+  const episode = $episodes(`a[data-num="${episodeNumber}"]`).first();
+  const episodeIds = episode.attr("data-ids") || episode.attr("data-id") || "";
+  if (!episodeIds)
+    return null;
+  const serverResponse = await fetch(
+    `${BASE_URL}/ajax/server/list?servers=${encodeURIComponent(episodeIds)}`,
+    { headers: ajaxHeaders() }
+  );
+  const serverJson = await parseJson(serverResponse);
+  const $servers = cheerio.load(String(serverJson?.result || serverJson?.html || ""));
+  const groups = [];
+  $servers("div.servers > div.type, div[data-type]").each((_, element) => {
+    const group = $servers(element);
+    const type = String(group.attr("data-type") || "").toLowerCase().includes("dub") ? "dub" : "sub";
+    group.find("li[data-link-id]").each((__, item) => {
+      const li = $servers(item);
+      const linkId = li.attr("data-link-id") || "";
+      if (linkId) {
+        groups.push({
+          type,
+          linkId,
+          name: li.text().trim(),
+          svId: li.attr("data-sv-id") || ""
+        });
+      }
+    });
+  });
+  if (!groups.length) {
+    $servers("li[data-link-id]").each((_, item) => {
+      const li = $servers(item);
+      const linkId = li.attr("data-link-id") || "";
+      if (linkId)
+        groups.push({ type: "sub", linkId, name: li.text().trim(), svId: "" });
+    });
+  }
+  const result = { headers: { Referer: BASE_URL } };
+  for (const group of groups) {
+    if (server && !group.name.toLowerCase().includes(String(server).toLowerCase()))
+      continue;
+    try {
+      const svQuery = group.svId ? `&sv=${encodeURIComponent(group.svId)}` : "";
+      const linkResponse = await fetch(
+        `${BASE_URL}/ajax/server?get=${encodeURIComponent(group.linkId)}${svQuery}`,
+        { headers: ajaxHeaders() }
+      );
+      const linkJson = await parseJson(linkResponse);
+      const embedUrl = absoluteUrl(String(linkJson?.result?.url || linkJson?.url || ""));
+      if (!embedUrl || !/^https?:\/\//i.test(embedUrl))
+        continue;
+      const embedResponse = await fetch(embedUrl, {
+        headers: { ...pageHeaders(), Referer: `${BASE_URL}/` }
+      });
+      if (!embedResponse.ok)
+        continue;
+      const embedId = extractEmbedId(await embedResponse.text());
+      if (!embedId)
+        continue;
+      const embedOrigin = new URL(embedUrl).origin;
+      const sourceResponse = await fetch(
+        `${embedOrigin}/stream/getSources?id=${encodeURIComponent(embedId)}`,
+        {
+          headers: {
+            ...ajaxHeaders(),
+            Origin: embedOrigin,
+            Referer: embedUrl
+          }
+        }
+      );
+      const sourceJson = await parseJson(sourceResponse);
+      const file = String(
+        sourceJson?.sources?.file || sourceJson?.sources?.url || sourceJson?.source || sourceJson?.url || ""
+      ).trim();
+      if (!file)
+        continue;
+      const payload = group.type === "dub" ? result.dub ||= { sources: [], subtitles: [] } : result.sub ||= { sources: [], subtitles: [] };
+      if (!payload.sources.some((source) => source.url === file)) {
+        payload.sources.push({
+          url: file,
+          isM3U8: /\.m3u8(?:[?#]|$)/i.test(file),
+          quality: "auto",
+          server: group.name,
+          headers: { Referer: embedUrl, "User-Agent": USER_AGENT },
+          isDub: group.type === "dub"
+        });
+      }
+      for (const track of Array.isArray(sourceJson?.tracks) ? sourceJson.tracks : []) {
+        if (track?.file && track.kind !== "thumbnails" && !payload.subtitles.some((sub) => sub.url === track.file)) {
+          payload.subtitles.push({ url: track.file, lang: track.label || "English" });
+        }
+      }
+    } catch {
+    }
+  }
+  return hasSources(result) ? result : null;
+};
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  fetchCurrentAniKotoSources
+});

@@ -1,5 +1,6 @@
 import { FastifyInstance, RegisterOptions } from 'fastify';
 import { ANIME } from '@consumet/extensions';
+import { fetchCurrentAniKotoSources } from '../../providers/custom/anikotoProvider';
 
 const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
   const createProvider = () => new (ANIME as any).AniKoto();
@@ -26,6 +27,13 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
     try {
       const episodeId = String(request.params.episodeId);
       const server = request.query?.server;
+      try {
+        const currentResult = await fetchCurrentAniKotoSources(episodeId, server);
+        if (currentResult) return reply.send(currentResult);
+      } catch (error: any) {
+        request.log.warn({ err: error, episodeId }, 'Current AniKoto extraction failed; using extension provider');
+      }
+
       let result: any;
       try {
         result = await createProvider().fetchEpisodeSources(episodeId, server);
@@ -34,18 +42,6 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
         // matching the recovery users previously got by restarting the API.
         request.log.warn({ err: firstError, episodeId }, 'AniKoto watch retry with fresh provider');
         result = await createProvider().fetchEpisodeSources(episodeId, server);
-      }
-      const sources = Array.isArray(result?.sources)
-        ? result.sources
-        : Array.isArray(result?.sub?.sources)
-          ? result.sub.sources
-          : null;
-      if (sources) {
-        const megaplay = sources.filter((source: any) => /megap\.mikora\.top/i.test(String(source?.url || '')));
-        if (megaplay.length) {
-          if (Array.isArray(result?.sources)) result.sources = megaplay;
-          else result.sub.sources = megaplay;
-        }
       }
       return reply.send(result);
     } catch (error: any) {
