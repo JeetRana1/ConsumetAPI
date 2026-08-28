@@ -3,7 +3,7 @@ import axios from 'axios';
 import vm from 'vm';
 import { extractPlaybackWithPlaywright, setCachedHlsManifest } from '../../utils/browserRuntimeExtractor';
 
-const BASE_URL = 'https://new1.hdhub4u.af';
+const BASE_URL = 'https://new5.hdhub4u.cl';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const TMDB_KEY = String(process.env.TMDB_KEY || '').trim();
@@ -147,6 +147,11 @@ const absoluteUrl = (url: string, base = BASE_URL): string => {
   if (!raw) return '';
   try {
     const parsed = new URL(raw, base);
+    // Search indexes can retain links from retired HDHub4u domains.
+    if (/^(?:new1\.hdhub4u\.af|new2\.hdhub4u\.cl)$/i.test(parsed.hostname)) {
+      parsed.protocol = 'https:';
+      parsed.hostname = new URL(BASE_URL).hostname;
+    }
     return parsed.toString();
   } catch {
     return raw;
