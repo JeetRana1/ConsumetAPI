@@ -1301,10 +1301,20 @@ export class HdStream4uProvider {
         ? fetchTmdbBasicInfo(originalId, type)
         : Promise.resolve(null);
       let mediaId = originalId;
+      const tmdbInfo = await tmdbInfoPromise;
       if (/^\d+$/.test(mediaId)) {
         mediaId = (await resolveTmdbNumericIdToPage(mediaId, type)) || mediaId;
+        if (/^\d+$/.test(mediaId)) {
+          const title = String(tmdbInfo?.title || tmdbInfo?.name || '').trim();
+          if (title) {
+            const searchResults = await HdStream4uProvider.search(title, 1);
+            const match = (searchResults?.results || [])
+              .filter((item: any) => item?.id && hasStrictTitleMatch(String(item.title || ''), [title]))
+              .sort((a: any, b: any) => titleMatchScore(String(b.title || ''), [title]) - titleMatchScore(String(a.title || ''), [title]))[0];
+            if (match?.id) mediaId = String(match.id);
+          }
+        }
       }
-      const tmdbInfo = await tmdbInfoPromise;
 
       const cacheKey = `hdstream4u:info:${type}:${mediaId}`;
       const cached = cache.get(cacheKey);

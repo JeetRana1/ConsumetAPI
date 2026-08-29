@@ -1204,10 +1204,19 @@ class HdStream4uProvider {
       const originalId = String(id || "").trim();
       const tmdbInfoPromise = /^\d+$/.test(originalId) ? fetchTmdbBasicInfo(originalId, type) : Promise.resolve(null);
       let mediaId = originalId;
+      const tmdbInfo = await tmdbInfoPromise;
       if (/^\d+$/.test(mediaId)) {
         mediaId = await resolveTmdbNumericIdToPage(mediaId, type) || mediaId;
+        if (/^\d+$/.test(mediaId)) {
+          const title2 = String(tmdbInfo?.title || tmdbInfo?.name || "").trim();
+          if (title2) {
+            const searchResults = await HdStream4uProvider.search(title2, 1);
+            const match = (searchResults?.results || []).filter((item) => item?.id && hasStrictTitleMatch(String(item.title || ""), [title2])).sort((a, b) => titleMatchScore(String(b.title || ""), [title2]) - titleMatchScore(String(a.title || ""), [title2]))[0];
+            if (match?.id)
+              mediaId = String(match.id);
+          }
+        }
       }
-      const tmdbInfo = await tmdbInfoPromise;
       const cacheKey = `hdstream4u:info:${type}:${mediaId}`;
       const cached = cache.get(cacheKey);
       if (cached)
