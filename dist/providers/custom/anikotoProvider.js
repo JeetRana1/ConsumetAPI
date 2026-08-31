@@ -32,7 +32,7 @@ __export(anikotoProvider_exports, {
 });
 module.exports = __toCommonJS(anikotoProvider_exports);
 var cheerio = __toESM(require("cheerio"));
-const BASE_URL = "https://anikototv.to";
+const BASE_URL = "https://anikoto.cz";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const pageHeaders = () => ({
   "User-Agent": USER_AGENT,

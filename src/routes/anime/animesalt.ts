@@ -5,6 +5,35 @@ import cache from '../../utils/cache';
 import { redis, REDIS_TTL } from '../../main';
 import Anilist from '@consumet/extensions/dist/providers/meta/anilist';
 
+// In-memory cache for the stable per-episode watch metadata (iframe URL,
+// session cookie and subtitles). The backend has Redis disabled, so the redis
+// cache helpers are no-ops — a local TTL map gives us the same win without
+// external infra. Only the signed getVideo URL is refreshed on each call.
+// Episode page metadata and the iframe session remain usable across several
+// episode loads; only the signed video URL is refreshed per request.
+const WATCH_META_TTL_MS = 5 * 60_000;
+const watchMetaCache = new Map<
+  string,
+  { expiresAt: number; value: { iframe1: string; cookies: string; subtitles: any[] } }
+>();
+
+const getWatchMeta = (key: string) => {
+  const entry = watchMetaCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    watchMetaCache.delete(key);
+    return null;
+  }
+  return entry.value;
+};
+
+const setWatchMeta = (
+  key: string,
+  value: { iframe1: string; cookies: string; subtitles: any[] },
+) => {
+  watchMetaCache.set(key, { expiresAt: Date.now() + WATCH_META_TTL_MS, value });
+};
+
 const BASE_URL = 'https://animesalt.cx';
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -595,18 +624,50 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         const watchUrl = isMovie
           ? `${BASE_URL}/movies/${slug}/`
           : `${BASE_URL}/episode/${episodeId}/`;
-
-        const res = await proxyGet(watchUrl, {
-          headers: { 'User-Agent': UA },
-          timeout: 3000,
-        });
-        const $ = cheerio.load(res.data);
         const sources: any[] = [];
-        const subtitles: any[] = [];
 
-        // ── Server 1 (as-cdn21.top) ──────────────────────────────────────────
-        const iframe1 =
-          $('#options-0 iframe').attr('data-src') || $('#options-0 iframe').attr('src');
+        // Steps 1+2 (episode page + player/iframe page) are stable per episode:
+        // the iframe URL, the session cookie and the subtitles do not change
+        // between loads. Only the signed getVideo URL (step 3) expires, so we
+        // cache the metadata and always re-request getVideo fresh. A cached
+        // cookie pairs correctly with a fresh signed URL (verified), so this
+        // avoids the ~700ms of repeated upstream fetches on every episode load.
+        const metaCacheKey = `animesalt:watch:${episodeId}:meta:v1`;
+        const fetchMeta = async () => {
+          const res = await proxyGet(watchUrl, {
+            headers: { 'User-Agent': UA },
+            timeout: 3000,
+          });
+          const $ = cheerio.load(res.data);
+
+          // ── Server 1 (as-cdn*.top) ───────────────────────────────────────
+          const iframe1 =
+            $('#options-0 iframe').attr('data-src') ||
+            $('#options-0 iframe').attr('src');
+          const subtitles: any[] = [];
+          let cookies = '';
+          if (iframe1) {
+            const pageRes = await proxyGet(iframe1, {
+              headers: { 'User-Agent': UA, Referer: BASE_URL },
+              timeout: 3000,
+            });
+            cookies =
+              (pageRes.headers['set-cookie'] as string[] | undefined)
+                ?.map((c: string) => c.split(';')[0])
+                .join('; ') || '';
+            subtitles.push(
+              ...extractAnimeSaltSubtitles(String(pageRes.data || ''), iframe1),
+            );
+          }
+          return { iframe1, cookies, subtitles };
+        };
+
+        let meta = getWatchMeta(metaCacheKey);
+        if (!meta) {
+          meta = await fetchMeta();
+          setWatchMeta(metaCacheKey, meta);
+        }
+        const { iframe1, cookies } = meta;
         if (iframe1) {
           try {
             const embedUrl = new URL(iframe1);
@@ -617,21 +678,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
               .pop();
             const origin = embedUrl.origin;
 
-            // Step 1 – load the player page to obtain session cookies
-            const pageRes = await proxyGet(iframe1, {
-              headers: { 'User-Agent': UA, Referer: BASE_URL },
-              timeout: 3000,
-            });
-            const cookies =
-              (pageRes.headers['set-cookie'] as string[] | undefined)
-                ?.map((c: string) => c.split(';')[0])
-                .join('; ') || '';
-
-            subtitles.push(
-              ...extractAnimeSaltSubtitles(String(pageRes.data || ''), iframe1),
-            );
-
-            // Step 2 – POST to getVideo API for the signed m3u8 URL
+            // Step 3 – POST to getVideo API for a fresh signed m3u8 URL
             const apiRes = await proxyPost(
               `${origin}/player/index.php?data=${videoId}&do=getVideo`,
               `hash=${videoId}&r=${encodeURIComponent(BASE_URL)}`,
@@ -648,8 +695,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
             if (apiRes.data?.videoSource) {
               // Return the raw signed m3u8 URL with the iframe as referer.
-              // The player's proxiedStreamUrl() wraps it in /utils/proxy,
-              // and the proxy's m3u8 rewriter rewrites all segment URLs.
+              // The player's proxiedStreamUrl() wraps it, and the proxy's m3u8
+              // rewriter rewrites all segment URLs. This axios getVideo source
+              // is provably reliable through the HLS proxy (master manifest,
+              // variants and segments all return 200 with the paired iframe
+              // session cookie).
               sources.push({
                 url: String(apiRes.data.videoSource),
                 isM3U8: true,
@@ -661,15 +711,13 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
                 // authorized.
                 cookieHeader: cookies,
               });
-              // Keep the provider's own player as a browser-side fallback.
-              // Its JavaScript can refresh CDN session state when the signed
-              // playlist is rejected by a server-side proxy.
-              sources.push({
-                url: iframe1,
-                isIframe: true,
-                quality: 'AnimeSalt Embed',
-                referer: BASE_URL,
-              });
+
+              // NOTE: The provider's embedded player and Playwright-captured
+              // sources are intentionally omitted. Their re-signed URLs/cookies
+              // drift between /watch runs and are rejected by the HLS proxy
+              // (502), so surfacing them only forces the player through a
+              // slow/failing failover path. The single axios source above is
+              // the direct CDN stream the player should load immediately.
             } else {
               // Fallback: return the iframe itself
               sources.push({
@@ -690,7 +738,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
         reply.status(200).send({
           headers: { Referer: BASE_URL },
           sources,
-          subtitles,
+          subtitles: meta.subtitles || [],
         });
       } catch (err: any) {
         reply

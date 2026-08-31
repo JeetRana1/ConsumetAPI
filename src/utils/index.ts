@@ -450,6 +450,15 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
        ) {
          refererForRequest = 'https://megaplay.buzz/';
        }
+       // AniKoto's kryntal.top hosts serve Megaplay manifests, segments and
+       // subtitle VTTs. They return 403 with the AniKoto/stream referer and
+       // only accept the Megaplay origin as Referer.
+       if (
+         /(^|\.)kryntal\.top$/i.test(target.hostname) &&
+         !/^https?:\/\/megaplay\.buzz\//i.test(refererForRequest)
+       ) {
+         refererForRequest = 'https://megaplay.buzz/';
+       }
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
         timeout: looksLikeM3u8
@@ -1015,12 +1024,16 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
       /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(
         target.hostname,
       );
+    const isKryntalSubtitleHost = /(^|\.)kryntal\.top$/i.test(target.hostname);
     const refererCandidates = (() => {
       const values = [
         refererForRequest,
         `${target.protocol}//${target.host}/`,
         isAnimeSaltSubtitleHost ? 'https://animesalt.cx/' : '',
         isAnimeSaltSubtitleHost ? `${target.protocol}//${target.host}/` : '',
+        // AniKoto's kryntal hosts reject the AniKoto/stream referer and only
+        // serve subtitle VTTs with the Megaplay origin as Referer.
+        isKryntalSubtitleHost ? 'https://megaplay.buzz/' : '',
       ].filter(Boolean);
       return [...new Set(values)];
     })();

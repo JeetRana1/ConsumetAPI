@@ -930,11 +930,11 @@ export const extractPlaybackWithPlaywright = async (
       }
     }
 
-    // Actively fetch hubstream.art HLS manifests so the proxy can serve from cache.
+    // Actively fetch browser-session HLS manifests so the proxy can serve from cache.
     // Using page.evaluate(fetch) ensures browser cookies/session are included.
     const hubstreamM3uUrls = [...discovered.keys()].filter(
       (u) =>
-        /hubstream\.(?:art|pw|cc|ink|foo|boo)/i.test(u) &&
+        /hubstream\.(?:art|pw|cc|ink|foo|boo)|as-cdn\d+\.(?:top|ac|pro|xyz|click|link|net|cc|org)/i.test(u) &&
         /\.m3u8(?:\?|$)/i.test(u),
     );
     for (const m3u8Url of hubstreamM3uUrls) {

@@ -459,6 +459,9 @@ const routes = async (fastify, options) => {
       if (/(?:(?:shiora|mikora)\.(?:top|site|club|net)|lostproject\.club)$/i.test(target.hostname) && /anikoto\.cz/i.test(refererForRequest)) {
         refererForRequest = "https://megaplay.buzz/";
       }
+      if (/(^|\.)kryntal\.top$/i.test(target.hostname) && !/^https?:\/\/megaplay\.buzz\//i.test(refererForRequest)) {
+        refererForRequest = "https://megaplay.buzz/";
+      }
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? "arraybuffer" : "stream",
         timeout: looksLikeM3u8 ? 2e4 : looksLikeMediaSegment || isSwiftstreamOppaiMedia ? 25e3 : 3e4,
@@ -913,12 +916,16 @@ const routes = async (fastify, options) => {
     const isAnimeSaltSubtitleHost = /(^|\.)(as-cdn\d+|z\d+|as2|as-api)\.(top|pro|ac|xyz|link|click|net|cc|org)$/i.test(
       target.hostname
     );
+    const isKryntalSubtitleHost = /(^|\.)kryntal\.top$/i.test(target.hostname);
     const refererCandidates = (() => {
       const values = [
         refererForRequest,
         `${target.protocol}//${target.host}/`,
         isAnimeSaltSubtitleHost ? "https://animesalt.cx/" : "",
-        isAnimeSaltSubtitleHost ? `${target.protocol}//${target.host}/` : ""
+        isAnimeSaltSubtitleHost ? `${target.protocol}//${target.host}/` : "",
+        // AniKoto's kryntal hosts reject the AniKoto/stream referer and only
+        // serve subtitle VTTs with the Megaplay origin as Referer.
+        isKryntalSubtitleHost ? "https://megaplay.buzz/" : ""
       ].filter(Boolean);
       return [...new Set(values)];
     })();

@@ -843,7 +843,7 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12e3
         }
       }
       const hubstreamM3uUrls = [...discovered.keys()].filter(
-        (u) => /hubstream\.(?:art|pw|cc|ink|foo|boo)/i.test(u) && /\.m3u8(?:\?|$)/i.test(u)
+        (u) => /hubstream\.(?:art|pw|cc|ink|foo|boo)|as-cdn\d+\.(?:top|ac|pro|xyz|click|link|net|cc|org)/i.test(u) && /\.m3u8(?:\?|$)/i.test(u)
       );
       for (const m3u8Url of hubstreamM3uUrls) {
         if (hlsManifestCache.has(m3u8Url))

@@ -185,6 +185,7 @@ const hubstreamNodeVariants = (url: string): string[] => {
 
 import anime from './routes/anime';
 import lightnovels from './routes/light-novels';
+import manga from './routes/manga';
 import movies from './routes/movies';
 import meta from './routes/meta';
 import sports from './routes/sports';
@@ -337,6 +338,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
   await fastify.register(anime, { prefix: '/anime' });
   await fastify.register(lightnovels, { prefix: '/light-novels' });
+  await fastify.register(manga, { prefix: '/manga' });
   await fastify.register(movies, { prefix: '/movies' });
   await fastify.register(meta, { prefix: '/meta' });
   await fastify.register(sports, { prefix: '/sports' });
@@ -539,15 +541,18 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const effectiveReferer = (() => {
       const safeReferer = String(referer || '').trim();
       if (!safeReferer) return safeReferer;
-      // AniKoto's shiora CDN rejects the full Megaplay stream path and only
-      // accepts the provider origin as Referer.
+      // AniKoto's shiora/kryntal CDNs reject the full Megaplay stream path and
+      // only accept the provider origin as Referer. The kryntal.top hosts serve
+      // Megaplay's video manifests and segments; requesting them with the exact
+      // stream URL as Referer returns 403, while the megaplay origin works.
       if (
         /^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) ||
         /^https?:\/\/cdn\.watching\.onl\//i.test(url) ||
         /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) ||
         /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) ||
         /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) ||
-        /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)
+        /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) ||
+        /^https?:\/\/[^/]*\.kryntal\.top\//i.test(url)
       ) {
         return 'https://megaplay.buzz/';
       }
@@ -556,10 +561,9 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         return safeReferer;
       }
       // Provider payloads occasionally return the CDN URL as the source
-      // referer. AnimeSalt expects its site origin for CDN requests instead.
-      if (isAnimeSaltCdn && /(?:as-cdn\d+|z\d+)\./i.test(safeReferer)) {
-        return 'https://animesalt.cx/';
-      }
+      // referer. AnimeSalt's current CDN (as-cdn*.top) expects the EXACT embed
+      // page URL (https://as-cdn*.top/video/<id>) as the Referer, not the site
+      // origin. Rewriting a valid CDN referer breaks the signed playlist.
       return safeReferer;
     })();
 

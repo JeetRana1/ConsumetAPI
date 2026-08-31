@@ -36,6 +36,21 @@ var import_outboundProxy = require("../../utils/outboundProxy");
 var import_cache = __toESM(require("../../utils/cache"));
 var import_main = require("../../main");
 var import_anilist = __toESM(require("@consumet/extensions/dist/providers/meta/anilist"));
+const WATCH_META_TTL_MS = 5 * 6e4;
+const watchMetaCache = /* @__PURE__ */ new Map();
+const getWatchMeta = (key) => {
+  const entry = watchMetaCache.get(key);
+  if (!entry)
+    return null;
+  if (Date.now() > entry.expiresAt) {
+    watchMetaCache.delete(key);
+    return null;
+  }
+  return entry.value;
+};
+const setWatchMeta = (key, value) => {
+  watchMetaCache.set(key, { expiresAt: Date.now() + WATCH_META_TTL_MS, value });
+};
 const BASE_URL = "https://animesalt.cx";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const normalizeAnimeSaltSearchText = (value) => String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[’‘`´]/g, "'").replace(/[“”]/g, '"').replace(/[×✕]/g, "x").replace(/[‐‑‒–—―]/g, "-").replace(/[_-]+/g, " ").replace(/[:;,.!?()[\]{}"'’]/g, " ").replace(/\s+/g, " ").trim();
@@ -462,27 +477,40 @@ const routes = async (fastify, options) => {
         const isMovie = episodeId.startsWith("movie:");
         const slug = isMovie ? episodeId.replace("movie:", "") : episodeId;
         const watchUrl = isMovie ? `${BASE_URL}/movies/${slug}/` : `${BASE_URL}/episode/${episodeId}/`;
-        const res = await (0, import_outboundProxy.proxyGet)(watchUrl, {
-          headers: { "User-Agent": UA },
-          timeout: 3e3
-        });
-        const $ = cheerio.load(res.data);
         const sources = [];
-        const subtitles = [];
-        const iframe1 = $("#options-0 iframe").attr("data-src") || $("#options-0 iframe").attr("src");
+        const metaCacheKey = `animesalt:watch:${episodeId}:meta:v1`;
+        const fetchMeta = async () => {
+          const res = await (0, import_outboundProxy.proxyGet)(watchUrl, {
+            headers: { "User-Agent": UA },
+            timeout: 3e3
+          });
+          const $ = cheerio.load(res.data);
+          const iframe12 = $("#options-0 iframe").attr("data-src") || $("#options-0 iframe").attr("src");
+          const subtitles = [];
+          let cookies2 = "";
+          if (iframe12) {
+            const pageRes = await (0, import_outboundProxy.proxyGet)(iframe12, {
+              headers: { "User-Agent": UA, Referer: BASE_URL },
+              timeout: 3e3
+            });
+            cookies2 = pageRes.headers["set-cookie"]?.map((c) => c.split(";")[0]).join("; ") || "";
+            subtitles.push(
+              ...extractAnimeSaltSubtitles(String(pageRes.data || ""), iframe12)
+            );
+          }
+          return { iframe1: iframe12, cookies: cookies2, subtitles };
+        };
+        let meta = getWatchMeta(metaCacheKey);
+        if (!meta) {
+          meta = await fetchMeta();
+          setWatchMeta(metaCacheKey, meta);
+        }
+        const { iframe1, cookies } = meta;
         if (iframe1) {
           try {
             const embedUrl = new URL(iframe1);
             const videoId = embedUrl.pathname.split("/").filter((p) => !!p && p !== "v").pop();
             const origin = embedUrl.origin;
-            const pageRes = await (0, import_outboundProxy.proxyGet)(iframe1, {
-              headers: { "User-Agent": UA, Referer: BASE_URL },
-              timeout: 3e3
-            });
-            const cookies = pageRes.headers["set-cookie"]?.map((c) => c.split(";")[0]).join("; ") || "";
-            subtitles.push(
-              ...extractAnimeSaltSubtitles(String(pageRes.data || ""), iframe1)
-            );
             const apiRes = await (0, import_outboundProxy.proxyPost)(
               `${origin}/player/index.php?data=${videoId}&do=getVideo`,
               `hash=${videoId}&r=${encodeURIComponent(BASE_URL)}`,
@@ -508,12 +536,6 @@ const routes = async (fastify, options) => {
                 // authorized.
                 cookieHeader: cookies
               });
-              sources.push({
-                url: iframe1,
-                isIframe: true,
-                quality: "AnimeSalt Embed",
-                referer: BASE_URL
-              });
             } else {
               sources.push({
                 url: iframe1,
@@ -532,7 +554,7 @@ const routes = async (fastify, options) => {
         reply.status(200).send({
           headers: { Referer: BASE_URL },
           sources,
-          subtitles
+          subtitles: meta.subtitles || []
         });
       } catch (err) {
         reply.status(500).send({ message: "Error fetching sources from AnimeSalt", error: err.message });

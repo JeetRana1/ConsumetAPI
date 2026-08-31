@@ -43,6 +43,7 @@ var import_crypto = __toESM(require("crypto"));
 var import_outboundProxy = require("./utils/outboundProxy");
 var import_anime = __toESM(require("./routes/anime"));
 var import_light_novels = __toESM(require("./routes/light-novels"));
+var import_manga = __toESM(require("./routes/manga"));
 var import_movies = __toESM(require("./routes/movies"));
 var import_meta = __toESM(require("./routes/meta"));
 var import_sports = __toESM(require("./routes/sports"));
@@ -287,6 +288,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     );
   await fastify.register(import_anime.default, { prefix: "/anime" });
   await fastify.register(import_light_novels.default, { prefix: "/light-novels" });
+  await fastify.register(import_manga.default, { prefix: "/manga" });
   await fastify.register(import_movies.default, { prefix: "/movies" });
   await fastify.register(import_meta.default, { prefix: "/meta" });
   await fastify.register(import_sports.default, { prefix: "/sports" });
@@ -427,15 +429,12 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       const safeReferer = String(referer || "").trim();
       if (!safeReferer)
         return safeReferer;
-      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
+      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) || /^https?:\/\/[^/]*\.kryntal\.top\//i.test(url)) {
         return "https://megaplay.buzz/";
       }
       const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:cx|ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
       if (isAnimeSaltCdn && isAnimeSaltSiteReferer) {
         return safeReferer;
-      }
-      if (isAnimeSaltCdn && /(?:as-cdn\d+|z\d+)\./i.test(safeReferer)) {
-        return "https://animesalt.cx/";
       }
       return safeReferer;
     })();
