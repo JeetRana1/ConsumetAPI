@@ -434,9 +434,22 @@ const routes = async (fastify, options) => {
 const generateAnilistMeta = (provider = void 0) => {
   const proxies = (0, import_outboundProxy.getProxyCandidatesSync)();
   const url = proxies.length > 0 ? proxies.length === 1 ? proxies[0] : proxies : [];
-  return new import_anilist.default((0, import_provider.configureProvider)(new import_animesama.default()), {
+  const anilist = new import_anilist.default((0, import_provider.configureProvider)(new import_animesama.default()), {
     url
   });
+  if (typeof anilist.client?.interceptors?.request?.use === "function") {
+    anilist.client.interceptors.request.use((config) => {
+      if (String(config.url || "").includes("graphql.anilist.co")) {
+        config.headers = config.headers || {};
+        config.headers["Referer"] = "https://anilist.co/";
+        config.headers["Origin"] = "https://anilist.co";
+        config.headers["Accept"] = "application/json, text/plain, */*";
+        config.headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+      }
+      return config;
+    });
+  }
+  return anilist;
 };
 const searchMyanimelist = async (query, limit = 5) => {
   const mal = new import_mal.default();

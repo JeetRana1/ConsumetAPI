@@ -103,7 +103,10 @@ function drainUpstreamQueue() {
       next();
   }
 }
-async function withUpstreamConcurrency(fn) {
+async function withUpstreamConcurrency(fn, shouldSkip) {
+  if (shouldSkip?.()) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
   if (upstreamActive < UPSTREAM_MAX_CONCURRENCY) {
     upstreamActive += 1;
     try {
@@ -115,6 +118,10 @@ async function withUpstreamConcurrency(fn) {
   }
   return new Promise((resolve, reject) => {
     upstreamQueue.push(() => {
+      if (shouldSkip?.()) {
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+        return;
+      }
       upstreamActive += 1;
       fn().then(resolve, reject).finally(() => {
         upstreamActive -= 1;
@@ -123,6 +130,10 @@ async function withUpstreamConcurrency(fn) {
     });
   });
 }
+const isAbortError = (err) => {
+  const e = err;
+  return Boolean(e && (e.name === "AbortError" || e.code === "ERR_CANCELED"));
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HUBSTREAM_CDN_HOST_RE = /^([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})$/i;
 const HUBSTREAM_CDN_PATH_RE = /\/v4\/pl\/([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})(\/.*)$/i;
@@ -415,7 +426,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       return true;
     return /\/(?:hls|oppai)\//i.test(url);
   };
-  const fetchHlsResource = async (url, isManifest, incomingRange, referer, cookieHeader) => {
+  const fetchHlsResource = async (url, isManifest, incomingRange, referer, cookieHeader, signal) => {
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
     const isTikTokCdn = /^https?:\/\/[^/]*\.tiktokcdn\.com\//i.test(url);
@@ -429,7 +440,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       const safeReferer = String(referer || "").trim();
       if (!safeReferer)
         return safeReferer;
-      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) || /^https?:\/\/[^/]*\.kryntal\.top\//i.test(url)) {
+      if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) || /^https?:\/\/[^/]*\.kryntal\.top\//i.test(url) || /^https?:\/\/[^/]*\.imgnex\.top\//i.test(url)) {
         return "https://megaplay.buzz/";
       }
       const isAnimeSaltSiteReferer = /^https?:\/\/animesalt\.(?:cx|ac|pro|xyz|click)(?:\/|$)/i.test(safeReferer);
@@ -446,8 +457,14 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         const maxAttempts = nodeVariants.length > 1 ? isPrimaryNode ? 2 : 1 : 5;
         let attempt = 0;
         let lastCandidateError = null;
+        const throwIfAborted = () => {
+          if (signal?.aborted) {
+            throw new DOMException("The operation was aborted.", "AbortError");
+          }
+        };
         while (attempt < maxAttempts) {
           attempt += 1;
+          throwIfAborted();
           const backoffMs = nodeVariants.length > 1 ? 300 : Math.min(3e3, 300 * Math.pow(2, attempt - 1));
           try {
             const response = await withUpstreamConcurrency(async () => {
@@ -472,25 +489,31 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                   ...isManifest ? {} : { Accept: "video/mp2t,video/mp4,application/octet-stream,*/*" },
                   ...isManifest ? {} : { "Accept-Encoding": "identity" }
                 },
-                timeout: isAcekCdn ? 25e3 : isIbyteCdn ? 3e4 : isManifest ? 15e3 : 1e4,
+                timeout: isAcekCdn ? 25e3 : isIbyteCdn ? 3e4 : 15e3,
                 // Stream media segments as soon as upstream sends bytes. Buffering
                 // the full segment before replying can drain HLS.js on slower hosts.
                 responseType: isManifest ? "text" : "stream",
                 validateStatus: (status) => status < 500,
                 ...proxyOptions,
+                ...signal ? { signal } : {},
                 // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
                 // keep-alive TLS sockets that fail with `write EPROTO` on reuse.
                 ...isHubstreamCdn && !proxyUrl ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent } : {}
               });
-            });
+            }, () => !!signal?.aborted);
             const responseContentType = String(response.headers["content-type"] || "");
             if (isManifest) {
               response.data = decodeNumericHlsManifest(response.data);
             }
             if (response.status >= 400) {
               lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
-              if (response.status >= 500 && attempt < maxAttempts) {
-                await sleep(backoffMs);
+              const isThrottled = response.status === 429;
+              if (isThrottled && nodeVariants.length > 1)
+                break;
+              if ((response.status >= 500 || isThrottled) && attempt < maxAttempts) {
+                const waitMs = isThrottled ? Math.max(backoffMs, 1500) : backoffMs;
+                await sleep(waitMs);
+                throwIfAborted();
                 continue;
               }
               break;
@@ -501,11 +524,14 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             }
             return response;
           } catch (error) {
+            if (isAbortError(error))
+              throw error;
             lastCandidateError = error;
             const statusCode = Number(error?.response?.status || 0);
-            const isTransient = statusCode >= 500 && statusCode < 600 || statusCode === 0;
+            const isTransient = statusCode >= 500 && statusCode < 600 || statusCode === 0 || statusCode === 429;
             if (isTransient && attempt < maxAttempts) {
               await sleep(backoffMs);
+              throwIfAborted();
               continue;
             }
             break;
@@ -533,11 +559,17 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     }
     const incomingRange = String(request.headers.range || "");
     const isManifest = !segmentParam && shouldTreatAsManifestRequest(url, incomingRange);
+    const abortController = new AbortController();
+    reply.raw.on("close", () => {
+      if (!reply.raw.writableEnded) {
+        abortController.abort();
+      }
+    });
     const incomingReferer = String(
       request.headers.referer || request.headers.referrer || ""
     ).trim().replace(/#.*$/, "");
     let requestReferer = (refererParam || incomingReferer || "https://streameeeeee.site/").replace(/#.*$/, "");
-    if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)) {
+    if (/^https?:\/\/cdn\.mewstream\.[^/]+\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) || /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) || /^https?:\/\/[^/]*\.imgnex\.top\//i.test(url)) {
       requestReferer = "https://megaplay.buzz/";
     }
     if (isManifest && !incomingRange) {
@@ -572,7 +604,8 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         isManifest,
         incomingRange,
         requestReferer,
-        cookieParam
+        cookieParam,
+        abortController.signal
       );
       const responseContentType = String(response.headers["content-type"] || "");
       const responseBuffer = Buffer.isBuffer(response.data) ? response.data : response.data instanceof ArrayBuffer ? Buffer.from(response.data) : ArrayBuffer.isView(response.data) ? Buffer.from(
@@ -624,6 +657,14 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
           try {
             reply.raw.destroy(err);
           } catch {
+          }
+        });
+        reply.raw.on("close", () => {
+          if (!reply.raw.writableEnded) {
+            try {
+              upstreamStream.destroy();
+            } catch {
+            }
           }
         });
         upstreamStream.pipe(reply.raw);
@@ -753,6 +794,15 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       }
       return reply.status(500).send({ error: "Unexpected proxy state" });
     } catch (error) {
+      if (isAbortError(error)) {
+        if (!reply.raw.destroyed) {
+          try {
+            reply.raw.destroy();
+          } catch {
+          }
+        }
+        return reply;
+      }
       console.error("HLS Proxy error:", error.message);
       const upstreamStatus = Number(error?.statusCode || error?.response?.status || 0);
       const status = upstreamStatus >= 400 && upstreamStatus < 600 ? upstreamStatus : 502;

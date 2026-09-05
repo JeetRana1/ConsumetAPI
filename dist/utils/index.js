@@ -462,6 +462,9 @@ const routes = async (fastify, options) => {
       if (/(^|\.)kryntal\.top$/i.test(target.hostname) && !/^https?:\/\/megaplay\.buzz\//i.test(refererForRequest)) {
         refererForRequest = "https://megaplay.buzz/";
       }
+      if (/(^|\.)imgnex\.top$/i.test(target.hostname) && !/^https?:\/\/megaplay\.buzz\//i.test(refererForRequest)) {
+        refererForRequest = "https://megaplay.buzz/";
+      }
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? "arraybuffer" : "stream",
         timeout: looksLikeM3u8 ? 2e4 : looksLikeMediaSegment || isSwiftstreamOppaiMedia ? 25e3 : 3e4,

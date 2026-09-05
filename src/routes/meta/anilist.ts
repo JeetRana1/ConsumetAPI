@@ -478,9 +478,28 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 const generateAnilistMeta = (provider: string | undefined = undefined): Anilist => {
   const proxies = getProxyCandidatesSync();
   const url = proxies.length > 0 ? (proxies.length === 1 ? proxies[0] : proxies) : [];
-  return new Anilist(configureProvider(new AnimeSama()), {
+  const anilist = new Anilist(configureProvider(new AnimeSama()), {
     url: url as string | string[],
   });
+
+  // AniList now returns 403/404 unless the GraphQL call looks like a real
+  // browser request (anti-bot). Attach a browser-style Referer/Origin and
+  // User-Agent so trending/search/advanced-search don't silently fail.
+  if (typeof anilist.client?.interceptors?.request?.use === 'function') {
+    anilist.client.interceptors.request.use((config: any) => {
+      if (String(config.url || '').includes('graphql.anilist.co')) {
+        config.headers = config.headers || {};
+        config.headers['Referer'] = 'https://anilist.co/';
+        config.headers['Origin'] = 'https://anilist.co';
+        config.headers['Accept'] = 'application/json, text/plain, */*';
+        config.headers['User-Agent'] =
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+      }
+      return config;
+    });
+  }
+
+  return anilist;
 };
 
 /**

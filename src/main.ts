@@ -85,7 +85,13 @@ function drainUpstreamQueue(): void {
   }
 }
 
-async function withUpstreamConcurrency<T>(fn: () => Promise<T>): Promise<T> {
+async function withUpstreamConcurrency<T>(
+  fn: () => Promise<T>,
+  shouldSkip?: () => boolean,
+): Promise<T> {
+  if (shouldSkip?.()) {
+    throw new DOMException('The operation was aborted.', 'AbortError');
+  }
   if (upstreamActive < UPSTREAM_MAX_CONCURRENCY) {
     upstreamActive += 1;
     try {
@@ -97,6 +103,10 @@ async function withUpstreamConcurrency<T>(fn: () => Promise<T>): Promise<T> {
   }
   return new Promise<T>((resolve, reject) => {
     upstreamQueue.push(() => {
+      if (shouldSkip?.()) {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+        return;
+      }
       upstreamActive += 1;
       fn().then(resolve, reject).finally(() => {
         upstreamActive -= 1;
@@ -105,6 +115,11 @@ async function withUpstreamConcurrency<T>(fn: () => Promise<T>): Promise<T> {
     });
   });
 }
+
+const isAbortError = (err: unknown): boolean => {
+  const e = err as any;
+  return Boolean(e && (e.name === 'AbortError' || e.code === 'ERR_CANCELED'));
+};
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -518,6 +533,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     incomingRange: string,
     referer: string,
     cookieHeader: string,
+    signal?: AbortSignal,
   ) => {
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
     // AnimeKai's Megaplay playlists can use a CDN for segments.
@@ -552,7 +568,8 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) ||
         /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) ||
         /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) ||
-        /^https?:\/\/[^/]*\.kryntal\.top\//i.test(url)
+        /^https?:\/\/[^/]*\.kryntal\.top\//i.test(url) ||
+        /^https?:\/\/[^/]*\.imgnex\.top\//i.test(url)
       ) {
         return 'https://megaplay.buzz/';
       }
@@ -586,8 +603,15 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         let attempt = 0;
         let lastCandidateError: unknown = null;
 
+        const throwIfAborted = () => {
+          if (signal?.aborted) {
+            throw new DOMException('The operation was aborted.', 'AbortError');
+          }
+        };
+
         while (attempt < maxAttempts) {
           attempt += 1;
+          throwIfAborted();
           // HubStream's direct-IP nodes fail in bursts (nginx 502 / TLS resets).
           // A longer exponential backoff escapes those windows instead of retrying
           // straight into the same failure.
@@ -615,19 +639,20 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                     : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
                   ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
                 },
-                timeout: isAcekCdn ? 25000 : isIbyteCdn ? 30000 : isManifest ? 15000 : 10000,
+                timeout: isAcekCdn ? 25000 : isIbyteCdn ? 30000 : 15000,
                  // Stream media segments as soon as upstream sends bytes. Buffering
                  // the full segment before replying can drain HLS.js on slower hosts.
                  responseType: isManifest ? 'text' : 'stream',
                 validateStatus: (status: number) => status < 500,
                 ...(proxyOptions as any),
+                ...(signal ? { signal } : {}),
                 // Flaky direct-IP CDNs (hubstream v4): avoid reusing poisoned
                 // keep-alive TLS sockets that fail with `write EPROTO` on reuse.
                 ...(isHubstreamCdn && !proxyUrl
                   ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent }
                   : {}),
               });
-            });
+            }, () => !!signal?.aborted);
 
             const responseContentType = String(response.headers['content-type'] || '');
 
@@ -637,9 +662,16 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
             if (response.status >= 400) {
               lastCandidateError = new Error(`Upstream HLS response (${response.status})`);
-              // Transient 5xx (CDN throttling) benefits from a quick retry.
-              if (response.status >= 500 && attempt < maxAttempts) {
-                await sleep(backoffMs);
+              const isThrottled = response.status === 429;
+              // A 429 means this specific node is rate-limiting us. Rotate to the
+              // next node instead of hammering the throttled one; any node keeps a
+              // fresh retry budget and the same signed URL is valid across the pool.
+              if (isThrottled && nodeVariants.length > 1) break;
+              // Transient 5xx and rate-limits benefit from a (longer) backoff.
+              if ((response.status >= 500 || isThrottled) && attempt < maxAttempts) {
+                const waitMs = isThrottled ? Math.max(backoffMs, 1500) : backoffMs;
+                await sleep(waitMs);
+                throwIfAborted();
                 continue;
               }
               break;
@@ -655,12 +687,14 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
 
             return response;
           } catch (error) {
+            if (isAbortError(error)) throw error;
             lastCandidateError = error;
             const statusCode = Number((error as any)?.response?.status || 0);
             const isTransient =
-              (statusCode >= 500 && statusCode < 600) || statusCode === 0;
+              (statusCode >= 500 && statusCode < 600) || statusCode === 0 || statusCode === 429;
             if (isTransient && attempt < maxAttempts) {
               await sleep(backoffMs);
+              throwIfAborted();
               continue;
             }
             break;
@@ -699,6 +733,17 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     }
     const incomingRange = String(request.headers.range || '');
     const isManifest = !segmentParam && shouldTreatAsManifestRequest(url, incomingRange);
+
+    // Abort upstream fetches as soon as the client goes away (pausing, seeking
+    // or retrying after a stall). Cancelling the CDN request frees the
+    // concurrency slot and stops a phantom download that would otherwise land
+    // in the throttling bucket and trigger more 429s upstream.
+    const abortController = new AbortController();
+    reply.raw.on('close', () => {
+      if (!reply.raw.writableEnded) {
+        abortController.abort();
+      }
+    });
     const incomingReferer = String(
       request.headers.referer || request.headers.referrer || '',
     )
@@ -713,7 +758,8 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) ||
       /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) ||
       /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) ||
-      /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url)
+      /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) ||
+      /^https?:\/\/[^/]*\.imgnex\.top\//i.test(url)
     ) {
       requestReferer = 'https://megaplay.buzz/';
     }
@@ -757,6 +803,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         incomingRange,
         requestReferer,
         cookieParam,
+        abortController.signal,
       );
 
       const responseContentType = String(response.headers['content-type'] || '');
@@ -831,6 +878,14 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         upstreamStream.on('error', (err: Error) => {
           console.error('HLS segment stream error:', err.message);
           try { reply.raw.destroy(err); } catch { /* response already closed */ }
+        });
+        // Stop pulling the remaining segment from the CDN once the client is
+        // gone; otherwise every stall-induced abort wastes a full segment of
+        // upstream bandwidth and increases the chances of another 429.
+        reply.raw.on('close', () => {
+          if (!reply.raw.writableEnded) {
+            try { upstreamStream.destroy(); } catch { /* already destroyed */ }
+          }
         });
         upstreamStream.pipe(reply.raw);
         return reply;
@@ -982,6 +1037,14 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       // Should never reach here — all paths in the non-manifest block return above
       return reply.status(500).send({ error: 'Unexpected proxy state' });
     } catch (error: any) {
+      // Client went away mid-fetch — nothing to reply to, just bail quietly.
+      // A 502 here would be racing a destroyed socket anyway.
+      if (isAbortError(error)) {
+        if (!reply.raw.destroyed) {
+          try { reply.raw.destroy(); } catch { /* already closed */ }
+        }
+        return reply;
+      }
       console.error('HLS Proxy error:', error.message);
       const upstreamStatus = Number(error?.statusCode || error?.response?.status || 0);
       const status = upstreamStatus >= 400 && upstreamStatus < 600 ? upstreamStatus : 502;

@@ -733,10 +733,9 @@ const resolveTpeadPlayback = async (playerUrl, referer) => {
   }
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-    });
+    browser = await (0, import_browserRuntimeExtractor.acquireSharedBrowser)();
+    if (!browser)
+      return { sources: [], subtitles: [] };
     const context = await browser.newContext({
       userAgent: USER_AGENT
     });
@@ -811,8 +810,7 @@ const resolveTpeadPlayback = async (playerUrl, referer) => {
   } catch {
     return { sources: [], subtitles: [] };
   } finally {
-    if (browser)
-      await browser.close().catch(() => void 0);
+    (0, import_browserRuntimeExtractor.releaseSharedBrowser)();
   }
 };
 const resolveToPlayer = async (startUrl, referer) => {
@@ -845,10 +843,9 @@ const resolveGateWithPlaywright = async (startUrl, referer, timeoutMs = 15e3) =>
   const discovered = /* @__PURE__ */ new Set();
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-    });
+    browser = await (0, import_browserRuntimeExtractor.acquireSharedBrowser)();
+    if (!browser)
+      return {};
     const context = await browser.newContext({
       extraHTTPHeaders: referer ? { Referer: referer } : void 0,
       userAgent: USER_AGENT
@@ -956,8 +953,7 @@ const resolveGateWithPlaywright = async (startUrl, referer, timeoutMs = 15e3) =>
   } catch {
     return {};
   } finally {
-    if (browser)
-      await browser.close().catch(() => void 0);
+    (0, import_browserRuntimeExtractor.releaseSharedBrowser)();
   }
 };
 const extractWatchhdSourcesWithPlaywright = async (startUrl, referer) => {
@@ -969,10 +965,9 @@ const extractWatchhdSourcesWithPlaywright = async (startUrl, referer) => {
   }
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-    });
+    browser = await (0, import_browserRuntimeExtractor.acquireSharedBrowser)();
+    if (!browser)
+      return { sources: [], subtitles: [] };
     const context = await browser.newContext({
       extraHTTPHeaders: referer ? { Referer: referer } : void 0,
       userAgent: USER_AGENT
@@ -1050,8 +1045,7 @@ const extractWatchhdSourcesWithPlaywright = async (startUrl, referer) => {
   } catch {
     return { sources: [], subtitles: [] };
   } finally {
-    if (browser)
-      await browser.close().catch(() => void 0);
+    (0, import_browserRuntimeExtractor.releaseSharedBrowser)();
   }
 };
 const resolveTmdbNumericIdToPage = async (id, type = "movie") => {
@@ -1326,10 +1320,9 @@ class HdStream4uProvider {
     }
     let browser;
     try {
-      browser = await chromium.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-      });
+      browser = await (0, import_browserRuntimeExtractor.acquireSharedBrowser)();
+      if (!browser)
+        return null;
       const context = await browser.newContext({
         extraHTTPHeaders: { Referer: BASE_URL },
         userAgent: USER_AGENT
@@ -1493,8 +1486,7 @@ class HdStream4uProvider {
     } catch {
       return null;
     } finally {
-      if (browser)
-        await browser.close().catch(() => void 0);
+      (0, import_browserRuntimeExtractor.releaseSharedBrowser)();
     }
   }
   // Fast path: decode the morencius embed page's p.a.c.k.e.r script directly in
@@ -1629,7 +1621,7 @@ class HdStream4uProvider {
               subtitles: hubPlayback.subtitles || []
             };
           }
-        } else {
+        } else if (!hubPlaybackPromise) {
           hubstreamOnlyFallback = (0, import_browserRuntimeExtractor.extractPlaybackWithPlaywright)(startUrl, BASE_URL, 2e4).then(
             (value) => value?.sources?.length ? { ok: true, hubLink: startUrl, value } : { ok: false, hubLink: startUrl, value: null }
           ).catch(() => ({ ok: false, hubLink: startUrl, value: null }));

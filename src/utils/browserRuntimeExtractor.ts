@@ -34,6 +34,99 @@ export const setCachedHlsManifest = (url: string, body: string, contentType: str
 
 const PLAYWRIGHT_DEBUG = false;
 
+// --- Shared Playwright browser ----------------------------------------------
+// Launching Chromium is expensive (~2-4s cold). Provider extraction (e.g.
+// hdstream4u) can fire several Playwright navigations in one request; a fresh
+// browser per call is what turned a fast extraction into a 30s+ wait locally.
+// Reuse a single browser instance, serializing work through a semaphore so the
+// concurrent extractions don't overwhelm a shared Chromium process.
+let sharedBrowser: any = undefined;
+let sharedBrowserConnecting: Promise<any> | null = null;
+let sharedBrowserLastUsed = 0;
+
+const SHARED_BROWSER_IDLE_MS = 60 * 1000;
+
+const getSharedBrowser = async (): Promise<any> => {
+  if (sharedBrowser && sharedBrowser.isConnected && !sharedBrowser.isConnected()) {
+    try { await sharedBrowser.close().catch(() => {}); } catch { /* ignore */ }
+    sharedBrowser = undefined;
+  }
+  if (sharedBrowser) {
+    sharedBrowserLastUsed = Date.now();
+    return sharedBrowser;
+  }
+  if (!sharedBrowserConnecting) {
+    sharedBrowserConnecting = (async () => {
+      let chromium: any;
+      try {
+        ({ chromium } = await import('playwright'));
+      } catch {
+        return null;
+      }
+      const playwrightProxy = getPlaywrightProxy();
+      const browser = await chromium.launch({
+        headless: true,
+        ...(playwrightProxy ? { proxy: playwrightProxy } : {}),
+        args: [
+          '--no-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+        ],
+      });
+      sharedBrowser = browser;
+      sharedBrowserLastUsed = Date.now();
+      return browser;
+    })().finally(() => {
+      sharedBrowserConnecting = null;
+    });
+  }
+  sharedBrowserLastUsed = Date.now();
+  return sharedBrowserConnecting;
+};
+
+// Semaphore so concurrent extraction calls reuse the shared browser instead of
+// stepping on each other's pages.
+let browserSlots = 0;
+const BROWSER_MAX_CONCURRENCY = 2;
+const browserWaiters: Array<() => void> = [];
+
+const acquireBrowserSlot = async (): Promise<void> => {
+  if (browserSlots < BROWSER_MAX_CONCURRENCY) {
+    browserSlots += 1;
+    return;
+  }
+  return new Promise<void>((resolve) => browserWaiters.push(resolve));
+};
+
+const releaseBrowserSlot = (): void => {
+  browserSlots = Math.max(0, browserSlots - 1);
+  const next = browserWaiters.shift();
+  if (next) {
+    browserSlots += 1;
+    next();
+  }
+};
+
+// Public helpers so providers can reuse the same shared Chromium instance
+// instead of launching a fresh browser per extraction.
+export const acquireSharedBrowser = async (): Promise<any> => {
+  const browser = await getSharedBrowser();
+  if (browser) await acquireBrowserSlot();
+  return browser;
+};
+
+export const releaseSharedBrowser = (): void => {
+  releaseBrowserSlot();
+};
+
+// Reclaim the shared browser after a period of inactivity to avoid leaking it.
+setInterval(() => {
+  if (sharedBrowser && Date.now() - sharedBrowserLastUsed > SHARED_BROWSER_IDLE_MS && browserSlots === 0) {
+    try { sharedBrowser.close().catch(() => {}); } catch { /* ignore */ }
+    sharedBrowser = undefined;
+  }
+}, 30 * 1000).unref?.();
+
 const isDirectMediaUrl = (value: string): boolean => {
   const normalized = String(value || '');
   if (!isUsableMediaUrl(normalized)) return false;
@@ -475,16 +568,11 @@ export const extractPlaybackWithPlaywright = async (
 
   for (let attempt = 0; attempt < MAX_HUBSTREAM_ATTEMPTS; attempt++) {
   try {
-    const playwrightProxy = getPlaywrightProxy();
-    browser = await chromium.launch({
-      headless: true,
-      ...(playwrightProxy ? { proxy: playwrightProxy } : {}),
-      args: [
-        '--no-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-      ],
-    });
+    browser = await getSharedBrowser();
+    if (!browser) {
+      return { sources: [], subtitles: [] };
+    }
+    await acquireBrowserSlot();
     const context = await browser.newContext({
       extraHTTPHeaders: referer ? { Referer: referer } : undefined,
       userAgent:
@@ -973,14 +1061,7 @@ export const extractPlaybackWithPlaywright = async (
   } catch (err) {
     console.error(`[Playwright extractor failed] ${normalizedEmbed}`, err);
   } finally {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {
-        // ignore
-      }
-      browser = undefined;
-    }
+    releaseBrowserSlot();
   }
 
     if (discovered.size > 0 || !isHubstreamEmbed) break;

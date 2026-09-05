@@ -459,6 +459,14 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
        ) {
          refererForRequest = 'https://megaplay.buzz/';
        }
+       // AniKoto/Megaplay imgnex.top hosts (cdn./ncdn.) also serve manifests,
+       // segments and subtitle VTTs behind the Megaplay origin referer.
+       if (
+         /(^|\.)imgnex\.top$/i.test(target.hostname) &&
+         !/^https?:\/\/megaplay\.buzz\//i.test(refererForRequest)
+       ) {
+         refererForRequest = 'https://megaplay.buzz/';
+       }
       const baseRequestConfig = {
         responseType: looksLikeM3u8 ? 'arraybuffer' : 'stream',
         timeout: looksLikeM3u8

@@ -28,10 +28,12 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var browserRuntimeExtractor_exports = {};
 __export(browserRuntimeExtractor_exports, {
+  acquireSharedBrowser: () => acquireSharedBrowser,
   extractDirectSourcesWithPlaywright: () => extractDirectSourcesWithPlaywright,
   extractPlaybackWithPlaywright: () => extractPlaybackWithPlaywright,
   getCachedHlsManifest: () => getCachedHlsManifest,
   getCachedSubtitleText: () => getCachedSubtitleText,
+  releaseSharedBrowser: () => releaseSharedBrowser,
   setCachedHlsManifest: () => setCachedHlsManifest
 });
 module.exports = __toCommonJS(browserRuntimeExtractor_exports);
@@ -62,6 +64,88 @@ const setCachedHlsManifest = (url, body, contentType) => {
   });
 };
 const PLAYWRIGHT_DEBUG = false;
+let sharedBrowser = void 0;
+let sharedBrowserConnecting = null;
+let sharedBrowserLastUsed = 0;
+const SHARED_BROWSER_IDLE_MS = 60 * 1e3;
+const getSharedBrowser = async () => {
+  if (sharedBrowser && sharedBrowser.isConnected && !sharedBrowser.isConnected()) {
+    try {
+      await sharedBrowser.close().catch(() => {
+      });
+    } catch {
+    }
+    sharedBrowser = void 0;
+  }
+  if (sharedBrowser) {
+    sharedBrowserLastUsed = Date.now();
+    return sharedBrowser;
+  }
+  if (!sharedBrowserConnecting) {
+    sharedBrowserConnecting = (async () => {
+      let chromium;
+      try {
+        ({ chromium } = await import("playwright"));
+      } catch {
+        return null;
+      }
+      const playwrightProxy = getPlaywrightProxy();
+      const browser = await chromium.launch({
+        headless: true,
+        ...playwrightProxy ? { proxy: playwrightProxy } : {},
+        args: [
+          "--no-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-blink-features=AutomationControlled"
+        ]
+      });
+      sharedBrowser = browser;
+      sharedBrowserLastUsed = Date.now();
+      return browser;
+    })().finally(() => {
+      sharedBrowserConnecting = null;
+    });
+  }
+  sharedBrowserLastUsed = Date.now();
+  return sharedBrowserConnecting;
+};
+let browserSlots = 0;
+const BROWSER_MAX_CONCURRENCY = 2;
+const browserWaiters = [];
+const acquireBrowserSlot = async () => {
+  if (browserSlots < BROWSER_MAX_CONCURRENCY) {
+    browserSlots += 1;
+    return;
+  }
+  return new Promise((resolve) => browserWaiters.push(resolve));
+};
+const releaseBrowserSlot = () => {
+  browserSlots = Math.max(0, browserSlots - 1);
+  const next = browserWaiters.shift();
+  if (next) {
+    browserSlots += 1;
+    next();
+  }
+};
+const acquireSharedBrowser = async () => {
+  const browser = await getSharedBrowser();
+  if (browser)
+    await acquireBrowserSlot();
+  return browser;
+};
+const releaseSharedBrowser = () => {
+  releaseBrowserSlot();
+};
+setInterval(() => {
+  if (sharedBrowser && Date.now() - sharedBrowserLastUsed > SHARED_BROWSER_IDLE_MS && browserSlots === 0) {
+    try {
+      sharedBrowser.close().catch(() => {
+      });
+    } catch {
+    }
+    sharedBrowser = void 0;
+  }
+}, 30 * 1e3).unref?.();
 const isDirectMediaUrl = (value) => {
   const normalized = String(value || "");
   if (!isUsableMediaUrl(normalized))
@@ -461,16 +545,11 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12e3
   };
   for (let attempt = 0; attempt < MAX_HUBSTREAM_ATTEMPTS; attempt++) {
     try {
-      const playwrightProxy = getPlaywrightProxy();
-      browser = await chromium.launch({
-        headless: true,
-        ...playwrightProxy ? { proxy: playwrightProxy } : {},
-        args: [
-          "--no-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-blink-features=AutomationControlled"
-        ]
-      });
+      browser = await getSharedBrowser();
+      if (!browser) {
+        return { sources: [], subtitles: [] };
+      }
+      await acquireBrowserSlot();
       const context = await browser.newContext({
         extraHTTPHeaders: referer ? { Referer: referer } : void 0,
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -879,13 +958,7 @@ const extractPlaybackWithPlaywright = async (embedUrl, referer, timeoutMs = 12e3
     } catch (err) {
       console.error(`[Playwright extractor failed] ${normalizedEmbed}`, err);
     } finally {
-      if (browser) {
-        try {
-          await browser.close();
-        } catch {
-        }
-        browser = void 0;
-      }
+      releaseBrowserSlot();
     }
     if (discovered.size > 0 || !isHubstreamEmbed)
       break;
@@ -922,9 +995,11 @@ const extractDirectSourcesWithPlaywright = async (embedUrl, referer, timeoutMs =
 };
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  acquireSharedBrowser,
   extractDirectSourcesWithPlaywright,
   extractPlaybackWithPlaywright,
   getCachedHlsManifest,
   getCachedSubtitleText,
+  releaseSharedBrowser,
   setCachedHlsManifest
 });

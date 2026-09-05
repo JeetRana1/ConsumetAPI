@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import axios from 'axios';
 import vm from 'vm';
-import { extractPlaybackWithPlaywright, setCachedHlsManifest } from '../../utils/browserRuntimeExtractor';
+import { extractPlaybackWithPlaywright, setCachedHlsManifest, acquireSharedBrowser, releaseSharedBrowser } from '../../utils/browserRuntimeExtractor';
 
 const BASE_URL = 'https://new5.hdhub4u.cl';
 const USER_AGENT =
@@ -771,10 +771,8 @@ const resolveTpeadPlayback = async (
 
   let browser: any;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
-    });
+    browser = await acquireSharedBrowser();
+    if (!browser) return { sources: [], subtitles: [] };
     const context = await browser.newContext({
       userAgent: USER_AGENT,
     });
@@ -852,7 +850,7 @@ const resolveTpeadPlayback = async (
   } catch {
     return { sources: [], subtitles: [] };
   } finally {
-    if (browser) await browser.close().catch(() => undefined);
+    releaseSharedBrowser();
   }
 };
 
@@ -896,10 +894,8 @@ const resolveGateWithPlaywright = async (
   const discovered = new Set<string>();
   let browser: any;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
-    });
+    browser = await acquireSharedBrowser();
+    if (!browser) return {};
     const context = await browser.newContext({
       extraHTTPHeaders: referer ? { Referer: referer } : undefined,
       userAgent: USER_AGENT,
@@ -1019,7 +1015,7 @@ const resolveGateWithPlaywright = async (
   } catch {
     return {};
   } finally {
-    if (browser) await browser.close().catch(() => undefined);
+    releaseSharedBrowser();
   }
 };
 
@@ -1036,10 +1032,8 @@ const extractWatchhdSourcesWithPlaywright = async (
 
   let browser: any;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
-    });
+    browser = await acquireSharedBrowser();
+    if (!browser) return { sources: [], subtitles: [] };
     const context = await browser.newContext({
       extraHTTPHeaders: referer ? { Referer: referer } : undefined,
       userAgent: USER_AGENT,
@@ -1128,7 +1122,7 @@ const extractWatchhdSourcesWithPlaywright = async (
   } catch {
     return { sources: [], subtitles: [] };
   } finally {
-    if (browser) await browser.close().catch(() => undefined);
+    releaseSharedBrowser();
   }
 };
 
@@ -1446,10 +1440,8 @@ export class HdStream4uProvider {
 
     let browser: any;
     try {
-      browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
-      });
+      browser = await acquireSharedBrowser();
+      if (!browser) return null;
       const context = await browser.newContext({
         extraHTTPHeaders: { Referer: BASE_URL },
         userAgent: USER_AGENT,
@@ -1634,7 +1626,7 @@ export class HdStream4uProvider {
     } catch {
       return null;
     } finally {
-      if (browser) await browser.close().catch(() => undefined);
+      releaseSharedBrowser();
     }
   }
 
@@ -1815,7 +1807,12 @@ export class HdStream4uProvider {
               subtitles: hubPlayback.subtitles || [],
             };
           }
-        } else {
+        } else if (!hubPlaybackPromise) {
+          // Avoid a duplicate hubstream.art launch: line 1766 above already
+          // fired a parallel hubstream extraction when the same hash link was
+          // found on the HDHub page. Only kick off a second one when the caller
+          // went straight to a bare hubstream.art/#hash URL with no prior
+          // extraction in flight.
           // Kick off hubstream extraction in parallel only as a fallback; the
           // hdstream4u/morencius paths below are preferred and win first.
           hubstreamOnlyFallback = extractPlaybackWithPlaywright(startUrl, BASE_URL, 20000)
