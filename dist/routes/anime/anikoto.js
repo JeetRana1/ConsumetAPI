@@ -26,6 +26,8 @@ var import_anikotoProvider = require("../../providers/custom/anikotoProvider");
 const routes = async (fastify, _options) => {
   const createProvider = () => new import_extensions.ANIME.AniKoto();
   const provider = createProvider();
+  const sourceCache = /* @__PURE__ */ new Map();
+  const SOURCE_CACHE_TTL_MS = 5 * 60 * 1e3;
   fastify.get("/", async (_request, reply) => reply.send({ provider: "anikoto", baseUrl: provider.toString.baseUrl }));
   fastify.get("/:query", async (request, reply) => {
     try {
@@ -45,19 +47,28 @@ const routes = async (fastify, _options) => {
     try {
       const episodeId = String(request.params.episodeId);
       const server = request.query?.server;
+      const cacheKey = `${episodeId}|${server || ""}`;
+      const cached = sourceCache.get(cacheKey);
+      if (cached && cached.expires > Date.now())
+        return reply.send(cached.value);
+      let result = null;
       try {
-        const currentResult = await (0, import_anikotoProvider.fetchCurrentAniKotoSources)(episodeId, server);
-        if (currentResult)
-          return reply.send(currentResult);
+        result = await (0, import_anikotoProvider.fetchCurrentAniKotoSources)(episodeId, server);
       } catch (error) {
         request.log.warn({ err: error, episodeId }, "Current AniKoto extraction failed; using extension provider");
       }
-      let result;
+      if (result) {
+        sourceCache.set(cacheKey, { expires: Date.now() + SOURCE_CACHE_TTL_MS, value: result });
+        return reply.send(result);
+      }
       try {
         result = await createProvider().fetchEpisodeSources(episodeId, server);
       } catch (firstError) {
         request.log.warn({ err: firstError, episodeId }, "AniKoto watch retry with fresh provider");
         result = await createProvider().fetchEpisodeSources(episodeId, server);
+      }
+      if (result) {
+        sourceCache.set(cacheKey, { expires: Date.now() + SOURCE_CACHE_TTL_MS, value: result });
       }
       return reply.send(result);
     } catch (error) {

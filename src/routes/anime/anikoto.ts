@@ -5,6 +5,8 @@ import { fetchCurrentAniKotoSources } from '../../providers/custom/anikotoProvid
 const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
   const createProvider = () => new (ANIME as any).AniKoto();
   const provider = createProvider();
+  const sourceCache = new Map<string, { expires: number; value: any }>();
+  const SOURCE_CACHE_TTL_MS = 5 * 60 * 1000;
   fastify.get('/', async (_request, reply) => reply.send({ provider: 'anikoto', baseUrl: provider.toString.baseUrl }));
 
   fastify.get('/:query', async (request: any, reply) => {
@@ -27,14 +29,21 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
     try {
       const episodeId = String(request.params.episodeId);
       const server = request.query?.server;
+      const cacheKey = `${episodeId}|${server || ''}`;
+      const cached = sourceCache.get(cacheKey);
+      if (cached && cached.expires > Date.now()) return reply.send(cached.value);
+
+      let result: any = null;
       try {
-        const currentResult = await fetchCurrentAniKotoSources(episodeId, server);
-        if (currentResult) return reply.send(currentResult);
+        result = await fetchCurrentAniKotoSources(episodeId, server);
       } catch (error: any) {
         request.log.warn({ err: error, episodeId }, 'Current AniKoto extraction failed; using extension provider');
       }
+      if (result) {
+        sourceCache.set(cacheKey, { expires: Date.now() + SOURCE_CACHE_TTL_MS, value: result });
+        return reply.send(result);
+      }
 
-      let result: any;
       try {
         result = await createProvider().fetchEpisodeSources(episodeId, server);
       } catch (firstError) {
@@ -42,6 +51,9 @@ const routes = async (fastify: FastifyInstance, _options: RegisterOptions) => {
         // matching the recovery users previously got by restarting the API.
         request.log.warn({ err: firstError, episodeId }, 'AniKoto watch retry with fresh provider');
         result = await createProvider().fetchEpisodeSources(episodeId, server);
+      }
+      if (result) {
+        sourceCache.set(cacheKey, { expires: Date.now() + SOURCE_CACHE_TTL_MS, value: result });
       }
       return reply.send(result);
     } catch (error: any) {

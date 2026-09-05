@@ -128,7 +128,13 @@ const fetchTmdbOfficialTrailer = async (id, type) => {
       return null;
     return `https://www.youtube.com/watch?v=${best.key}`;
   } catch (error) {
-    console.error("Error fetching TMDB official trailer:", error);
+    const status = error?.response?.status;
+    if (status && status !== 404) {
+      console.warn(
+        `Error fetching TMDB official trailer (HTTP ${status}):`,
+        error?.message || error
+      );
+    }
     return null;
   }
 };

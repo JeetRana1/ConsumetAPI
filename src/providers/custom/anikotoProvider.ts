@@ -104,76 +104,89 @@ export const fetchCurrentAniKotoSources = async (
   }
 
   const result: any = { headers: { Referer: BASE_URL } };
-  for (const group of groups) {
-    if (server && !group.name.toLowerCase().includes(String(server).toLowerCase())) continue;
-    try {
-      const svQuery = group.svId ? `&sv=${encodeURIComponent(group.svId)}` : '';
-      const linkResponse = await fetch(
-        `${BASE_URL}/ajax/server?get=${encodeURIComponent(group.linkId)}${svQuery}`,
-        { headers: ajaxHeaders() },
-      );
-      const linkJson = await parseJson(linkResponse);
-      const embedUrl = absoluteUrl(String(linkJson?.result?.url || linkJson?.url || ''));
-      if (!embedUrl || !/^https?:\/\//i.test(embedUrl)) continue;
 
-      const embedResponse = await fetch(embedUrl, {
-        headers: { ...pageHeaders(), Referer: `${BASE_URL}/` },
-      });
-      if (!embedResponse.ok) continue;
-      const embedId = extractEmbedId(await embedResponse.text());
-      if (!embedId) continue;
-
-      const embedOrigin = new URL(embedUrl).origin;
-      const sourceUrls = [
-        `${embedOrigin}/stream/getSourcesNew?id=${encodeURIComponent(embedId)}&id=${encodeURIComponent(embedId)}`,
-        `${embedOrigin}/stream/getSources?id=${encodeURIComponent(embedId)}`,
-      ];
-      if (/megaplay\.buzz$/i.test(new URL(embedUrl).hostname)) {
-        sourceUrls.push(
-          `https://vidwish.live/stream/getSourcesNew?id=${encodeURIComponent(embedId)}&id=${encodeURIComponent(embedId)}`,
+  // Resolve every server group concurrently (bounded pool). AniKoto commonly
+  // exposes 4-6 mirrors, and each mirror needs 4-5 chained upstream requests;
+  // a sequential loop makes the first watch call take 10s+, which is where
+  // most of the perceived "video won't load" latency comes from.
+  let nextIndex = 0;
+  const poolSize = Math.min(4, groups.length);
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const current = nextIndex++;
+      if (current >= groups.length) return;
+      const group = groups[current];
+      if (server && !group.name.toLowerCase().includes(String(server).toLowerCase())) continue;
+      try {
+        const svQuery = group.svId ? `&sv=${encodeURIComponent(group.svId)}` : '';
+        const linkResponse = await fetch(
+          `${BASE_URL}/ajax/server?get=${encodeURIComponent(group.linkId)}${svQuery}`,
+          { headers: ajaxHeaders() },
         );
-      }
-      let sourceJson: any = null;
-      for (const sourceUrl of sourceUrls) {
-        const sourceOrigin = new URL(sourceUrl).origin;
-        const sourceResponse = await fetch(sourceUrl, {
-          headers: { ...ajaxHeaders(), Origin: sourceOrigin, Referer: embedUrl },
-        });
-        const candidate = await parseJson(sourceResponse);
-        if (candidate?.sources?.file || candidate?.sources?.url || candidate?.source || candidate?.url) {
-          sourceJson = candidate;
-          break;
-        }
-      }
-      const file = String(
-        sourceJson?.sources?.file ||
-          sourceJson?.sources?.url ||
-          sourceJson?.source ||
-          sourceJson?.url ||
-          '',
-      ).trim();
-      if (!file) continue;
+        const linkJson = await parseJson(linkResponse);
+        const embedUrl = absoluteUrl(String(linkJson?.result?.url || linkJson?.url || ''));
+        if (!embedUrl || !/^https?:\/\//i.test(embedUrl)) continue;
 
-      const payload = group.type === 'dub' ? (result.dub ||= { sources: [], subtitles: [] }) : (result.sub ||= { sources: [], subtitles: [] });
-      if (!payload.sources.some((source: any) => source.url === file)) {
-        payload.sources.push({
-          url: file,
-          isM3U8: /\.m3u8(?:[?#]|$)/i.test(file),
-          quality: 'auto',
-          server: group.name,
-          headers: { Referer: embedUrl, 'User-Agent': USER_AGENT },
-          isDub: group.type === 'dub',
+        const embedResponse = await fetch(embedUrl, {
+          headers: { ...pageHeaders(), Referer: `${BASE_URL}/` },
         });
-      }
-      for (const track of Array.isArray(sourceJson?.tracks) ? sourceJson.tracks : []) {
-        if (track?.file && track.kind !== 'thumbnails' && !payload.subtitles.some((sub: any) => sub.url === track.file)) {
-          payload.subtitles.push({ url: track.file, lang: track.label || 'English' });
+        if (!embedResponse.ok) continue;
+        const embedId = extractEmbedId(await embedResponse.text());
+        if (!embedId) continue;
+
+        const embedOrigin = new URL(embedUrl).origin;
+        const sourceUrls = [
+          `${embedOrigin}/stream/getSourcesNew?id=${encodeURIComponent(embedId)}&id=${encodeURIComponent(embedId)}`,
+          `${embedOrigin}/stream/getSources?id=${encodeURIComponent(embedId)}`,
+        ];
+        if (/megaplay\.buzz$/i.test(new URL(embedUrl).hostname)) {
+          sourceUrls.push(
+            `https://vidwish.live/stream/getSourcesNew?id=${encodeURIComponent(embedId)}&id=${encodeURIComponent(embedId)}`,
+          );
         }
+        let sourceJson: any = null;
+        for (const sourceUrl of sourceUrls) {
+          const sourceOrigin = new URL(sourceUrl).origin;
+          const sourceResponse = await fetch(sourceUrl, {
+            headers: { ...ajaxHeaders(), Origin: sourceOrigin, Referer: embedUrl },
+          });
+          const candidate = await parseJson(sourceResponse);
+          if (candidate?.sources?.file || candidate?.sources?.url || candidate?.source || candidate?.url) {
+            sourceJson = candidate;
+            break;
+          }
+        }
+        const file = String(
+          sourceJson?.sources?.file ||
+            sourceJson?.sources?.url ||
+            sourceJson?.source ||
+            sourceJson?.url ||
+            '',
+        ).trim();
+        if (!file) continue;
+
+        const payload = group.type === 'dub' ? (result.dub ||= { sources: [], subtitles: [] }) : (result.sub ||= { sources: [], subtitles: [] });
+        if (!payload.sources.some((source: any) => source.url === file)) {
+          payload.sources.push({
+            url: file,
+            isM3U8: /\.m3u8(?:[?#]|$)/i.test(file),
+            quality: 'auto',
+            server: group.name,
+            headers: { Referer: embedUrl, 'User-Agent': USER_AGENT },
+            isDub: group.type === 'dub',
+          });
+        }
+        for (const track of Array.isArray(sourceJson?.tracks) ? sourceJson.tracks : []) {
+          if (track?.file && track.kind !== 'thumbnails' && !payload.subtitles.some((sub: any) => sub.url === track.file)) {
+            payload.subtitles.push({ url: track.file, lang: track.label || 'English' });
+          }
+        }
+      } catch {
+        // Continue with the next server; AniKoto commonly exposes multiple mirrors.
       }
-    } catch {
-      // Continue with the next server; AniKoto commonly exposes multiple mirrors.
     }
-  }
+  };
+  await Promise.all(Array.from({ length: poolSize }, () => worker()));
 
   return hasSources(result) ? result : null;
 };
