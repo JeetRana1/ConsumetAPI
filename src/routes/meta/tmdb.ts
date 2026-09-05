@@ -22,6 +22,19 @@ const configureMeta = (meta: any) => {
 const shouldLookupTrailers =
   String(process.env.TMDB_ENABLE_TRAILER_LOOKUP || 'false').toLowerCase() === 'true';
 
+const logTmdbFailure = (label: string, error: any): void => {
+  // Anime frequently map to TMDB ids that no longer exist (404). These are
+  // expected and non-fatal (the route rescues and still returns 200), so keep
+  // them out of the logs instead of dumping a full axios stack per title.
+  const status = error?.response?.status;
+  if (status && status !== 404) {
+    console.warn(
+      `${label} (HTTP ${status}):`,
+      error?.message || error,
+    );
+  }
+};
+
 const createTmdbClient = (provider: any) => {
   if (!tmdbApi) return null;
   return configureMeta(new META.TMDB(tmdbApi, provider));
@@ -1914,7 +1927,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       reply.status(200).send(res);
     } catch (err) {
-      console.error('TMDB Info Error:', err);
+      logTmdbFailure('TMDB Info Error', err);
       // Catch-all rescue if the entire fetch fails
       const rescued = await getDirectTmdbInfo(id, type);
       if (rescued) {
@@ -2097,7 +2110,7 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 
       reply.status(200).send(res);
     } catch (err) {
-      console.error('TMDB Info ID Error:', err);
+      logTmdbFailure('TMDB Info ID Error', err);
       // Catch-all rescue
       const rescued = await getDirectTmdbInfo(id, type);
       if (rescued) {

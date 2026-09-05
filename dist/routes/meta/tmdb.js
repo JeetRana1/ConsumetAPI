@@ -46,6 +46,15 @@ const configureMeta = (meta) => {
   return meta;
 };
 const shouldLookupTrailers = String(process.env.TMDB_ENABLE_TRAILER_LOOKUP || "false").toLowerCase() === "true";
+const logTmdbFailure = (label, error) => {
+  const status = error?.response?.status;
+  if (status && status !== 404) {
+    console.warn(
+      `${label} (HTTP ${status}):`,
+      error?.message || error
+    );
+  }
+};
 const createTmdbClient = (provider) => {
   if (!import_main.tmdbApi)
     return null;
@@ -1562,7 +1571,7 @@ const routes = async (fastify, options) => {
       }
       reply.status(200).send(res);
     } catch (err) {
-      console.error("TMDB Info Error:", err);
+      logTmdbFailure("TMDB Info Error", err);
       const rescued = await getDirectTmdbInfo(id, type);
       if (rescued) {
         await attachBestTrailer(rescued, id, type);
@@ -1711,7 +1720,7 @@ const routes = async (fastify, options) => {
       }
       reply.status(200).send(res);
     } catch (err) {
-      console.error("TMDB Info ID Error:", err);
+      logTmdbFailure("TMDB Info ID Error", err);
       const rescued = await getDirectTmdbInfo(id, type);
       if (rescued) {
         await attachBestTrailer(rescued, id, type);
