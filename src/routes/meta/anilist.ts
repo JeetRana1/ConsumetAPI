@@ -10,7 +10,6 @@ import { redis } from '../../main';
 import AnimeSama from '@consumet/extensions/dist/providers/anime/animesama';
 import { fetchWithServerFallback } from '../../utils/streamable';
 import { configureProvider } from '../../utils/provider';
-import { getProxyCandidatesSync } from '../../utils/outboundProxy';
 
 const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
   fastify.get('/', (_, rp) => {
@@ -476,11 +475,11 @@ const routes = async (fastify: FastifyInstance, options: RegisterOptions) => {
 };
 
 const generateAnilistMeta = (provider: string | undefined = undefined): Anilist => {
-  const proxies = getProxyCandidatesSync();
-  const url = proxies.length > 0 ? (proxies.length === 1 ? proxies[0] : proxies) : [];
-  const anilist = new Anilist(configureProvider(new AnimeSama()), {
-    url: url as string | string[],
-  });
+  // Do NOT pass getProxyCandidatesSync() here: Proxy.setProxy prefixes the
+  // proxy URL onto every outgoing request, which corrupts AniList's absolute
+  // graphql URLs (e.g. "<proxy>https://graphql.anilist.co") and throws
+  // "Invalid URL". AniList is reached directly with browser-style headers.
+  const anilist = new Anilist(configureProvider(new AnimeSama()));
 
   // AniList now returns 403/404 unless the GraphQL call looks like a real
   // browser request (anti-bot). Attach a browser-style Referer/Origin and

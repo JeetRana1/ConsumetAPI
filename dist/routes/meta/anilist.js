@@ -40,7 +40,6 @@ var import_main = require("../../main");
 var import_animesama = __toESM(require("@consumet/extensions/dist/providers/anime/animesama"));
 var import_streamable = require("../../utils/streamable");
 var import_provider = require("../../utils/provider");
-var import_outboundProxy = require("../../utils/outboundProxy");
 const routes = async (fastify, options) => {
   fastify.get("/", (_, rp) => {
     rp.status(200).send({
@@ -432,11 +431,7 @@ const routes = async (fastify, options) => {
   });
 };
 const generateAnilistMeta = (provider = void 0) => {
-  const proxies = (0, import_outboundProxy.getProxyCandidatesSync)();
-  const url = proxies.length > 0 ? proxies.length === 1 ? proxies[0] : proxies : [];
-  const anilist = new import_anilist.default((0, import_provider.configureProvider)(new import_animesama.default()), {
-    url
-  });
+  const anilist = new import_anilist.default((0, import_provider.configureProvider)(new import_animesama.default()));
   if (typeof anilist.client?.interceptors?.request?.use === "function") {
     anilist.client.interceptors.request.use((config) => {
       if (String(config.url || "").includes("graphql.anilist.co")) {
