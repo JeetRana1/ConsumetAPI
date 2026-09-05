@@ -331,6 +331,86 @@ const verifySourcePlayable = async (
   }
 };
 
+// Tri-state liveness probe for hubstream master manifests. A hubstream signed
+// URL can look fresh (a k= token with no kx= expiry param passes
+// hubstreamTokenIsExpired) yet already 403 everywhere because hubstream rotates
+// between config variants (ads-only vs real payload) and the extraction caught
+// the dead variant. Only a live fetch distinguishes a working token from a dead
+// one. Like verifySourcePlayableState, a mere timeout returns 'unknown' (the
+// source is kept) — only a definitive 4xx/5xx or non-HLS payload is 'dead'.
+const verifyHubstreamSourceState = async (
+  url: string,
+  timeoutMs = 4000,
+): Promise<'ok' | 'dead' | 'unknown'> => {
+  try {
+    const response = await axios.get(url, {
+      timeout: timeoutMs,
+      maxRedirects: 5,
+      validateStatus: (status) => status >= 200 && status < 500,
+      headers: {
+        'User-Agent': USER_AGENT,
+        Referer: 'https://hubstream.art/',
+      },
+    });
+    // 403/404 = expired/revoked token or missing resource (definitively dead).
+    // 429 and 5xx are transient node throttling windows and must NOT kill a
+    // source — the proxy node rotation exists precisely for those bursts.
+    if (response.status === 403 || response.status === 404) return 'dead';
+    if (response.status >= 400) return 'unknown';
+    const data = String(response.data || '').trim();
+    if (/\.m3u8(?:[?#]|$)/i.test(url)) {
+      // Some hubstream nodes serve the manifest content numeric-encoded
+      // (each byte as a decimal). Accept either plain "#EXTM3U" or a body
+      // that deobfuscates to it.
+      if (data.startsWith('#EXTM3U')) return 'ok';
+      const tokens = data.split(/\s+/);
+      const decoded =
+        tokens.length >= 20 && tokens.every((token) => /^\d{1,3}$/.test(token))
+          ? tokens.map((token) => String.fromCharCode(Number(token))).join('')
+          : data;
+      return decoded.startsWith('#EXTM3U') ? 'ok' : 'dead';
+    }
+    return data.length > 0 ? 'ok' : 'dead';
+  } catch (error: any) {
+    const statusCode = Number(error?.response?.status || 0);
+    if (statusCode === 403 || statusCode === 404) return 'dead';
+    return statusCode >= 400 ? 'unknown' : 'unknown';
+  }
+};
+
+// Probe every hubstream source in a watch result and drop the definitively dead
+// ones (hard 4xx/5xx or a body that is not an HLS manifest). Timeouts are kept.
+// Returns the filtered result plus a flag indicating that hubstream sources
+// existed and ALL of them were dead (i.e. the extraction likely caught the
+// ads-only/rotated config variant).
+const verifyHubstreamSourcesLive = async (result: any): Promise<any> => {
+  if (!result || !Array.isArray(result.sources) || !result.sources.length) return result;
+  const hubIdx: number[] = [];
+  result.sources.forEach((source: any, index: number) => {
+    if (isHubstreamSignedUrl(String(source?.url || ''))) hubIdx.push(index);
+  });
+  if (!hubIdx.length) return result;
+  const states = await Promise.all(
+    hubIdx.map((index) =>
+      verifyHubstreamSourceState(String(result.sources[index]?.url || '')),
+    ),
+  );
+  const deadIdx = new Map<number, string>();
+  hubIdx.forEach((index, i) => {
+    if (states[i] === 'dead') deadIdx.set(index, states[i]);
+  });
+  if (!deadIdx.size) {
+    return { ...result, hubstreamProbed: true };
+  }
+  const alive = result.sources.filter((_s: any, i: number) => !deadIdx.has(i));
+  return {
+    ...result,
+    sources: alive,
+    hubstreamProbed: true,
+    hubstreamAllDead: alive.length === 0,
+  };
+};
+
 // Tri-state liveness probe: 'ok' (valid response), 'dead' (hard 4xx/5xx or
 // invalid payload), or 'unknown' (timeout/network error). The acek CDN behind
 // hdstream4u is slow and flaky, so a probe that merely times out must NOT
@@ -1708,18 +1788,39 @@ export class HdStream4uProvider {
     if (cachedResult) {
       return cachedResult;
     }
-    const result = await HdStream4uProvider.fetchSourcesUncached(
+    // hubstream rotates between config variants (ads-only vs real payload), so
+    // the extracted token can be dead on arrival even though it passes
+    // hubstreamTokenIsExpired. Verify hubstream sources are actually playable
+    // before serving/caching them; if a dead variant was caught, re-extract
+    // once to land the real payload.
+    let result = await HdStream4uProvider.fetchSourcesUncached(
       episodeId,
       server,
       _strictServer,
       options,
     );
-    const filteredResult = filterStaleHubstreamSources(result);
-    if (filteredResult && Array.isArray(filteredResult.sources) && filteredResult.sources.length) {
-      cache.set(cacheKey, filteredResult, 5 * 60 * 1000);
-      return filteredResult;
+    let filteredResult = filterStaleHubstreamSources(result);
+    let verifiedResult = await verifyHubstreamSourcesLive(filteredResult);
+    if (verifiedResult?.hubstreamAllDead) {
+      result = await HdStream4uProvider.fetchSourcesUncached(
+        episodeId,
+        server,
+        _strictServer,
+        options,
+      );
+      filteredResult = filterStaleHubstreamSources(result);
+      verifiedResult = await verifyHubstreamSourcesLive(filteredResult);
     }
-    return filteredResult || result;
+    if (verifiedResult?.sources?.length) {
+      cache.set(cacheKey, verifiedResult, 5 * 60 * 1000);
+      return verifiedResult;
+    }
+    // Final fallback: even a "dead" hubstream source gives the player something
+    // to attempt via its direct/API-proxy recovery before exhausting, which is
+    // strictly better than serving zero sources. Never cache in this state.
+    return Array.isArray(filteredResult?.sources) && filteredResult.sources.length
+      ? filteredResult
+      : (verifiedResult || result);
   }
 
   private static async fetchSourcesUncached(

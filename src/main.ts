@@ -136,6 +136,56 @@ const HUBSTREAM_CDN_PATH_RE = /\/v4\/pl\/([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})(\
 const hubstreamNodePrefixes: string[] = ['s9r1', 'sd8g', 'sipt', 'sdqm'];
 const hubstreamCdnDomains: string[] = ['auroradigitalworks.shop', 'fusionhorizonworks.site'];
 
+// HubStream throttles downloads per (node, domain) edge: a sustained run of
+// distinct segment fetches makes that domain crawl (multi-second per segment)
+// while the other domains in the pool stay fast. The same signed token is valid
+// across every (node, domain) pair, so the proxy prefers whichever host has
+// served fastest recently instead of pinning the whole session to one domain.
+const HUBSTREAM_SLOW_SUCCESS_MS = 1500;
+const HUBSTREAM_SEGMENT_TIMEOUT_MS = 8000;
+// Cap on how long we keep scanning rotated nodes after a slow 200 before
+// serving the fastest one we already have. Bounds the pathological all-nodes-
+// throttled case while still catching the common one: a fast node that answers
+// right after the primary one turned slow.
+const HUBSTREAM_SLOW_SCAN_DEADLINE_MS = 4000;
+
+const hubstreamHostLatency = new Map<string, { va: number; n: number }>();
+
+const recordHubstreamHostLatencyMs = (hostname: string, elapsedMs: number): void => {
+  if (!hostname) return;
+  const prev = hubstreamHostLatency.get(hostname);
+  if (prev) {
+    prev.va = prev.va * 0.7 + elapsedMs * 0.3;
+    prev.n += 1;
+  } else {
+    hubstreamHostLatency.set(hostname, { va: elapsedMs, n: 1 });
+  }
+};
+
+const hubstreamHostnameOf = (url: string): string => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+};
+
+// Reorders the rotation pool so the host that recently served fastest is tried
+// first. Unknown hosts keep their original playlist order at the back.
+const orderHubstreamVariants = (variants: string[]): string[] => {
+  if (variants.length <= 1) return variants;
+  const scored = variants.map((u, index) => ({
+    u,
+    index,
+    va: hubstreamHostLatency.get(hubstreamHostnameOf(u))?.va ?? Number.POSITIVE_INFINITY,
+  }));
+  scored.sort((a, b) => {
+    if (a.va !== b.va) return a.va - b.va;
+    return a.index - b.index;
+  });
+  return scored.map((s) => s.u);
+};
+
 const addHubstreamNode = (hostname: string): void => {
   const match = String(hostname || '').toLowerCase().match(HUBSTREAM_CDN_HOST_RE);
   const prefix = match?.[1];
@@ -541,7 +591,15 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     // configured outbound proxies, adding 15 seconds per segment retry.
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
     const isTikTokCdn = /^https?:\/\/[^/]*\.tiktokcdn\.com\//i.test(url);
-    const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
+    // HubStream signs its URLs per-stream, not per-node, so a node that starts
+    // 502ing or throttling can be swapped for another node in the same pool.
+    // The original node keeps the full retry budget; rotated nodes use a smaller
+    // one. Recognises both direct-IP hosts and the node pool hostnames.
+    const nodeVariants = hubstreamNodeVariants(url);
+    const isHubstreamCdn = nodeVariants.length > 1 && /\/v4\//i.test(url);
+    const orderedHubstreamVariants = isHubstreamCdn
+      ? orderHubstreamVariants(nodeVariants)
+      : nodeVariants;
     const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url)
       || /^https?:\/\/cdn\.watching\.onl\//i.test(url)
       || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url)
@@ -584,13 +642,16 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       return safeReferer;
     })();
 
-    // HubStream signs its URLs per-stream, not per-node, so a node that starts
-    // 502ing can be swapped for another node in the same pool. The original node
-    // keeps the full retry budget; rotated nodes use a smaller one.
-    const nodeVariants = hubstreamNodeVariants(url);
+    // When a node responds 200 but has been throttled by HubStream, don't serve
+    // that slow segment blindly: hold onto the fastest slow 200 and briefly scan
+    // the rest of the pool for a healthier node before returning.
+    const hubstreamScanStartedAt = Date.now();
+    let bestSlowSuccess:
+      | { response: import('axios').AxiosResponse; elapsedMs: number }
+      | null = null;
 
-    for (let nodeIdx = 0; nodeIdx < nodeVariants.length; nodeIdx++) {
-      const variantUrl = nodeVariants[nodeIdx];
+    for (let nodeIdx = 0; nodeIdx < orderedHubstreamVariants.length; nodeIdx++) {
+      const variantUrl = orderedHubstreamVariants[nodeIdx];
       const isPrimaryNode = nodeIdx === 0;
 
       for (const proxyUrl of proxyCandidates) {
@@ -619,6 +680,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
             ? 300
             : Math.min(3000, 300 * Math.pow(2, attempt - 1));
           try {
+            const hubRequestStartedAt = Date.now();
             const response = await withUpstreamConcurrency(async () => {
               const proxyOptions = proxyUrl ? toAxiosProxyOptions(proxyUrl) : {};
               const omitOrigin = /^https?:\/\/(?:vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)|megap\.(?:mikora\.top|norami\.top|akirax\.buzz))\//i.test(url);
@@ -639,7 +701,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                     : { Accept: 'video/mp2t,video/mp4,application/octet-stream,*/*' }),
                   ...(isManifest ? {} : { 'Accept-Encoding': 'identity' }),
                 },
-                timeout: isAcekCdn ? 25000 : isIbyteCdn ? 30000 : 15000,
+                timeout: isAcekCdn ? 25000 : isIbyteCdn ? 30000 : isHubstreamCdn && !isManifest ? HUBSTREAM_SEGMENT_TIMEOUT_MS : 15000,
                  // Stream media segments as soon as upstream sends bytes. Buffering
                  // the full segment before replying can drain HLS.js on slower hosts.
                  responseType: isManifest ? 'text' : 'stream',
@@ -653,6 +715,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                   : {}),
               });
             }, () => !!signal?.aborted);
+            const hubElapsedMs = Date.now() - hubRequestStartedAt;
 
             const responseContentType = String(response.headers['content-type'] || '');
 
@@ -685,6 +748,29 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
               break;
             }
 
+            if (isHubstreamCdn) {
+              recordHubstreamHostLatencyMs(hubstreamHostnameOf(variantUrl), hubElapsedMs);
+            }
+
+            // A 200 that took a long time (a node being throttled) shouldn't be
+            // served blindly when the CDN pool may have a faster node. Keep the
+            // fastest slow 200, scan the rotated candidates briefly, then serve
+            // whichever is quickest.
+            if (
+              isHubstreamCdn &&
+              !isManifest &&
+              hubElapsedMs > HUBSTREAM_SLOW_SUCCESS_MS &&
+              orderedHubstreamVariants.length > 1
+            ) {
+              const wouldBump =
+                Date.now() - hubstreamScanStartedAt > HUBSTREAM_SLOW_SCAN_DEADLINE_MS;
+              if (!bestSlowSuccess || hubElapsedMs < bestSlowSuccess.elapsedMs) {
+                bestSlowSuccess = { response, elapsedMs: hubElapsedMs };
+              }
+              if (!wouldBump) break;
+              return bestSlowSuccess.response;
+            }
+
             return response;
           } catch (error) {
             if (isAbortError(error)) throw error;
@@ -704,6 +790,10 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         lastError = lastCandidateError;
       }
     }
+
+    // If every candidate was slow but usable, serve the fastest one rather than
+    // returning an error for bytes we already have.
+    if (bestSlowSuccess) return bestSlowSuccess.response;
 
     throw lastError instanceof Error ? lastError : new Error('HLS proxy failed');
   };

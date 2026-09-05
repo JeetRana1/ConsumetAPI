@@ -341,6 +341,68 @@ const verifySourcePlayable = async (url, referer, timeoutMs = 4e3) => {
     return false;
   }
 };
+const verifyHubstreamSourceState = async (url, timeoutMs = 4e3) => {
+  try {
+    const response = await import_axios.default.get(url, {
+      timeout: timeoutMs,
+      maxRedirects: 5,
+      validateStatus: (status) => status >= 200 && status < 500,
+      headers: {
+        "User-Agent": USER_AGENT,
+        Referer: "https://hubstream.art/"
+      }
+    });
+    if (response.status === 403 || response.status === 404)
+      return "dead";
+    if (response.status >= 400)
+      return "unknown";
+    const data = String(response.data || "").trim();
+    if (/\.m3u8(?:[?#]|$)/i.test(url)) {
+      if (data.startsWith("#EXTM3U"))
+        return "ok";
+      const tokens = data.split(/\s+/);
+      const decoded = tokens.length >= 20 && tokens.every((token) => /^\d{1,3}$/.test(token)) ? tokens.map((token) => String.fromCharCode(Number(token))).join("") : data;
+      return decoded.startsWith("#EXTM3U") ? "ok" : "dead";
+    }
+    return data.length > 0 ? "ok" : "dead";
+  } catch (error) {
+    const statusCode = Number(error?.response?.status || 0);
+    if (statusCode === 403 || statusCode === 404)
+      return "dead";
+    return statusCode >= 400 ? "unknown" : "unknown";
+  }
+};
+const verifyHubstreamSourcesLive = async (result) => {
+  if (!result || !Array.isArray(result.sources) || !result.sources.length)
+    return result;
+  const hubIdx = [];
+  result.sources.forEach((source, index) => {
+    if (isHubstreamSignedUrl(String(source?.url || "")))
+      hubIdx.push(index);
+  });
+  if (!hubIdx.length)
+    return result;
+  const states = await Promise.all(
+    hubIdx.map(
+      (index) => verifyHubstreamSourceState(String(result.sources[index]?.url || ""))
+    )
+  );
+  const deadIdx = /* @__PURE__ */ new Map();
+  hubIdx.forEach((index, i) => {
+    if (states[i] === "dead")
+      deadIdx.set(index, states[i]);
+  });
+  if (!deadIdx.size) {
+    return { ...result, hubstreamProbed: true };
+  }
+  const alive = result.sources.filter((_s, i) => !deadIdx.has(i));
+  return {
+    ...result,
+    sources: alive,
+    hubstreamProbed: true,
+    hubstreamAllDead: alive.length === 0
+  };
+};
 const verifySourcePlayableState = async (url, referer, timeoutMs = 4e3) => {
   if (!url)
     return "dead";
@@ -1554,18 +1616,29 @@ class HdStream4uProvider {
     if (cachedResult) {
       return cachedResult;
     }
-    const result = await HdStream4uProvider.fetchSourcesUncached(
+    let result = await HdStream4uProvider.fetchSourcesUncached(
       episodeId,
       server,
       _strictServer,
       options
     );
-    const filteredResult = filterStaleHubstreamSources(result);
-    if (filteredResult && Array.isArray(filteredResult.sources) && filteredResult.sources.length) {
-      cache.set(cacheKey, filteredResult, 5 * 60 * 1e3);
-      return filteredResult;
+    let filteredResult = filterStaleHubstreamSources(result);
+    let verifiedResult = await verifyHubstreamSourcesLive(filteredResult);
+    if (verifiedResult?.hubstreamAllDead) {
+      result = await HdStream4uProvider.fetchSourcesUncached(
+        episodeId,
+        server,
+        _strictServer,
+        options
+      );
+      filteredResult = filterStaleHubstreamSources(result);
+      verifiedResult = await verifyHubstreamSourcesLive(filteredResult);
     }
-    return filteredResult || result;
+    if (verifiedResult?.sources?.length) {
+      cache.set(cacheKey, verifiedResult, 5 * 60 * 1e3);
+      return verifiedResult;
+    }
+    return Array.isArray(filteredResult?.sources) && filteredResult.sources.length ? filteredResult : verifiedResult || result;
   }
   static async fetchSourcesUncached(episodeId, server = "hdstream4u", _strictServer = false, options = {}) {
     try {

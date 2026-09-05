@@ -139,6 +139,43 @@ const HUBSTREAM_CDN_HOST_RE = /^([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})$/i;
 const HUBSTREAM_CDN_PATH_RE = /\/v4\/pl\/([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})(\/.*)$/i;
 const hubstreamNodePrefixes = ["s9r1", "sd8g", "sipt", "sdqm"];
 const hubstreamCdnDomains = ["auroradigitalworks.shop", "fusionhorizonworks.site"];
+const HUBSTREAM_SLOW_SUCCESS_MS = 1500;
+const HUBSTREAM_SEGMENT_TIMEOUT_MS = 8e3;
+const HUBSTREAM_SLOW_SCAN_DEADLINE_MS = 4e3;
+const hubstreamHostLatency = /* @__PURE__ */ new Map();
+const recordHubstreamHostLatencyMs = (hostname, elapsedMs) => {
+  if (!hostname)
+    return;
+  const prev = hubstreamHostLatency.get(hostname);
+  if (prev) {
+    prev.va = prev.va * 0.7 + elapsedMs * 0.3;
+    prev.n += 1;
+  } else {
+    hubstreamHostLatency.set(hostname, { va: elapsedMs, n: 1 });
+  }
+};
+const hubstreamHostnameOf = (url) => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+};
+const orderHubstreamVariants = (variants) => {
+  if (variants.length <= 1)
+    return variants;
+  const scored = variants.map((u, index) => ({
+    u,
+    index,
+    va: hubstreamHostLatency.get(hubstreamHostnameOf(u))?.va ?? Number.POSITIVE_INFINITY
+  }));
+  scored.sort((a, b) => {
+    if (a.va !== b.va)
+      return a.va - b.va;
+    return a.index - b.index;
+  });
+  return scored.map((s) => s.u);
+};
 const addHubstreamNode = (hostname) => {
   const match = String(hostname || "").toLowerCase().match(HUBSTREAM_CDN_HOST_RE);
   const prefix = match?.[1];
@@ -430,7 +467,9 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
     const isAnimeSaltCdn = /^https?:\/\/(?:as-cdn\d+|z\d+)\.(?:top|ac|pro|xyz|click|link|net|cc|org)\//i.test(url);
     const isIbyteCdn = /^https?:\/\/[^/]*\.ibyteimg\.com\//i.test(url);
     const isTikTokCdn = /^https?:\/\/[^/]*\.tiktokcdn\.com\//i.test(url);
-    const isHubstreamCdn = /^https?:\/\/(?:\d{1,3}\.){3}\d{1,3}\//i.test(url) && /\/v4\//i.test(url);
+    const nodeVariants = hubstreamNodeVariants(url);
+    const isHubstreamCdn = nodeVariants.length > 1 && /\/v4\//i.test(url);
+    const orderedHubstreamVariants = isHubstreamCdn ? orderHubstreamVariants(nodeVariants) : nodeVariants;
     const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url) || /^https?:\/\/cdn\.watching\.onl\//i.test(url) || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url);
     const isMorencius = /^https?:\/\/morencius\.com\//i.test(url);
     const isAcekCdn = /^https?:\/\/[^/]*\.acek-cdn\.com\//i.test(url);
@@ -449,9 +488,10 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       }
       return safeReferer;
     })();
-    const nodeVariants = hubstreamNodeVariants(url);
-    for (let nodeIdx = 0; nodeIdx < nodeVariants.length; nodeIdx++) {
-      const variantUrl = nodeVariants[nodeIdx];
+    const hubstreamScanStartedAt = Date.now();
+    let bestSlowSuccess = null;
+    for (let nodeIdx = 0; nodeIdx < orderedHubstreamVariants.length; nodeIdx++) {
+      const variantUrl = orderedHubstreamVariants[nodeIdx];
       const isPrimaryNode = nodeIdx === 0;
       for (const proxyUrl of proxyCandidates) {
         const maxAttempts = nodeVariants.length > 1 ? isPrimaryNode ? 2 : 1 : 5;
@@ -467,6 +507,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
           throwIfAborted();
           const backoffMs = nodeVariants.length > 1 ? 300 : Math.min(3e3, 300 * Math.pow(2, attempt - 1));
           try {
+            const hubRequestStartedAt = Date.now();
             const response = await withUpstreamConcurrency(async () => {
               const proxyOptions = proxyUrl ? (0, import_outboundProxy.toAxiosProxyOptions)(proxyUrl) : {};
               const omitOrigin = /^https?:\/\/(?:vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)|megap\.(?:mikora\.top|norami\.top|akirax\.buzz))\//i.test(url);
@@ -489,7 +530,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                   ...isManifest ? {} : { Accept: "video/mp2t,video/mp4,application/octet-stream,*/*" },
                   ...isManifest ? {} : { "Accept-Encoding": "identity" }
                 },
-                timeout: isAcekCdn ? 25e3 : isIbyteCdn ? 3e4 : 15e3,
+                timeout: isAcekCdn ? 25e3 : isIbyteCdn ? 3e4 : isHubstreamCdn && !isManifest ? HUBSTREAM_SEGMENT_TIMEOUT_MS : 15e3,
                 // Stream media segments as soon as upstream sends bytes. Buffering
                 // the full segment before replying can drain HLS.js on slower hosts.
                 responseType: isManifest ? "text" : "stream",
@@ -501,6 +542,7 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
                 ...isHubstreamCdn && !proxyUrl ? { httpAgent: hlsHttpFreshAgent, httpsAgent: hlsHttpsFreshAgent } : {}
               });
             }, () => !!signal?.aborted);
+            const hubElapsedMs = Date.now() - hubRequestStartedAt;
             const responseContentType = String(response.headers["content-type"] || "");
             if (isManifest) {
               response.data = decodeNumericHlsManifest(response.data);
@@ -522,6 +564,18 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
               lastCandidateError = new Error(`Invalid HLS manifest response (${response.status})`);
               break;
             }
+            if (isHubstreamCdn) {
+              recordHubstreamHostLatencyMs(hubstreamHostnameOf(variantUrl), hubElapsedMs);
+            }
+            if (isHubstreamCdn && !isManifest && hubElapsedMs > HUBSTREAM_SLOW_SUCCESS_MS && orderedHubstreamVariants.length > 1) {
+              const wouldBump = Date.now() - hubstreamScanStartedAt > HUBSTREAM_SLOW_SCAN_DEADLINE_MS;
+              if (!bestSlowSuccess || hubElapsedMs < bestSlowSuccess.elapsedMs) {
+                bestSlowSuccess = { response, elapsedMs: hubElapsedMs };
+              }
+              if (!wouldBump)
+                break;
+              return bestSlowSuccess.response;
+            }
             return response;
           } catch (error) {
             if (isAbortError(error))
@@ -540,6 +594,8 @@ const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         lastError = lastCandidateError;
       }
     }
+    if (bestSlowSuccess)
+      return bestSlowSuccess.response;
     throw lastError instanceof Error ? lastError : new Error("HLS proxy failed");
   };
   fastify.get("/proxy/hls/*", async (request, reply) => {
