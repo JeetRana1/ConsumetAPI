@@ -601,6 +601,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
       ? orderHubstreamVariants(nodeVariants)
       : nodeVariants;
     const isShioraCdn = /^https?:\/\/(?:megap|vidtub)\.(?:shiora\.(?:top|site)|norami\.top|akirax\.buzz)\//i.test(url)
+      || /^https?:\/\/[^/]*\.(?:mikora\.top|norami\.top|shiora\.(?:top|site))\//i.test(url)
       || /^https?:\/\/cdn\.watching\.onl\//i.test(url)
       || /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url)
       || /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url);
@@ -625,6 +626,7 @@ export const tmdbApi = process.env.TMDB_KEY && process.env.TMDB_KEY;
         /^https?:\/\/[^/]+\.livedns\.[^/]+\//i.test(url) ||
         /^https?:\/\/[^/]*\.akirax\.buzz\//i.test(url) ||
         /^https?:\/\/vidtub\.(?:shiora\.(?:top|site)|akirax\.buzz)\//i.test(url) ||
+        /^https?:\/\/(?:megap\.)?[^/]*\.(?:mikora\.top|norami\.top|shiora\.(?:top|site))\//i.test(url) ||
         /^https?:\/\/(?:megap\.mikora\.top|megap\.norami\.top|megap\.akirax\.buzz)\//i.test(url) ||
         /^https?:\/\/[^/]*\.kryntal\.top\//i.test(url) ||
         /^https?:\/\/[^/]*\.imgnex\.top\//i.test(url)
